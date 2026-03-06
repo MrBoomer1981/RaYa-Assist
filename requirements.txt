@@ -1,0 +1,5 @@
+aiogram==3.17.0
+langchain-groq
+langchain-core
+pydantic-settings
+python-dotenv
