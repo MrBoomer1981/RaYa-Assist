@@ -197,7 +197,7 @@ async def main() -> None:
 
         # Сохраняем в историю разговора
         caption_note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
-        await llm.save_photo_exchange(
+        llm.save_photo_exchange(
             message.from_user.id,
             f"[Пользователь прислал фото{caption_note}]",
             result,
