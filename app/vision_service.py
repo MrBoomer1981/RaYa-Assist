@@ -6,7 +6,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_VISION_MODEL = "llama-3.2-90b-vision-preview"
+_VISION_MODELS = [
+    "llama-3.2-90b-vision-preview",
+    "llama-3.2-11b-vision-preview",
+]
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 МБ — лимит Groq
 _DEFAULT_PROMPT = "Опиши подробно что ты видишь на этом изображении."
 
@@ -36,35 +39,51 @@ class VisionService:
         image_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
         prompt = user_prompt.strip() or _DEFAULT_PROMPT
 
-        try:
-            response = await self._client.chat.completions.create(
-                model=_VISION_MODEL,
-                messages=[
+        messages_payload = [
+            {
+                "role": "user",
+                "content": [
                     {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{media_type};base64,{image_b64}"
-                                },
-                            },
-                            {
-                                "type": "text",
-                                "text": prompt,
-                            },
-                        ],
-                    }
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{image_b64}"
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt,
+                    },
                 ],
-                max_tokens=1024,
-            )
-            result = response.choices[0].message.content or ""
-            logger.info("🖼️ Изображение проанализировано: %d символов", len(result))
-            return result.strip()
+            }
+        ]
 
-        except Exception as e:
-            logger.exception("Ошибка анализа: %s", str(e))
-            return str(e)  # временно возвращаем текст ошибки боту
+        # Пробуем модели по очереди — fallback при пустом ответе или ошибке
+        last_error: str = ""
+        for model in _VISION_MODELS:
+            try:
+                logger.info("🖼️ Пробуем модель: %s", model)
+                response = await self._client.chat.completions.create(
+                    model=model,
+                    messages=messages_payload,
+                    max_tokens=1024,
+                )
+                result = (response.choices[0].message.content or "").strip()
+
+                if result:
+                    logger.info(
+                        "✅ Модель %s вернула %d символов", model, len(result)
+                    )
+                    return result
+                else:
+                    logger.warning("⚠️ Модель %s вернула пустой ответ", model)
+                    last_error = f"Модель {model} вернула пустой ответ"
+
+            except Exception as e:
+                logger.warning("❌ Модель %s: %s", model, str(e))
+                last_error = str(e)
+
+        logger.error("Все vision модели недоступны. Последняя ошибка: %s", last_error)
+        return ""
 
 
 def _detect_media_type(data: bytes) -> str:
