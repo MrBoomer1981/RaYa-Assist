@@ -7,8 +7,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _VISION_MODELS = [
-    "llama-3.2-90b-vision-preview",
-    "llama-3.2-11b-vision-preview",
+    "meta-llama/llama-4-scout-17b-16e-instruct",  # Llama 4 — актуальная
+    "meta-llama/llama-4-maverick-17b-128e-instruct",  # Резервная
 ]
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 МБ — лимит Groq
 _DEFAULT_PROMPT = "Опиши подробно что ты видишь на этом изображении."
