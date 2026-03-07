@@ -155,3 +155,12 @@ class LLMService:
             getattr(response, "usage_metadata", None),
         )
         return reply
+
+    def save_photo_exchange(
+        self, user_id: int, user_note: str, vision_result: str
+    ) -> None:
+        """
+        Сохраняет фото-обмен в историю разговора.
+        Вызывается из main.py после успешного анализа изображения.
+        """
+        save_messages(user_id, user_note, vision_result)

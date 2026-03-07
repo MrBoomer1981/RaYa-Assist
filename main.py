@@ -1,5 +1,4 @@
 import asyncio
-import io
 import logging
 import warnings
 
@@ -8,12 +7,13 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*")
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, PhotoSize, Voice
 
 from app.config import settings
 from app.database import init_db, clear_history, clear_memory, load_memory
 from app.llm_service import LLMService
 from app.voice_service import VoiceService
+from app.vision_service import VisionService
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -22,6 +22,9 @@ logging.basicConfig(
 logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+_MAX_VOICE_BYTES = 20 * 1024 * 1024   # 20 МБ
+_MAX_PHOTO_BYTES = 20 * 1024 * 1024   # 20 МБ
 
 
 def _build_help_text() -> str:
@@ -32,6 +35,7 @@ def _build_help_text() -> str:
         "• Помнить факты о тебе между сессиями",
         "• Сохранять историю наших разговоров",
         "• Принимать голосовые сообщения 🎤",
+        "• Анализировать фотографии и изображения 🖼️",
         "• Помогать с текстами, идеями и планами",
     ]
     if settings.search_enabled:
@@ -45,6 +49,17 @@ def _build_help_text() -> str:
     return "\n".join(lines)
 
 
+async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
+    """Скачивает файл по file_id и возвращает байты."""
+    file = await bot.get_file(file_id)
+    if not file.file_path:
+        return None
+    downloaded = await bot.download_file(file.file_path)
+    if downloaded is None:
+        return None
+    return downloaded.read()
+
+
 async def main() -> None:
     init_db()
 
@@ -55,6 +70,7 @@ async def main() -> None:
     dp = Dispatcher()
     llm = LLMService()
     voice = VoiceService()
+    vision = VisionService()
 
     # ── Команды ───────────────────────────────────────────────────────────────
 
@@ -72,10 +88,11 @@ async def main() -> None:
             f"Я твой личный ИИ-ассистент RaYa.\n"
             f"Умею:\n"
             f"• Запоминать тебя и наши разговоры навсегда\n"
-            f"• Принимать голосовые сообщения 🎤"
+            f"• Принимать голосовые сообщения 🎤\n"
+            f"• Анализировать фотографии 🖼️"
             f"{search_line}\n"
             f"• Помогать с любыми задачами\n\n"
-            f"Напиши или надиктуй что-нибудь — начнём! /help для команд."
+            f"Напиши, надиктуй или пришли фото — начнём!\n/help для команд."
         )
 
     @dp.message(Command("help"))
@@ -117,43 +134,76 @@ async def main() -> None:
         if not message.from_user or not message.voice:
             return
 
+        voice_info: Voice = message.voice
+        if voice_info.file_size and voice_info.file_size > _MAX_VOICE_BYTES:
+            await message.answer("⚠️ Голосовое сообщение слишком длинное (макс. 20 МБ).")
+            return
+
+        await bot.send_chat_action(message.chat.id, "typing")
+
+        audio_bytes = await _download_bytes(bot, voice_info.file_id)
+        if not audio_bytes:
+            await message.answer("⚠️ Не удалось скачать аудио. Попробуй ещё раз.")
+            return
+
+        text = await voice.transcribe(audio_bytes)
+        if not text:
+            await message.answer(
+                "⚠️ Не смог распознать голос.\n"
+                "Попробуй говорить чётче или напиши текстом."
+            )
+            return
+
+        await message.answer(f"🎤 Распознано: {text}")
         await bot.send_chat_action(message.chat.id, "typing")
 
         try:
-            file = await bot.get_file(message.voice.file_id)
-            if not file.file_path:
-                await message.answer("⚠️ Не удалось получить файл.")
-                return
-
-            # download_file возвращает BytesIO — читаем правильно
-            downloaded = await bot.download_file(file.file_path)
-            if downloaded is None:
-                await message.answer("⚠️ Не удалось скачать аудио.")
-                return
-
-            audio_bytes = (
-                downloaded.read()
-                if isinstance(downloaded, io.IOBase)
-                else bytes(downloaded)
-            )
-
-            text = await voice.transcribe(audio_bytes)
-            if not text:
-                await message.answer(
-                    "⚠️ Не смог распознать голос.\n"
-                    "Попробуй говорить чётче или запиши снова."
-                )
-                return
-
-            await message.answer(f"🎤 Распознано: {text}")
-
-            await bot.send_chat_action(message.chat.id, "typing")
             reply = await llm.chat(message.from_user.id, text)
             await message.answer(reply)
-
         except Exception:
-            logger.exception("Ошибка обработки голоса user_id=%s", message.from_user.id)
+            logger.exception("Ошибка LLM для голоса user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз.")
+
+    # ── Фотографии ────────────────────────────────────────────────────────────
+
+    @dp.message(lambda m: m.photo is not None)
+    async def handle_photo(message: Message) -> None:
+        if not message.from_user or not message.photo:
+            return
+
+        await bot.send_chat_action(message.chat.id, "typing")
+
+        # Берём фото максимального качества (последнее в списке)
+        best_photo: PhotoSize = message.photo[-1]
+
+        if best_photo.file_size and best_photo.file_size > _MAX_PHOTO_BYTES:
+            await message.answer("⚠️ Фото слишком большое (макс. 20 МБ).")
+            return
+
+        image_bytes = await _download_bytes(bot, best_photo.file_id)
+        if not image_bytes:
+            await message.answer("⚠️ Не удалось скачать фото. Попробуй ещё раз.")
+            return
+
+        # Подпись к фото — вопрос пользователя
+        user_prompt = message.caption or ""
+
+        result = await vision.analyze(image_bytes, user_prompt)
+        if not result:
+            await message.answer(
+                "⚠️ Не смог проанализировать изображение. Попробуй ещё раз."
+            )
+            return
+
+        # Сохраняем в историю разговора
+        caption_note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
+        await llm.save_photo_exchange(
+            message.from_user.id,
+            f"[Пользователь прислал фото{caption_note}]",
+            result,
+        )
+
+        await message.answer(f"🖼️ {result}")
 
     # ── Текстовые сообщения ───────────────────────────────────────────────────
 
@@ -171,10 +221,10 @@ async def main() -> None:
                 "⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear"
             )
 
-    # ── Запуск ────────────────────────────────────────────────────────────────
+    # ── Запуск с graceful shutdown ────────────────────────────────────────────
 
     logger.info(
-        "🤖 Бот запускается | модель: %s | поиск: %s | голос: вкл",
+        "🤖 Бот запущен | модель: %s | поиск: %s | голос: вкл | фото: вкл",
         settings.model_name,
         "вкл" if settings.search_enabled else "выкл",
     )
