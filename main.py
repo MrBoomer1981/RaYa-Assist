@@ -38,8 +38,7 @@ async def main() -> None:
         name = message.from_user.first_name if message.from_user else "друг"
         await message.answer(
             f"Привет, {name}! 👋\n\n"
-            "Я твой ИИ-ассистент на базе Llama 3.\n"
-            "Помню нашу историю даже после перезапуска!\n\n"
+            "Я твой ИИ-ассистент RaYa.\n"
             "Команды:\n"
             "/clear — очистить историю разговора\n"
             "/help — помощь"
