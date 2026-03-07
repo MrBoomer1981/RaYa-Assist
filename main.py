@@ -10,7 +10,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from app.config import settings
-from app.database import init_db, clear_history
+from app.database import init_db, clear_history, clear_memory, load_memory
 from app.llm_service import LLMService
 
 logging.basicConfig(
@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
-    # Инициализируем базу данных
     init_db()
 
     bot = Bot(
@@ -35,11 +34,16 @@ async def main() -> None:
 
     @dp.message(Command("start"))
     async def start(message: Message) -> None:
-        name = message.from_user.first_name if message.from_user else "друг"
+        if not message.from_user:
+            return
+        name = message.from_user.first_name
         await message.answer(
             f"Привет, {name}! 👋\n\n"
-            "Я твой ИИ-ассистент RaYa.\n"
+            "Я твой личный ИИ-ассистент RaYa.\n"
+            "Запоминаю тебя и наши разговоры навсегда!\n\n"
             "Команды:\n"
+            "/memory — что я о тебе помню\n"
+            "/forget — удалить память обо мне\n"
             "/clear — очистить историю разговора\n"
             "/help — помощь"
         )
@@ -47,19 +51,44 @@ async def main() -> None:
     @dp.message(Command("help"))
     async def help_command(message: Message) -> None:
         await message.answer(
-            "🤖 Я ИИ-ассистент. Вот что я умею:\n\n"
-            "• Отвечать на вопросы\n"
-            "• Помогать с текстами и идеями\n"
-            "• Объяснять сложные темы\n"
-            "• Помнить историю даже после перезапуска\n\n"
-            "/clear — начать разговор заново"
+            "🤖 Я личный ИИ-ассистент RaYa.\n\n"
+            "Что умею:\n"
+            "• Отвечать на вопросы на любом языке\n"
+            "• Помнить факты о тебе между сессиями\n"
+            "• Сохранять историю наших разговоров\n"
+            "• Помогать с текстами, идеями и планами\n\n"
+            "/memory — показать что знаю о тебе\n"
+            "/forget — удалить память о тебе\n"
+            "/clear — очистить историю разговора"
         )
+
+    @dp.message(Command("memory"))
+    async def memory_command(message: Message) -> None:
+        if not message.from_user:
+            return
+        facts = load_memory(message.from_user.id)
+        if facts:
+            facts_text = "\n".join(f"• {f}" for f in facts)
+            await message.answer(f"🧠 Вот что я о тебе знаю:\n\n{facts_text}")
+        else:
+            await message.answer(
+                "🧠 Пока ничего о тебе не знаю.\n"
+                "Расскажи немного о себе — запомню!"
+            )
+
+    @dp.message(Command("forget"))
+    async def forget_command(message: Message) -> None:
+        if not message.from_user:
+            return
+        clear_memory(message.from_user.id)
+        await message.answer("🗑️ Память о тебе удалена. Начинаем знакомство заново!")
 
     @dp.message(Command("clear"))
     async def cmd_clear(message: Message) -> None:
-        if message.from_user:
-            clear_history(message.from_user.id)
-        await message.answer("🗑️ История очищена. Начинаем заново!")
+        if not message.from_user:
+            return
+        clear_history(message.from_user.id)
+        await message.answer("🗑️ История разговора очищена. Память о тебе сохранена!")
 
     @dp.message()
     async def handle_message(message: Message) -> None:
