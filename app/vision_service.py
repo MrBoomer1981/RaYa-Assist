@@ -62,9 +62,9 @@ class VisionService:
             logger.info("🖼️ Изображение проанализировано: %d символов", len(result))
             return result.strip()
 
-        except Exception:
-            logger.exception("Ошибка анализа изображения")
-            return ""
+        except Exception as e:
+            logger.exception("Ошибка анализа: %s", str(e))
+            return str(e)  # временно возвращаем текст ошибки боту
 
 
 def _detect_media_type(data: bytes) -> str:
