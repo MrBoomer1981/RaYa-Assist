@@ -22,6 +22,28 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def _build_help_text() -> str:
+    """Формирует текст помощи — динамически включает поиск если он включён."""
+    lines = [
+        "🤖 Я личный ИИ-ассистент RaYa.\n",
+        "Что умею:",
+        "• Отвечать на вопросы на любом языке",
+        "• Помнить факты о тебе между сессиями",
+        "• Сохранять историю наших разговоров",
+        "• Помогать с текстами, идеями и планами",
+    ]
+    if settings.search_enabled:
+        lines.append("• Искать актуальную информацию в интернете 🔍")
+
+    lines += [
+        "\nКоманды:",
+        "/memory — показать что знаю о тебе",
+        "/forget — удалить память о тебе",
+        "/clear — очистить историю разговора",
+    ]
+    return "\n".join(lines)
+
+
 async def main() -> None:
     init_db()
 
@@ -32,38 +54,30 @@ async def main() -> None:
     dp = Dispatcher()
     llm = LLMService()
 
+    # ── Команды ───────────────────────────────────────────────────────────────
+
     @dp.message(Command("start"))
-    async def start(message: Message) -> None:
+    async def cmd_start(message: Message) -> None:
         if not message.from_user:
             return
-        name = message.from_user.first_name
+        name = message.from_user.first_name or "друг"
+        search_line = "\n• Искать актуальную информацию 🔍" if settings.search_enabled else ""
         await message.answer(
             f"Привет, {name}! 👋\n\n"
-            "Я твой личный ИИ-ассистент RaYa.\n"
-            "Запоминаю тебя и наши разговоры навсегда!\n\n"
-            "Команды:\n"
-            "/memory — что я о тебе помню\n"
-            "/forget — удалить память обо мне\n"
-            "/clear — очистить историю разговора\n"
-            "/help — помощь"
+            f"Я твой личный ИИ-ассистент RaYa.\n"
+            f"Умею:\n"
+            f"• Запоминать тебя и наши разговоры навсегда"
+            f"{search_line}\n"
+            f"• Помогать с любыми задачами\n\n"
+            f"Напиши что-нибудь — начнём! /help для списка команд."
         )
 
     @dp.message(Command("help"))
-    async def help_command(message: Message) -> None:
-        await message.answer(
-            "🤖 Я личный ИИ-ассистент RaYa.\n\n"
-            "Что умею:\n"
-            "• Отвечать на вопросы на любом языке\n"
-            "• Помнить факты о тебе между сессиями\n"
-            "• Сохранять историю наших разговоров\n"
-            "• Помогать с текстами, идеями и планами\n\n"
-            "/memory — показать что знаю о тебе\n"
-            "/forget — удалить память о тебе\n"
-            "/clear — очистить историю разговора"
-        )
+    async def cmd_help(message: Message) -> None:
+        await message.answer(_build_help_text())
 
     @dp.message(Command("memory"))
-    async def memory_command(message: Message) -> None:
+    async def cmd_memory(message: Message) -> None:
         if not message.from_user:
             return
         facts = load_memory(message.from_user.id)
@@ -77,7 +91,7 @@ async def main() -> None:
             )
 
     @dp.message(Command("forget"))
-    async def forget_command(message: Message) -> None:
+    async def cmd_forget(message: Message) -> None:
         if not message.from_user:
             return
         clear_memory(message.from_user.id)
@@ -99,13 +113,23 @@ async def main() -> None:
             reply = await llm.chat(message.from_user.id, message.text)
             await message.answer(reply)
         except Exception:
-            logger.exception("Ошибка user_id=%s", message.from_user.id)
+            logger.exception("Ошибка при обработке user_id=%s", message.from_user.id)
             await message.answer(
                 "⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear"
             )
 
-    logger.info("🤖 Бот запускается (модель: %s)...", settings.model_name)
-    await dp.start_polling(bot, drop_pending_updates=True)
+    # ── Запуск с graceful shutdown ────────────────────────────────────────────
+
+    logger.info(
+        "🤖 Бот запускается | модель: %s | поиск: %s",
+        settings.model_name,
+        "вкл" if settings.search_enabled else "выкл",
+    )
+    try:
+        await dp.start_polling(bot, drop_pending_updates=True)
+    finally:
+        await bot.session.close()
+        logger.info("🛑 Бот остановлен, соединения закрыты")
 
 
 if __name__ == "__main__":

@@ -3,3 +3,4 @@ langchain-groq
 langchain-core
 pydantic-settings
 python-dotenv
+tavily-python

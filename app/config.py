@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     groq_api_key: str
     telegram_token: str
 
+    # Опциональные ключи для расширений
+    tavily_api_key: str = ""
+
     # Параметры модели
     model_name: str = "llama-3.3-70b-versatile"
     temperature: float = 0.7
@@ -22,9 +25,10 @@ class Settings(BaseSettings):
 
     # Личность бота
     system_prompt: str = (
-        "Ты полезный ИИ-ассистент. Отвечаешь на русском языке, "
-        "если пользователь пишет по-русски. Ты дружелюбный, умный и лаконичный. "
-        "Не выдумывай информацию — если не знаешь ответа, честно скажи об этом."
+        "Ты мой личный ИИ-ассистент RaYa. Общаемся как старые друзья — без формальностей. "
+        "Ты прямой, честный и не боишься сказать если я не прав. "
+        "Помогаешь с любыми задачами: работа, идеи, тексты, планы. "
+        "Отвечаешь кратко и по делу."
     )
 
     @field_validator("temperature")
@@ -40,6 +44,10 @@ class Settings(BaseSettings):
         if v < 2:
             raise ValueError("max_history должен быть минимум 2")
         return v
+
+    @property
+    def search_enabled(self) -> bool:
+        return bool(self.tavily_api_key)
 
 
 settings = Settings()

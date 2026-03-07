@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+from collections.abc import Coroutine
+from typing import Any, Optional
 from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 
@@ -9,10 +11,17 @@ from app.database import load_history, save_messages, load_memory, save_memory
 
 logger = logging.getLogger(__name__)
 
-# Запускаем извлечение фактов только каждые N сообщений — экономим API лимит
-MEMORY_EXTRACTION_EVERY_N = 5
+# Извлекаем факты каждые N сообщений — экономим API лимит Groq
+_MEMORY_EXTRACTION_EVERY_N = 5
 
-MEMORY_EXTRACTION_PROMPT = """\
+# Ключевые слова для определения нужен ли поиск — без лишнего API запроса
+_SEARCH_KEYWORDS: tuple[str, ...] = (
+    "новост", "сейчас", "сегодня", "вчера", "курс", "цена", "погод",
+    "актуальн", "последн", "недавно", "2024", "2025", "2026",
+    "что происходит", "найди", "поищи", "узнай",
+)
+
+_MEMORY_EXTRACTION_PROMPT = """\
 Проанализируй сообщение пользователя и извлеки важные факты о нём.
 Интересуют: имя, возраст, профессия, город, интересы, цели, важные детали жизни.
 
@@ -24,7 +33,7 @@ MEMORY_EXTRACTION_PROMPT = """\
 
 
 class LLMService:
-    """Сервис для работы с языковой моделью."""
+    """Сервис для общения с языковой моделью Groq."""
 
     def __init__(self) -> None:
         self._llm = ChatGroq(
@@ -32,65 +41,133 @@ class LLMService:
             model=settings.model_name,
             temperature=settings.temperature,
         )
-        # Счётчик сообщений на пользователя для throttling извлечения фактов
+
+        # Ленивая инициализация поиска — только если ключ задан
+        self._search: Optional[Any] = None
+        if settings.search_enabled:
+            from app.search_service import SearchService
+            self._search = SearchService()
+            logger.info("🔍 Поиск в интернете включён")
+
+        # Счётчик сообщений для throttling извлечения фактов
         self._msg_counter: dict[int, int] = {}
 
+        # Явно хранимые ссылки на фоновые задачи —
+        # без этого Python GC может уничтожить задачу до завершения
+        self._background_tasks: set[asyncio.Task[None]] = set()
+
+    # ── Вспомогательные методы ────────────────────────────────────────────────
+
+    def _run_background(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Запускает корутину в фоне, защищая задачу от сборщика мусора."""
+        task: asyncio.Task[None] = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _needs_search(self, message: str) -> bool:
+        """Проверяет нужен ли поиск по ключевым словам — без API запроса."""
+        if not self._search:
+            return False
+        msg_lower = message.lower()
+        return any(kw in msg_lower for kw in _SEARCH_KEYWORDS)
+
+    def _should_extract_facts(self, user_id: int) -> bool:
+        """Возвращает True для каждого N-го сообщения пользователя."""
+        count = self._msg_counter.get(user_id, 0) + 1
+        self._msg_counter[user_id] = count
+        return count % _MEMORY_EXTRACTION_EVERY_N == 1
+
+    def _build_system_prompt(self, memory_facts: list[str]) -> str:
+        """Формирует системный промпт, добавляя факты о пользователе."""
+        if not memory_facts:
+            return settings.system_prompt
+        facts_text = "\n".join(f"- {f}" for f in memory_facts)
+        return (
+            f"{settings.system_prompt}\n\n"
+            f"Что ты знаешь об этом пользователе:\n{facts_text}"
+        )
+
+    # ── Фоновые задачи ────────────────────────────────────────────────────────
+
     async def _extract_facts_background(self, user_id: int, message: str) -> None:
-        """Извлекает факты из сообщения в фоне — не блокирует ответ."""
+        """Извлекает и сохраняет факты о пользователе из его сообщения."""
         try:
-            prompt = MEMORY_EXTRACTION_PROMPT.format(message=message)
+            prompt = _MEMORY_EXTRACTION_PROMPT.format(message=message)
             response = await self._llm.ainvoke([HumanMessage(content=prompt)])
-            text = response.content.strip().replace("```json", "").replace("```", "").strip()
+            text = (
+                str(response.content)
+                .strip()
+                .replace("```json", "")
+                .replace("```", "")
+                .strip()
+            )
             facts: list[str] = json.loads(text)
             if isinstance(facts, list) and facts:
                 save_memory(user_id, facts)
         except Exception:
             logger.debug("Не удалось извлечь факты для user_id=%s", user_id)
 
-    def _should_extract_facts(self, user_id: int) -> bool:
-        """Проверяет нужно ли извлекать факты для этого сообщения."""
-        count = self._msg_counter.get(user_id, 0) + 1
-        self._msg_counter[user_id] = count
-        return count % MEMORY_EXTRACTION_EVERY_N == 1  # 1-е, 6-е, 11-е...
+    # ── Основной метод ────────────────────────────────────────────────────────
 
     async def chat(self, user_id: int, user_message: str) -> str:
-        """Отправляет сообщение модели и возвращает ответ."""
-
-        # Загружаем историю и память параллельно
+        """
+        Обрабатывает сообщение пользователя:
+        1. При необходимости выполняет поиск в интернете
+        2. Загружает историю и долгосрочную память
+        3. Получает ответ от модели
+        4. В фоне извлекает факты о пользователе
+        """
+        # Загружаем данные из БД
         history = load_history(user_id, limit=settings.max_history)
         memory_facts = load_memory(user_id)
 
-        # Формируем системный промпт с долгосрочной памятью
-        system = settings.system_prompt
-        if memory_facts:
-            facts_text = "\n".join(f"- {f}" for f in memory_facts)
-            system += f"\n\nЧто ты знаешь об этом пользователе:\n{facts_text}"
+        # Запускаем поиск параллельно — пока готовим промпт
+        search_task: Optional[asyncio.Task[str]] = None
+        if self._needs_search(user_message) and self._search is not None:
+            search_task = asyncio.create_task(
+                self._search.search(user_message)
+            )
+
+        system = self._build_system_prompt(memory_facts)
+
+        # Ждём результат поиска и добавляем в сообщение
+        final_message = user_message
+        if search_task is not None:
+            try:
+                search_results = await search_task
+                if search_results:
+                    final_message = (
+                        f"{user_message}\n\n"
+                        f"[Контекст из поиска — используй для ответа:]\n"
+                        f"{search_results}"
+                    )
+                    logger.info("user_id=%s | поиск добавлен в контекст", user_id)
+            except Exception:
+                logger.exception("user_id=%s | ошибка при получении поиска", user_id)
+                search_task.cancel()
 
         messages: list[BaseMessage] = [
             SystemMessage(content=system),
             *history,
-            HumanMessage(content=user_message),
+            HumanMessage(content=final_message),
         ]
 
-        # Основной запрос и фоновое извлечение фактов запускаем параллельно
-        tasks: list[asyncio.Task] = [
-            asyncio.create_task(self._llm.ainvoke(messages))
-        ]
-        if self._should_extract_facts(user_id):
-            tasks.append(
-                asyncio.create_task(
-                    self._extract_facts_background(user_id, user_message)
-                )
-            )
-
-        # Ждём только основной запрос — факты могут досчитываться в фоне
-        response = await tasks[0]
+        # Основной запрос к модели
+        response = await self._llm.ainvoke(messages)
         reply = str(response.content)
 
-        # Сохраняем диалог
+        # Сохраняем диалог в БД
         save_messages(user_id, user_message, reply)
 
-        usage = getattr(response, "usage_metadata", None)
-        logger.debug("user_id=%s | usage=%s", user_id, usage)
+        # Запускаем извлечение фактов в фоне — не замедляет ответ
+        if self._should_extract_facts(user_id):
+            self._run_background(
+                self._extract_facts_background(user_id, user_message)
+            )
 
+        logger.debug(
+            "user_id=%s | usage=%s",
+            user_id,
+            getattr(response, "usage_metadata", None),
+        )
         return reply
