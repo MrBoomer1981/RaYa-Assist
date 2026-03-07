@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import warnings
 
@@ -12,6 +13,7 @@ from aiogram.types import Message
 from app.config import settings
 from app.database import init_db, clear_history, clear_memory, load_memory
 from app.llm_service import LLMService
+from app.voice_service import VoiceService
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -23,18 +25,17 @@ logger = logging.getLogger(__name__)
 
 
 def _build_help_text() -> str:
-    """Формирует текст помощи — динамически включает поиск если он включён."""
     lines = [
         "🤖 Я личный ИИ-ассистент RaYa.\n",
         "Что умею:",
         "• Отвечать на вопросы на любом языке",
         "• Помнить факты о тебе между сессиями",
         "• Сохранять историю наших разговоров",
+        "• Принимать голосовые сообщения 🎤",
         "• Помогать с текстами, идеями и планами",
     ]
     if settings.search_enabled:
         lines.append("• Искать актуальную информацию в интернете 🔍")
-
     lines += [
         "\nКоманды:",
         "/memory — показать что знаю о тебе",
@@ -53,6 +54,7 @@ async def main() -> None:
     )
     dp = Dispatcher()
     llm = LLMService()
+    voice = VoiceService()
 
     # ── Команды ───────────────────────────────────────────────────────────────
 
@@ -61,15 +63,19 @@ async def main() -> None:
         if not message.from_user:
             return
         name = message.from_user.first_name or "друг"
-        search_line = "\n• Искать актуальную информацию 🔍" if settings.search_enabled else ""
+        search_line = (
+            "\n• Искать актуальную информацию 🔍"
+            if settings.search_enabled else ""
+        )
         await message.answer(
             f"Привет, {name}! 👋\n\n"
             f"Я твой личный ИИ-ассистент RaYa.\n"
             f"Умею:\n"
-            f"• Запоминать тебя и наши разговоры навсегда"
+            f"• Запоминать тебя и наши разговоры навсегда\n"
+            f"• Принимать голосовые сообщения 🎤"
             f"{search_line}\n"
             f"• Помогать с любыми задачами\n\n"
-            f"Напиши что-нибудь — начнём! /help для списка команд."
+            f"Напиши или надиктуй что-нибудь — начнём! /help для команд."
         )
 
     @dp.message(Command("help"))
@@ -104,6 +110,53 @@ async def main() -> None:
         clear_history(message.from_user.id)
         await message.answer("🗑️ История разговора очищена. Память о тебе сохранена!")
 
+    # ── Голосовые сообщения ───────────────────────────────────────────────────
+
+    @dp.message(lambda m: m.voice is not None)
+    async def handle_voice(message: Message) -> None:
+        if not message.from_user or not message.voice:
+            return
+
+        await bot.send_chat_action(message.chat.id, "typing")
+
+        try:
+            file = await bot.get_file(message.voice.file_id)
+            if not file.file_path:
+                await message.answer("⚠️ Не удалось получить файл.")
+                return
+
+            # download_file возвращает BytesIO — читаем правильно
+            downloaded = await bot.download_file(file.file_path)
+            if downloaded is None:
+                await message.answer("⚠️ Не удалось скачать аудио.")
+                return
+
+            audio_bytes = (
+                downloaded.read()
+                if isinstance(downloaded, io.IOBase)
+                else bytes(downloaded)
+            )
+
+            text = await voice.transcribe(audio_bytes)
+            if not text:
+                await message.answer(
+                    "⚠️ Не смог распознать голос.\n"
+                    "Попробуй говорить чётче или запиши снова."
+                )
+                return
+
+            await message.answer(f"🎤 Распознано: {text}")
+
+            await bot.send_chat_action(message.chat.id, "typing")
+            reply = await llm.chat(message.from_user.id, text)
+            await message.answer(reply)
+
+        except Exception:
+            logger.exception("Ошибка обработки голоса user_id=%s", message.from_user.id)
+            await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз.")
+
+    # ── Текстовые сообщения ───────────────────────────────────────────────────
+
     @dp.message()
     async def handle_message(message: Message) -> None:
         if not message.text or not message.from_user:
@@ -113,15 +166,15 @@ async def main() -> None:
             reply = await llm.chat(message.from_user.id, message.text)
             await message.answer(reply)
         except Exception:
-            logger.exception("Ошибка при обработке user_id=%s", message.from_user.id)
+            logger.exception("Ошибка user_id=%s", message.from_user.id)
             await message.answer(
                 "⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear"
             )
 
-    # ── Запуск с graceful shutdown ────────────────────────────────────────────
+    # ── Запуск ────────────────────────────────────────────────────────────────
 
     logger.info(
-        "🤖 Бот запускается | модель: %s | поиск: %s",
+        "🤖 Бот запускается | модель: %s | поиск: %s | голос: вкл",
         settings.model_name,
         "вкл" if settings.search_enabled else "выкл",
     )

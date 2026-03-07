@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Optional
 from tavily import AsyncTavilyClient
 
 from app.config import settings
@@ -17,7 +17,7 @@ class SearchService:
         self._client = AsyncTavilyClient(api_key=settings.tavily_api_key)
 
     @staticmethod
-    def _format_result(r: dict[str, Any]) -> str | None:
+    def _format_result(r: dict[str, Any]) -> Optional[str]:
         """Форматирует один результат поиска в читаемую строку."""
         title = r.get("title", "").strip()
         content = r.get("content", "").strip()[:_RESULT_SNIPPET_LEN]
