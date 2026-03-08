@@ -310,6 +310,31 @@ async def main() -> None:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
 
+    @dp.message(Command("debug_time"))
+    async def cmd_debug_time(message: Message) -> None:
+        """Временная команда диагностики времени и напоминаний в БД."""
+        if not message.from_user:
+            return
+        import sqlite3
+        from app.database import DB_PATH
+        now_utc = datetime.utcnow()
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(
+            "SELECT id, text, remind_at, done FROM reminders "
+            "WHERE user_id = ? ORDER BY id DESC LIMIT 5",
+            (message.from_user.id,)
+        ).fetchall()
+        conn.close()
+        lines = [f"🕐 Сейчас UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"]
+        if rows:
+            lines.append("Последние напоминания в БД:")
+            for rid, text, rat, done in rows:
+                status = "✅ выполнено" if done else "⏳ ожидает"
+                lines.append(f"[{rid}] {rat} — {text} ({status})")
+        else:
+            lines.append("Напоминаний в БД нет.")
+        await message.answer("\n".join(lines))
+
     # ── Текстовые сообщения ───────────────────────────────────────────────────
 
     @dp.message()
@@ -319,23 +344,20 @@ async def main() -> None:
 
         await bot.send_chat_action(message.chat.id, "typing")
 
-        # Проверяем — не напоминание ли это (параллельно с основным запросом)
-        reminder_task = asyncio.create_task(
-            llm.extract_reminder(message.from_user.id, message.text)
-        )
-
         try:
             reply = await llm.chat(message.from_user.id, message.text)
             await message.answer(reply)
         except Exception:
             logger.exception("Ошибка user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear")
-            reminder_task.cancel()
             return
 
-        # Обрабатываем результат проверки на напоминание
+        # Проверяем напоминание ПОСЛЕ ответа — последовательно
+        # не конкурируем с основным запросом за Groq лимит
         try:
-            reminder_data = await reminder_task
+            reminder_data = await llm.extract_reminder(
+                message.from_user.id, message.text
+            )
             if reminder_data:
                 remind_at = datetime.strptime(
                     reminder_data["remind_at"], "%Y-%m-%d %H:%M"
@@ -345,12 +367,17 @@ async def main() -> None:
                     reminder_data["text"],
                     remind_at,
                 )
+                logger.info(
+                    "⏰ Напоминание #%d сохранено user_id=%s: '%s' в %s UTC",
+                    rid, message.from_user.id,
+                    reminder_data["text"], reminder_data["remind_at"],
+                )
                 await message.answer(
-                    f"⏰ Напоминание #{rid} установлено: "
-                    f"{reminder_data['text']} — {reminder_data['remind_at']}"
+                    f"⏰ Записал, Сократ. Напомню: {reminder_data['text']}\n"
+                    f"Время: {reminder_data['remind_at']} UTC (#{rid})"
                 )
         except Exception:
-            logger.debug("Не удалось обработать напоминание для user_id=%s", message.from_user.id)
+            logger.exception("Ошибка extract_reminder user_id=%s", message.from_user.id)
 
     # ── Запуск ────────────────────────────────────────────────────────────────
 
