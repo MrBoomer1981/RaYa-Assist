@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Модель для генерации — FLUX.1-schnell быстрая и бесплатная
 _HF_MODEL = "black-forest-labs/FLUX.1-schnell"
-_HF_API_URL = f"https://api-inference.huggingface.co/models/{_HF_MODEL}"
+_HF_API_URL = f"https://router.huggingface.co/hf-inference/models/{_HF_MODEL}"
 
 _SYSTEM = """\
 Ты агент генерации изображений в команде RaYa.
