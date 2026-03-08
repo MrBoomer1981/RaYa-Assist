@@ -38,8 +38,7 @@ class ChatResult:
     """Результат одного обращения к модели."""
     reply: str
     reminder: Optional[dict] = field(default=None)
-    agent_name: str = "raya"                        # какой агент ответил
-    metadata: dict = field(default_factory=dict)    # доп. данные агента
+    # reminder = {"text": str, "remind_at": "YYYY-MM-DD HH:MM:SS"} или None
 
 
 def _build_chat_system(base_prompt: str, now_utc: datetime) -> str:
@@ -243,12 +242,7 @@ class LLMService:
             "user_id=%s | агент=%s | reminder=%s",
             user_id, agent_result.agent_name, reminder is not None,
         )
-        return ChatResult(
-            reply=reply,
-            reminder=reminder,
-            agent_name=agent_result.agent_name,
-            metadata=agent_result.metadata or {},
-        )
+        return ChatResult(reply=reply, reminder=reminder)
 
     # ── Вспомогательные методы для других обработчиков ───────────────────────
 

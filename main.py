@@ -102,11 +102,25 @@ async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
 async def _handle_chat_result(
     message: Message,
     result: ChatResult,
+    bot: Bot,
 ) -> None:
     """
-    Отправляет ответ пользователю и сохраняет напоминание если есть.
-    Вынесено отдельно — используется и для текста и для голоса.
+    Отправляет ответ пользователю.
+    Обрабатывает: текст, изображения от ImageAgent, напоминания.
     """
+    # Изображение от ImageAgent — отправляем как фото
+    if result.agent_name and "image" in result.agent_name:
+        image_bytes = (result.metadata or {}).get("image_bytes")
+        if image_bytes:
+            from aiogram.types import BufferedInputFile
+            await message.answer_photo(
+                photo=BufferedInputFile(image_bytes, filename="image.jpg"),
+                caption=result.reply[:1024] if result.reply else None,
+            )
+        else:
+            await message.answer(result.reply)
+        return
+
     await message.answer(result.reply)
 
     if result.reminder:
@@ -254,7 +268,7 @@ async def main() -> None:
 
         try:
             result = await llm.chat(message.from_user.id, text)
-            await _handle_chat_result(message, result)
+            await _handle_chat_result(message, result, bot)
         except Exception:
             logger.exception("Ошибка LLM для голоса user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка.")
@@ -379,18 +393,21 @@ async def main() -> None:
 
         try:
             result = await llm.chat(message.from_user.id, message.text)
-            await _handle_chat_result(message, result)
+            await _handle_chat_result(message, result, bot)
         except Exception:
             logger.exception("Ошибка user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear")
 
     # ── Запуск ────────────────────────────────────────────────────────────────
 
+    from app.agents.registry import get_enabled_agents
+    agent_names = [a.name for a in get_enabled_agents()]
     logger.info(
-        "🤖 RaYa запущена | модель: %s | поиск: %s | защита: %s",
+        "🤖 RaYa запущена | модель: %s | поиск: %s | защита: %s | агенты: %s",
         settings.model_name,
         "вкл" if settings.search_enabled else "выкл",
         "вкл" if settings.security_enabled else "выкл",
+        ", ".join(agent_names),
     )
 
     scheduler.start()
