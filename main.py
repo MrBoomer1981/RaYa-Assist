@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import tempfile
 import warnings
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*")
@@ -8,10 +10,11 @@ warnings.filterwarnings("ignore", message=".*Pydantic V1.*")
 from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message, PhotoSize, TelegramObject, Voice
+from aiogram.types import Document, Message, PhotoSize, TelegramObject, Voice
 
 from app.config import settings
 from app.database import init_db, clear_history, clear_memory, load_memory
+from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService
 from app.voice_service import VoiceService
 from app.vision_service import VisionService
@@ -24,8 +27,7 @@ logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-_MAX_VOICE_BYTES = 20 * 1024 * 1024
-_MAX_PHOTO_BYTES = 20 * 1024 * 1024
+_MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 МБ — единый лимит для всех файлов
 
 
 # ── Безопасность ──────────────────────────────────────────────────────────────
@@ -52,7 +54,7 @@ class AccessMiddleware(BaseMiddleware):
 
         if user.id not in settings.allowed_ids:
             logger.warning("🚫 Доступ запрещён: user_id=%s", user.id)
-            return  # тихо игнорируем
+            return  # тихо игнорируем — не отвечаем чужим
 
         return await handler(event, data)
 
@@ -68,6 +70,7 @@ def _build_help_text() -> str:
         "• Сохранять историю наших разговоров",
         "• Принимать голосовые сообщения 🎤",
         "• Анализировать фотографии и изображения 🖼️",
+        "• Читать и анализировать PDF и Word документы 📄",
         "• Помогать с текстами, идеями и планами",
     ]
     if settings.search_enabled:
@@ -102,8 +105,6 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=None),
     )
     dp = Dispatcher()
-
-    # Подключаем middleware безопасности глобально
     dp.message.middleware(AccessMiddleware())
 
     llm = LLMService()
@@ -127,10 +128,11 @@ async def main() -> None:
             f"Умею:\n"
             f"• Запоминать тебя и наши разговоры навсегда\n"
             f"• Принимать голосовые сообщения 🎤\n"
-            f"• Анализировать фотографии 🖼️"
+            f"• Анализировать фотографии 🖼️\n"
+            f"• Читать PDF и Word документы 📄"
             f"{search_line}\n"
             f"• Помогать с любыми задачами\n\n"
-            f"Напиши, надиктуй или пришли фото — начнём!\n/help для команд."
+            f"Напиши, надиктуй, пришли фото или документ — начнём!\n/help для команд."
         )
 
     @dp.message(Command("help"))
@@ -173,7 +175,7 @@ async def main() -> None:
             return
 
         voice_info: Voice = message.voice
-        if voice_info.file_size and voice_info.file_size > _MAX_VOICE_BYTES:
+        if voice_info.file_size and voice_info.file_size > _MAX_FILE_BYTES:
             await message.answer("⚠️ Голосовое сообщение слишком длинное (макс. 20 МБ).")
             return
 
@@ -212,7 +214,7 @@ async def main() -> None:
         await bot.send_chat_action(message.chat.id, "typing")
 
         best_photo: PhotoSize = message.photo[-1]
-        if best_photo.file_size and best_photo.file_size > _MAX_PHOTO_BYTES:
+        if best_photo.file_size and best_photo.file_size > _MAX_FILE_BYTES:
             await message.answer("⚠️ Фото слишком большое (макс. 20 МБ).")
             return
 
@@ -235,8 +237,91 @@ async def main() -> None:
             f"[Пользователь прислал фото{caption_note}]",
             result,
         )
-
         await message.answer(f"🖼️ {result}")
+
+    # ── Документы ─────────────────────────────────────────────────────────────
+
+    @dp.message(lambda m: m.document is not None)
+    async def handle_document(message: Message) -> None:
+        if not message.from_user or not message.document:
+            return
+
+        doc: Document = message.document
+        file_name = doc.file_name or "документ"
+        suffix = Path(file_name).suffix.lower()
+
+        # Проверяем поддерживаемый формат
+        if suffix not in SUPPORTED_EXTENSIONS:
+            supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+            await message.answer(
+                f"⚠️ Формат {suffix or 'неизвестный'} не поддерживается.\n"
+                f"Принимаю: {supported}"
+            )
+            return
+
+        # Проверяем размер
+        if doc.file_size and doc.file_size > _MAX_FILE_BYTES:
+            await message.answer("⚠️ Файл слишком большой (макс. 20 МБ).")
+            return
+
+        await bot.send_chat_action(message.chat.id, "typing")
+        await message.answer(f"📄 Читаю {file_name}...")
+
+        # Скачиваем файл
+        file_bytes = await _download_bytes(bot, doc.file_id)
+        if not file_bytes:
+            await message.answer("⚠️ Не удалось скачать файл. Попробуй ещё раз.")
+            return
+
+        # Сохраняем во временный файл с правильным расширением
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = Path(tmp.name)
+
+            # Извлекаем текст
+            try:
+                result = extract_text(tmp_path)
+            except (ValueError, RuntimeError) as e:
+                await message.answer(f"⚠️ {e}")
+                return
+
+            if not result.text:
+                await message.answer(
+                    "⚠️ Не удалось извлечь текст из документа.\n"
+                    "Возможно, это сканированный PDF или защищённый файл."
+                )
+                return
+
+            # Формируем уведомление о документе
+            info_parts = [f"📄 Прочитал: {file_name}"]
+            if result.pages:
+                info_parts.append(f"Страниц: {result.pages}")
+            info_parts.append(f"Символов: {len(result.text):,}")
+            if result.truncated:
+                info_parts.append("⚠️ Текст обрезан до лимита — анализирую начало.")
+            await message.answer("\n".join(info_parts))
+
+            # Отвечаем на вопрос пользователя по документу
+            await bot.send_chat_action(message.chat.id, "typing")
+            user_question = message.caption or ""
+
+            try:
+                reply = await llm.chat_with_document(
+                    user_id=message.from_user.id,
+                    doc_text=result.text,
+                    user_question=user_question,
+                    doc_name=file_name,
+                )
+                await message.answer(reply)
+            except Exception:
+                logger.exception("Ошибка LLM для документа user_id=%s", message.from_user.id)
+                await message.answer("⚠️ Произошла ошибка при анализе. Попробуй ещё раз.")
+
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
     # ── Текстовые сообщения ───────────────────────────────────────────────────
 
@@ -257,10 +342,10 @@ async def main() -> None:
     # ── Запуск ────────────────────────────────────────────────────────────────
 
     logger.info(
-        "🤖 Бот запущен | модель: %s | поиск: %s | голос: вкл | фото: вкл | защита: %s",
+        "🤖 Бот запущен | модель: %s | поиск: %s | голос: вкл | фото: вкл | документы: вкл | защита: %s",
         settings.model_name,
         "вкл" if settings.search_enabled else "выкл",
-        "вкл" if settings.security_enabled else "выкл (открытый доступ)",
+        "вкл" if settings.security_enabled else "выкл",
     )
     try:
         await dp.start_polling(bot, drop_pending_updates=True)

@@ -164,3 +164,43 @@ class LLMService:
         Вызывается из main.py после успешного анализа изображения.
         """
         save_messages(user_id, user_note, vision_result)
+
+    async def chat_with_document(
+        self,
+        user_id: int,
+        doc_text: str,
+        user_question: str,
+        doc_name: str = "документ",
+    ) -> str:
+        """
+        Отвечает на вопрос по содержимому документа.
+        Документ передаётся как контекст — не сохраняется в историю целиком.
+        """
+        memory_facts = load_memory(user_id)
+        system = self._build_system_prompt(memory_facts)
+
+        question = user_question.strip() or "Кратко изложи содержание документа."
+
+        combined = (
+            f"Вот содержимое документа «{doc_name}»:\n\n"
+            f"{doc_text}\n\n"
+            f"Вопрос: {question}"
+        )
+
+        messages: list[BaseMessage] = [
+            SystemMessage(content=system),
+            HumanMessage(content=combined),
+        ]
+
+        response = await self._llm.ainvoke(messages)
+        reply = str(response.content)
+
+        # В историю пишем только краткую запись — не весь текст документа
+        save_messages(
+            user_id,
+            f"[Документ: {doc_name}] {question}",
+            reply,
+        )
+
+        logger.debug("user_id=%s | документ обработан: %s", user_id, doc_name)
+        return reply

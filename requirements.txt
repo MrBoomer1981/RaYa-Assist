@@ -5,3 +5,5 @@ pydantic-settings
 python-dotenv
 tavily-python
 groq
+PyMuPDF
+python-docx
