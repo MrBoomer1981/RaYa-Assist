@@ -16,10 +16,10 @@ from aiogram.types import Document, Message, PhotoSize, TelegramObject, Voice
 from app.config import settings
 from app.database import (
     init_db, clear_history, clear_memory, load_memory,
-    save_reminder, get_active_reminders, delete_reminder,
+    save_reminder, get_active_reminders, delete_reminder, DB_PATH,
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
-from app.llm_service import LLMService
+from app.llm_service import LLMService, ChatResult
 from app.scheduler_service import SchedulerService
 from app.voice_service import VoiceService
 from app.vision_service import VisionService
@@ -39,7 +39,7 @@ _MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 МБ
 
 class AccessMiddleware(BaseMiddleware):
     """
-    Блокирует сообщения от пользователей не из списка ALLOWED_USER_IDS.
+    Блокирует сообщения не из списка ALLOWED_USER_IDS.
     Если список пуст — пропускает всех (режим разработки).
     Чужим не отвечает — тихо игнорирует.
     """
@@ -83,6 +83,7 @@ def _build_help_text() -> str:
         "/memory — показать что знаю о тебе",
         "/forget — удалить память о тебе",
         "/clear — очистить историю разговора",
+        "/debug_time — диагностика времени и напоминаний",
     ]
     return "\n".join(lines)
 
@@ -96,6 +97,40 @@ async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
     if downloaded is None:
         return None
     return downloaded.read()
+
+
+async def _handle_chat_result(
+    message: Message,
+    result: ChatResult,
+) -> None:
+    """
+    Отправляет ответ пользователю и сохраняет напоминание если есть.
+    Вынесено отдельно — используется и для текста и для голоса.
+    """
+    await message.answer(result.reply)
+
+    if result.reminder:
+        try:
+            remind_str = result.reminder["remind_at"]
+            remind_at = datetime.strptime(remind_str, "%Y-%m-%d %H:%M:%S")
+            rid = save_reminder(
+                message.from_user.id,  # type: ignore[union-attr]
+                result.reminder["text"],
+                remind_at,
+            )
+            logger.info(
+                "⏰ Напоминание #%d сохранено user_id=%s: '%s' в %s UTC",
+                rid,
+                message.from_user.id,  # type: ignore[union-attr]
+                result.reminder["text"],
+                remind_str,
+            )
+            await message.answer(
+                f"⏰ Записал, Сократ. Напомню: {result.reminder['text']}\n"
+                f"Время (UTC): {remind_str} (#{rid})"
+            )
+        except Exception:
+            logger.exception("Ошибка сохранения напоминания")
 
 
 # ── Основной цикл ─────────────────────────────────────────────────────────────
@@ -163,7 +198,31 @@ async def main() -> None:
         lines = ["⏰ Активные напоминания:\n"]
         for rid, text, remind_at in items:
             lines.append(f"[{rid}] {remind_at} — {text}")
-        lines.append("\nЧтобы удалить: напиши 'отмени напоминание [номер]'")
+        lines.append("\nЧтобы удалить — напиши 'отмени напоминание [номер]'")
+        await message.answer("\n".join(lines))
+
+    @dp.message(Command("debug_time"))
+    async def cmd_debug_time(message: Message) -> None:
+        """Диагностика: текущее UTC время сервера и напоминания в БД."""
+        if not message.from_user:
+            return
+        import sqlite3
+        now_utc = datetime.utcnow()
+        conn = sqlite3.connect(str(DB_PATH))
+        rows = conn.execute(
+            "SELECT id, text, remind_at, done FROM reminders "
+            "WHERE user_id = ? ORDER BY id DESC LIMIT 5",
+            (message.from_user.id,),
+        ).fetchall()
+        conn.close()
+        lines = [f"🕐 Сейчас UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"]
+        if rows:
+            lines.append("Последние напоминания в БД:")
+            for rid, text, rat, done in rows:
+                status = "✅ выполнено" if done else "⏳ ожидает"
+                lines.append(f"[{rid}] {rat} — {text} ({status})")
+        else:
+            lines.append("Напоминаний в БД нет.")
         await message.answer("\n".join(lines))
 
     # ── Голосовые сообщения ───────────────────────────────────────────────────
@@ -194,8 +253,8 @@ async def main() -> None:
         await bot.send_chat_action(message.chat.id, "typing")
 
         try:
-            reply = await llm.chat(message.from_user.id, text)
-            await message.answer(reply)
+            result = await llm.chat(message.from_user.id, text)
+            await _handle_chat_result(message, result)
         except Exception:
             logger.exception("Ошибка LLM для голоса user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка.")
@@ -271,12 +330,12 @@ async def main() -> None:
                 tmp_path = Path(tmp.name)
 
             try:
-                result = extract_text(tmp_path)
+                doc_result = extract_text(tmp_path)
             except (ValueError, RuntimeError) as e:
                 await message.answer(f"⚠️ {e}")
                 return
 
-            if not result.text:
+            if not doc_result.text:
                 await message.answer(
                     "⚠️ Не удалось извлечь текст.\n"
                     "Возможно, это сканированный PDF или защищённый файл."
@@ -284,21 +343,20 @@ async def main() -> None:
                 return
 
             info_parts = [f"📄 Прочитал: {file_name}"]
-            if result.pages:
-                info_parts.append(f"Страниц: {result.pages}")
-            info_parts.append(f"Символов: {len(result.text):,}")
-            if result.truncated:
+            if doc_result.pages:
+                info_parts.append(f"Страниц: {doc_result.pages}")
+            info_parts.append(f"Символов: {len(doc_result.text):,}")
+            if doc_result.truncated:
                 info_parts.append("⚠️ Текст обрезан до лимита — анализирую начало.")
             await message.answer("\n".join(info_parts))
 
             await bot.send_chat_action(message.chat.id, "typing")
-            user_question = message.caption or ""
 
             try:
                 reply = await llm.chat_with_document(
                     user_id=message.from_user.id,
-                    doc_text=result.text,
-                    user_question=user_question,
+                    doc_text=doc_result.text,
+                    user_question=message.caption or "",
                     doc_name=file_name,
                 )
                 await message.answer(reply)
@@ -310,31 +368,6 @@ async def main() -> None:
             if tmp_path is not None:
                 tmp_path.unlink(missing_ok=True)
 
-    @dp.message(Command("debug_time"))
-    async def cmd_debug_time(message: Message) -> None:
-        """Временная команда диагностики времени и напоминаний в БД."""
-        if not message.from_user:
-            return
-        import sqlite3
-        from app.database import DB_PATH
-        now_utc = datetime.utcnow()
-        conn = sqlite3.connect(str(DB_PATH))
-        rows = conn.execute(
-            "SELECT id, text, remind_at, done FROM reminders "
-            "WHERE user_id = ? ORDER BY id DESC LIMIT 5",
-            (message.from_user.id,)
-        ).fetchall()
-        conn.close()
-        lines = [f"🕐 Сейчас UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"]
-        if rows:
-            lines.append("Последние напоминания в БД:")
-            for rid, text, rat, done in rows:
-                status = "✅ выполнено" if done else "⏳ ожидает"
-                lines.append(f"[{rid}] {rat} — {text} ({status})")
-        else:
-            lines.append("Напоминаний в БД нет.")
-        await message.answer("\n".join(lines))
-
     # ── Текстовые сообщения ───────────────────────────────────────────────────
 
     @dp.message()
@@ -345,39 +378,11 @@ async def main() -> None:
         await bot.send_chat_action(message.chat.id, "typing")
 
         try:
-            reply = await llm.chat(message.from_user.id, message.text)
-            await message.answer(reply)
+            result = await llm.chat(message.from_user.id, message.text)
+            await _handle_chat_result(message, result)
         except Exception:
             logger.exception("Ошибка user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear")
-            return
-
-        # Проверяем напоминание ПОСЛЕ ответа — последовательно
-        # не конкурируем с основным запросом за Groq лимит
-        try:
-            reminder_data = await llm.extract_reminder(
-                message.from_user.id, message.text
-            )
-            if reminder_data:
-                remind_at = datetime.strptime(
-                    reminder_data["remind_at"], "%Y-%m-%d %H:%M"
-                )
-                rid = save_reminder(
-                    message.from_user.id,
-                    reminder_data["text"],
-                    remind_at,
-                )
-                logger.info(
-                    "⏰ Напоминание #%d сохранено user_id=%s: '%s' в %s UTC",
-                    rid, message.from_user.id,
-                    reminder_data["text"], reminder_data["remind_at"],
-                )
-                await message.answer(
-                    f"⏰ Записал, Сократ. Напомню: {reminder_data['text']}\n"
-                    f"Время: {reminder_data['remind_at']} UTC (#{rid})"
-                )
-        except Exception:
-            logger.exception("Ошибка extract_reminder user_id=%s", message.from_user.id)
 
     # ── Запуск ────────────────────────────────────────────────────────────────
 

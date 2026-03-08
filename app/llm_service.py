@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 from collections.abc import Coroutine
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from langchain_groq import ChatGroq
@@ -31,6 +33,43 @@ _MEMORY_EXTRACTION_PROMPT = """\
 Только JSON, без пояснений и markdown."""
 
 
+@dataclass
+class ChatResult:
+    """Результат одного обращения к модели."""
+    reply: str
+    reminder: Optional[dict] = field(default=None)
+    # reminder = {"text": str, "remind_at": "YYYY-MM-DD HH:MM:SS"} или None
+
+
+def _build_chat_system(base_prompt: str, now_utc: datetime) -> str:
+    """
+    Формирует системный промпт с инструкцией по напоминаниям.
+    Время передаётся явно — модель не угадывает его.
+    """
+    ex_5min     = (now_utc + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+    ex_1h       = (now_utc + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    ex_tomorrow = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d") + " 09:00:00"
+
+    reminder_instruction = f"""
+
+--- НАПОМИНАНИЯ ---
+Текущее время UTC: {now_utc.strftime("%Y-%m-%d %H:%M:%S")}
+
+Если пользователь просит поставить напоминание — ОБЯЗАТЕЛЬНО включи в ответ JSON-блок:
+<reminder>{{"text": "текст напоминания", "remind_at": "YYYY-MM-DD HH:MM:SS"}}</reminder>
+
+Примеры расчёта времени от текущего момента:
+- "через 5 минут" → {ex_5min}
+- "через час" → {ex_1h}
+- "завтра в 9 утра" → {ex_tomorrow}
+
+Если напоминания нет — НЕ включай тег <reminder>.
+Слова-триггеры: напомни, напоминание, не забудь, через X минут/часов, завтра в.
+--- КОНЕЦ ---"""
+
+    return base_prompt + reminder_instruction
+
+
 class LLMService:
     """Сервис для общения с языковой моделью Groq."""
 
@@ -47,6 +86,7 @@ class LLMService:
             logger.info("🔍 Поиск в интернете включён")
 
         self._msg_counter: dict[int, int] = {}
+        # Явное хранение ссылок — защита от GC
         self._background_tasks: set[asyncio.Task[None]] = set()
 
     # ── Вспомогательные методы ────────────────────────────────────────────────
@@ -58,20 +98,18 @@ class LLMService:
         task.add_done_callback(self._background_tasks.discard)
 
     def _needs_search(self, message: str) -> bool:
-        """Проверяет нужен ли поиск по ключевым словам."""
         if not self._search:
             return False
         msg_lower = message.lower()
         return any(kw in msg_lower for kw in _SEARCH_KEYWORDS)
 
     def _should_extract_facts(self, user_id: int) -> bool:
-        """Возвращает True для каждого N-го сообщения пользователя."""
         count = self._msg_counter.get(user_id, 0) + 1
         self._msg_counter[user_id] = count
         return count % _MEMORY_EXTRACTION_EVERY_N == 1
 
     def _build_system_prompt(self, memory_facts: list[str]) -> str:
-        """Формирует системный промпт с фактами о пользователе."""
+        """Базовый системный промпт без инструкции по напоминаниям."""
         if not memory_facts:
             return settings.system_prompt
         facts_text = "\n".join(f"- {f}" for f in memory_facts)
@@ -80,10 +118,56 @@ class LLMService:
             f"Что ты знаешь об этом пользователе:\n{facts_text}"
         )
 
+    @staticmethod
+    def _parse_reminder(raw: str, now_utc: datetime) -> Optional[dict]:
+        """
+        Извлекает JSON напоминания из тега <reminder>...</reminder>.
+        Возвращает dict или None.
+        """
+        import re
+        match = re.search(r"<reminder>(.*?)</reminder>", raw, re.DOTALL)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(1).strip())
+            if not isinstance(data, dict):
+                return None
+            if "text" not in data or "remind_at" not in data:
+                return None
+
+            # Нормализуем формат — принимаем HH:MM и HH:MM:SS
+            remind_str = str(data["remind_at"]).strip()
+            if len(remind_str) == 16:
+                remind_str += ":00"
+            data["remind_at"] = remind_str
+
+            # Валидация: время должно быть в будущем
+            remind_dt = datetime.strptime(remind_str, "%Y-%m-%d %H:%M:%S")
+            if remind_dt <= now_utc:
+                logger.warning(
+                    "Напоминание в прошлом: %s (сейчас UTC: %s)",
+                    remind_str, now_utc.strftime("%Y-%m-%d %H:%M:%S")
+                )
+                return None
+
+            logger.info(
+                "⏰ Напоминание распознано: '%s' на %s UTC",
+                data["text"], remind_str
+            )
+            return data
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning("_parse_reminder: ошибка парсинга: %s", e)
+            return None
+
+    @staticmethod
+    def _clean_reply(raw: str) -> str:
+        """Убирает тег <reminder>...</reminder> из текста ответа боту."""
+        import re
+        return re.sub(r"\s*<reminder>.*?</reminder>", "", raw, flags=re.DOTALL).strip()
+
     # ── Фоновые задачи ────────────────────────────────────────────────────────
 
     async def _extract_facts_background(self, user_id: int, message: str) -> None:
-        """Извлекает и сохраняет факты о пользователе из его сообщения."""
         try:
             prompt = _MEMORY_EXTRACTION_PROMPT.format(message=message)
             response = await self._llm.ainvoke([HumanMessage(content=prompt)])
@@ -100,11 +184,14 @@ class LLMService:
         except Exception:
             logger.debug("Не удалось извлечь факты для user_id=%s", user_id)
 
-    # ── Основной метод ────────────────────────────────────────────────────────
+    # ── Основной метод — ОДИН запрос к модели ────────────────────────────────
 
-    async def chat(self, user_id: int, user_message: str) -> str:
-        """Обрабатывает сообщение и возвращает ответ модели."""
-
+    async def chat(self, user_id: int, user_message: str) -> ChatResult:
+        """
+        Один запрос к модели — возвращает ответ и напоминание (если есть).
+        Напоминание встроено в системный промпт — не требует второго запроса.
+        """
+        now_utc = datetime.utcnow()
         history = load_history(user_id, limit=settings.max_history)
         memory_facts = load_memory(user_id)
 
@@ -115,7 +202,9 @@ class LLMService:
                 self._search.search(user_message)
             )
 
-        system = self._build_system_prompt(memory_facts)
+        # Системный промпт с инструкцией по напоминаниям и временем UTC
+        base_system = self._build_system_prompt(memory_facts)
+        system = _build_chat_system(base_system, now_utc)
 
         # Ждём результат поиска
         final_message = user_message
@@ -140,8 +229,15 @@ class LLMService:
         ]
 
         response = await self._llm.ainvoke(messages)
-        reply = str(response.content)
+        raw = str(response.content)
 
+        # Парсим напоминание из ответа
+        reminder = self._parse_reminder(raw, now_utc)
+
+        # Чистим ответ от тега перед отправкой пользователю
+        reply = self._clean_reply(raw)
+
+        # Сохраняем в историю чистый ответ (без тега)
         save_messages(user_id, user_message, reply)
 
         if self._should_extract_facts(user_id):
@@ -150,19 +246,19 @@ class LLMService:
             )
 
         logger.debug(
-            "user_id=%s | usage=%s",
+            "user_id=%s | usage=%s | reminder=%s",
             user_id,
             getattr(response, "usage_metadata", None),
+            reminder is not None,
         )
-        return reply
+        return ChatResult(reply=reply, reminder=reminder)
+
+    # ── Вспомогательные методы для других обработчиков ───────────────────────
 
     def save_photo_exchange(
         self, user_id: int, user_note: str, vision_result: str
     ) -> None:
-        """
-        Сохраняет фото-обмен в историю разговора.
-        Вызывается из main.py после успешного анализа изображения.
-        """
+        """Сохраняет фото-обмен в историю разговора."""
         save_messages(user_id, user_note, vision_result)
 
     async def chat_with_document(
@@ -172,13 +268,9 @@ class LLMService:
         user_question: str,
         doc_name: str = "документ",
     ) -> str:
-        """
-        Отвечает на вопрос по содержимому документа.
-        Документ передаётся как контекст — не сохраняется в историю целиком.
-        """
+        """Отвечает на вопрос по содержимому документа."""
         memory_facts = load_memory(user_id)
         system = self._build_system_prompt(memory_facts)
-
         question = user_question.strip() or "Кратко изложи содержание документа."
 
         combined = (
@@ -195,60 +287,10 @@ class LLMService:
         response = await self._llm.ainvoke(messages)
         reply = str(response.content)
 
-        # В историю пишем только краткую запись — не весь текст документа
         save_messages(
             user_id,
             f"[Документ: {doc_name}] {question}",
             reply,
         )
-
         logger.debug("user_id=%s | документ обработан: %s", user_id, doc_name)
         return reply
-
-    async def extract_reminder(
-        self, user_id: int, message: str
-    ) -> dict | None:
-        """
-        Определяет является ли сообщение запросом на напоминание.
-        Возвращает {"text": str, "remind_at": "YYYY-MM-DD HH:MM"} или None.
-        Время считается относительно текущего момента UTC.
-        """
-        from datetime import datetime, timezone
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-
-        prompt = f"""\
-Сейчас: {now_str} UTC.
-Сообщение пользователя: {message}
-
-Определи — это запрос на напоминание?
-Если да — верни JSON с полями:
-  "text"      — текст напоминания (кратко, что нужно сделать)
-  "remind_at" — дата и время в формате "YYYY-MM-DD HH:MM" (UTC)
-
-Если нет — верни: null
-
-Примеры:
-  "напомни купить молоко завтра в 10" → {{"text": "Купить молоко", "remind_at": "2024-01-15 10:00"}}
-  "через 2 часа напомни позвонить маме" → {{"text": "Позвонить маме", "remind_at": "2024-01-14 14:30"}}
-  "как дела?" → null
-
-Только JSON или null. Без пояснений."""
-
-        try:
-            response = await self._llm.ainvoke([HumanMessage(content=prompt)])
-            raw = (
-                str(response.content)
-                .strip()
-                .replace("```json", "")
-                .replace("```", "")
-                .strip()
-            )
-            if raw.lower() == "null" or not raw:
-                return None
-            data = json.loads(raw)
-            if isinstance(data, dict) and "text" in data and "remind_at" in data:
-                return data
-            return None
-        except Exception:
-            logger.debug("extract_reminder: не удалось распарсить для user_id=%s", user_id)
-            return None
