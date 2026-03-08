@@ -204,3 +204,51 @@ class LLMService:
 
         logger.debug("user_id=%s | документ обработан: %s", user_id, doc_name)
         return reply
+
+    async def extract_reminder(
+        self, user_id: int, message: str
+    ) -> dict | None:
+        """
+        Определяет является ли сообщение запросом на напоминание.
+        Возвращает {"text": str, "remind_at": "YYYY-MM-DD HH:MM"} или None.
+        Время считается относительно текущего момента UTC.
+        """
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+        prompt = f"""\
+Сейчас: {now_str} UTC.
+Сообщение пользователя: {message}
+
+Определи — это запрос на напоминание?
+Если да — верни JSON с полями:
+  "text"      — текст напоминания (кратко, что нужно сделать)
+  "remind_at" — дата и время в формате "YYYY-MM-DD HH:MM" (UTC)
+
+Если нет — верни: null
+
+Примеры:
+  "напомни купить молоко завтра в 10" → {{"text": "Купить молоко", "remind_at": "2024-01-15 10:00"}}
+  "через 2 часа напомни позвонить маме" → {{"text": "Позвонить маме", "remind_at": "2024-01-14 14:30"}}
+  "как дела?" → null
+
+Только JSON или null. Без пояснений."""
+
+        try:
+            response = await self._llm.ainvoke([HumanMessage(content=prompt)])
+            raw = (
+                str(response.content)
+                .strip()
+                .replace("```json", "")
+                .replace("```", "")
+                .strip()
+            )
+            if raw.lower() == "null" or not raw:
+                return None
+            data = json.loads(raw)
+            if isinstance(data, dict) and "text" in data and "remind_at" in data:
+                return data
+            return None
+        except Exception:
+            logger.debug("extract_reminder: не удалось распарсить для user_id=%s", user_id)
+            return None
