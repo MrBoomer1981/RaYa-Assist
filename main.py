@@ -1,13 +1,14 @@
 import asyncio
 import logging
 import warnings
+from typing import Any, Awaitable, Callable
 
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*")
 
-from aiogram import Bot, Dispatcher
+from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message, PhotoSize, Voice
+from aiogram.types import Message, PhotoSize, TelegramObject, Voice
 
 from app.config import settings
 from app.database import init_db, clear_history, clear_memory, load_memory
@@ -23,9 +24,40 @@ logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-_MAX_VOICE_BYTES = 20 * 1024 * 1024   # 20 МБ
-_MAX_PHOTO_BYTES = 20 * 1024 * 1024   # 20 МБ
+_MAX_VOICE_BYTES = 20 * 1024 * 1024
+_MAX_PHOTO_BYTES = 20 * 1024 * 1024
 
+
+# ── Безопасность ──────────────────────────────────────────────────────────────
+
+class AccessMiddleware(BaseMiddleware):
+    """
+    Блокирует сообщения от пользователей не из списка ALLOWED_USER_IDS.
+    Если список пуст — пропускает всех (режим разработки).
+    Чужим не сообщает что бот существует — тихо игнорирует.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if not settings.security_enabled:
+            return await handler(event, data)
+
+        user = data.get("event_from_user")
+        if user is None:
+            return
+
+        if user.id not in settings.allowed_ids:
+            logger.warning("🚫 Доступ запрещён: user_id=%s", user.id)
+            return  # тихо игнорируем
+
+        return await handler(event, data)
+
+
+# ── Вспомогательные функции ───────────────────────────────────────────────────
 
 def _build_help_text() -> str:
     lines = [
@@ -60,6 +92,8 @@ async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
     return downloaded.read()
 
 
+# ── Основной цикл ─────────────────────────────────────────────────────────────
+
 async def main() -> None:
     init_db()
 
@@ -68,6 +102,10 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=None),
     )
     dp = Dispatcher()
+
+    # Подключаем middleware безопасности глобально
+    dp.message.middleware(AccessMiddleware())
+
     llm = LLMService()
     voice = VoiceService()
     vision = VisionService()
@@ -173,9 +211,7 @@ async def main() -> None:
 
         await bot.send_chat_action(message.chat.id, "typing")
 
-        # Берём фото максимального качества (последнее в списке)
         best_photo: PhotoSize = message.photo[-1]
-
         if best_photo.file_size and best_photo.file_size > _MAX_PHOTO_BYTES:
             await message.answer("⚠️ Фото слишком большое (макс. 20 МБ).")
             return
@@ -185,9 +221,7 @@ async def main() -> None:
             await message.answer("⚠️ Не удалось скачать фото. Попробуй ещё раз.")
             return
 
-        # Подпись к фото — вопрос пользователя
         user_prompt = message.caption or ""
-
         result = await vision.analyze(image_bytes, user_prompt)
         if not result:
             await message.answer(
@@ -195,7 +229,6 @@ async def main() -> None:
             )
             return
 
-        # Сохраняем в историю разговора
         caption_note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
         llm.save_photo_exchange(
             message.from_user.id,
@@ -221,18 +254,19 @@ async def main() -> None:
                 "⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear"
             )
 
-    # ── Запуск с graceful shutdown ────────────────────────────────────────────
+    # ── Запуск ────────────────────────────────────────────────────────────────
 
     logger.info(
-        "🤖 Бот запущен | модель: %s | поиск: %s | голос: вкл | фото: вкл",
+        "🤖 Бот запущен | модель: %s | поиск: %s | голос: вкл | фото: вкл | защита: %s",
         settings.model_name,
         "вкл" if settings.search_enabled else "выкл",
+        "вкл" if settings.security_enabled else "выкл (открытый доступ)",
     )
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
         await bot.session.close()
-        logger.info("🛑 Бот остановлен, соединения закрыты")
+        logger.info("🛑 Бот остановлен")
 
 
 if __name__ == "__main__":
