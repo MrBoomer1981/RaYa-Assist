@@ -71,6 +71,10 @@ class LLMService:
         from app.memory_service import MemoryService
         self._memory = MemoryService(self._llm)
 
+        # Контекст разговора
+        from app.context_service import ContextService
+        self._context = ContextService(self._llm)
+
     # ── Вспомогательные ───────────────────────────────────────────────────────
 
     def _run_background(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -141,6 +145,10 @@ class LLMService:
                 self._memory.extract_and_save(user_id, user_message)
             )
 
+        # Контекст разговора — обновляем каждые N сообщений
+        if self._context.should_update(user_id):
+            self._run_background(self._context.update(user_id))
+
         logger.debug(
             "user_id=%s | агент=%s | reminder=%s",
             user_id, agent_result.agent_name, reminder is not None,
@@ -153,6 +161,13 @@ class LLMService:
         )
 
     # ── Вспомогательные для других обработчиков ───────────────────────────────
+
+    async def get_resume_phrase(self, user_id: int) -> str | None:
+        """
+        Возвращает фразу-мостик если пользователь вернулся после паузы.
+        None если пауза короткая или контекста нет.
+        """
+        return await self._context.build_resume_phrase(user_id)
 
     def save_photo_exchange(
         self, user_id: int, user_note: str, vision_result: str

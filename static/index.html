@@ -404,6 +404,47 @@ textarea::placeholder { color: var(--muted); }
 }
 .card:hover { border-color: var(--border2); }
 
+.context-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.context-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+.context-value {
+  font-size: 14px;
+  line-height: 1.5;
+}
+.context-thread {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.context-thread:last-child { border-bottom: none; }
+.context-thread::before {
+  content: '●';
+  color: var(--accent);
+  font-size: 8px;
+  flex-shrink: 0;
+}
+.context-updated {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 12px;
+  text-align: right;
+}
 .memory-category { margin-bottom: 20px; }
 .memory-cat-title {
   font-family: 'DM Mono', monospace;
@@ -770,6 +811,9 @@ textarea::placeholder { color: var(--muted); }
     <div class="nav-item" data-panel="diary" onclick="switchPanel('diary', this)">
       <span class="nav-icon">📔</span> Дневник
     </div>
+    <div class="nav-item" data-panel="context" onclick="switchPanel('context', this)">
+      <span class="nav-icon">🗣️</span> Контекст
+    </div>
     <div class="nav-item" data-panel="reminders" onclick="switchPanel('reminders', this)">
       <span class="nav-icon">⏰</span> Напоминания
     </div>
@@ -826,6 +870,18 @@ textarea::placeholder { color: var(--muted); }
         <button class="danger-btn" onclick="clearMemory()">Очистить</button>
       </div>
       <div class="panel-body" id="memoryList">
+        <div class="loader">Загрузка...</div>
+      </div>
+    </div>
+
+    <!-- ── Context ── -->
+    <div class="panel" id="panel-context">
+      <div class="panel-header">
+        <span style="font-size:18px">🗣️</span>
+        <div class="panel-title">Контекст</div>
+        <button class="btn-icon" onclick="clearContext()" title="Сбросить">🗑️</button>
+      </div>
+      <div class="panel-body" id="contextBody">
         <div class="loader">Загрузка...</div>
       </div>
     </div>
@@ -961,6 +1017,7 @@ function switchPanel(name, el) {
   document.getElementById(`panel-${name}`).classList.add('active');
   el.classList.add('active');
   if (name === 'memory')    loadMemory();
+  if (name === 'context')   loadContext();
   if (name === 'diary')     loadDiary();
   if (name === 'reminders') loadReminders();
   if (name === 'status')    loadStatus();
@@ -1171,6 +1228,65 @@ async function deleteMemoryEntry(category, key) {
     showToast('Запись удалена', 'success');
     loadMemory();
   } catch(e) { showToast('Ошибка удаления', 'error'); }
+}
+
+async function loadContext() {
+  const el = document.getElementById('contextBody');
+  el.innerHTML = '<div class="loader">Загрузка...</div>';
+  try {
+    const res  = await fetch(api('/api/context'));
+    const data = await res.json();
+
+    const { topic, user_goal, open_threads, last_summary, updated_at } = data;
+    const hasData = topic || user_goal || (open_threads && open_threads.length) || last_summary;
+
+    if (!hasData) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">🗣️</div>Контекст ещё не накоплен — начни разговор</div>';
+      return;
+    }
+
+    let html = '';
+
+    if (topic) html += `
+      <div class="context-card">
+        <div class="context-label">📌 Тема разговора</div>
+        <div class="context-value">${topic.replace(/</g,'&lt;')}</div>
+      </div>`;
+
+    if (user_goal) html += `
+      <div class="context-card">
+        <div class="context-label">🎯 Цель</div>
+        <div class="context-value">${user_goal.replace(/</g,'&lt;')}</div>
+      </div>`;
+
+    if (open_threads && open_threads.length) {
+      html += `<div class="context-card">
+        <div class="context-label">⏳ Незавершённые темы</div>`;
+      open_threads.forEach(t => {
+        html += `<div class="context-thread">${t.replace(/</g,'&lt;')}</div>`;
+      });
+      html += '</div>';
+    }
+
+    if (last_summary) html += `
+      <div class="context-card">
+        <div class="context-label">📝 О чём говорили</div>
+        <div class="context-value">${last_summary.replace(/</g,'&lt;')}</div>
+      </div>`;
+
+    if (updated_at) html += `<div class="context-updated">Обновлено: ${updated_at} UTC</div>`;
+
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = `<div class="empty">Ошибка загрузки</div>`;
+  }
+}
+
+async function clearContext() {
+  if (!confirm('Сбросить контекст разговора?')) return;
+  await fetch(api('/api/context'), { method: 'DELETE' });
+  showToast('Контекст сброшен', 'success');
+  loadContext();
 }
 
 async function clearMemory() {

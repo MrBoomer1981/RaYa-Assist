@@ -408,6 +408,11 @@ async def main() -> None:
         await bot.send_chat_action(message.chat.id, "typing")
 
         try:
+            # Фраза-мостик если вернулся после паузы
+            bridge = await llm.get_resume_phrase(message.from_user.id)
+            if bridge:
+                await message.answer(f"↩️ {bridge}")
+
             result = await llm.chat(message.from_user.id, message.text)
             await _handle_chat_result(message, result, bot)
         except Exception:

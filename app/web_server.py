@@ -190,6 +190,25 @@ def create_app(llm_service) -> FastAPI:
         ok = delete_reminder(reminder_id, user_id)
         return {"ok": ok}
 
+    # ── Контекст разговора ───────────────────────────────────────────────────
+
+    @app.get("/api/context")
+    async def conversation_context(token: str = Query(default="")):
+        """Текущий контекст разговора: тема, цель, незавершённые темы, резюме."""
+        _check_token(token)
+        user_id = settings.telegram_user_id
+        from app.database import get_conversation_context
+        return get_conversation_context(user_id)
+
+    @app.delete("/api/context")
+    async def clear_context(token: str = Query(default="")):
+        """Сбрасывает контекст разговора."""
+        _check_token(token)
+        user_id = settings.telegram_user_id
+        from app.database import save_conversation_context
+        save_conversation_context(user_id)
+        return {"ok": True}
+
     # ── Дневник ───────────────────────────────────────────────────────────────
 
     @app.get("/api/diary")

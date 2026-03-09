@@ -109,6 +109,15 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_structured_memory_user
                 ON structured_memory(user_id, category);
+            CREATE TABLE IF NOT EXISTS conversation_context (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL UNIQUE,
+                topic        TEXT    DEFAULT '',
+                user_goal    TEXT    DEFAULT '',
+                open_threads TEXT    DEFAULT '[]',
+                last_summary TEXT    DEFAULT '',
+                updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         """)
     logger.info("✅ База данных готова: %s", DB_PATH)
 
@@ -408,5 +417,88 @@ def format_memory_for_prompt(user_id: int) -> str:
         label = labels.get(category, category)
         items = "; ".join(f"{k}: {v}" for k, v in entries.items())
         lines.append(f"  {label}: {items}")
+
+    return "\n".join(lines)
+
+
+# ── Контекст разговора ────────────────────────────────────────────────────────
+
+def get_conversation_context(user_id: int) -> dict:
+    """
+    Возвращает текущий контекст разговора.
+    Формат: {topic, user_goal, open_threads: [], last_summary, updated_at}
+    """
+    with _conn() as con:
+        row = con.execute("""
+            SELECT topic, user_goal, open_threads, last_summary, updated_at
+            FROM conversation_context WHERE user_id = ?
+        """, (user_id,)).fetchone()
+
+    if not row:
+        return {
+            "topic": "", "user_goal": "",
+            "open_threads": [], "last_summary": "", "updated_at": "",
+        }
+
+    import json as _json
+    try:
+        threads = _json.loads(row[2]) if row[2] else []
+    except Exception:
+        threads = []
+
+    return {
+        "topic":        row[0] or "",
+        "user_goal":    row[1] or "",
+        "open_threads": threads,
+        "last_summary": row[3] or "",
+        "updated_at":   row[4] or "",
+    }
+
+
+def save_conversation_context(
+    user_id: int,
+    topic: str = "",
+    user_goal: str = "",
+    open_threads: list | None = None,
+    last_summary: str = "",
+) -> None:
+    """Сохраняет или обновляет контекст разговора."""
+    import json as _json
+    now     = datetime.utcnow().strftime(_TIME_FMT)
+    threads = _json.dumps(open_threads or [], ensure_ascii=False)
+
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO conversation_context
+                (user_id, topic, user_goal, open_threads, last_summary, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                topic        = excluded.topic,
+                user_goal    = excluded.user_goal,
+                open_threads = excluded.open_threads,
+                last_summary = excluded.last_summary,
+                updated_at   = excluded.updated_at
+        """, (user_id, topic, user_goal, threads, last_summary, now))
+
+
+def format_context_for_prompt(user_id: int) -> str:
+    """Форматирует контекст разговора для системного промпта."""
+    ctx = get_conversation_context(user_id)
+
+    if not any([ctx["topic"], ctx["user_goal"],
+                ctx["open_threads"], ctx["last_summary"]]):
+        return ""
+
+    lines = ["🗣️ Контекст текущего разговора:"]
+
+    if ctx["topic"]:
+        lines.append(f"  Тема: {ctx['topic']}")
+    if ctx["user_goal"]:
+        lines.append(f"  Цель Сократа: {ctx['user_goal']}")
+    if ctx["open_threads"]:
+        threads = "; ".join(ctx["open_threads"][:3])
+        lines.append(f"  Незавершённые темы: {threads}")
+    if ctx["last_summary"]:
+        lines.append(f"  Что обсуждали: {ctx['last_summary']}")
 
     return "\n".join(lines)
