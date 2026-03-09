@@ -1,0 +1,79 @@
+"""
+utils.py — общие утилиты используемые несколькими модулями.
+Вынесено сюда чтобы избежать дублирования кода.
+"""
+import json
+import logging
+import re
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+_REMINDER_RE = re.compile(r"<reminder>(.*?)</reminder>", re.DOTALL)
+_REMINDER_CLEAN_RE = re.compile(r"\s*<reminder>.*?</reminder>", re.DOTALL)
+_TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def parse_reminder(raw: str, now_utc: datetime) -> dict | None:
+    """
+    Извлекает JSON напоминания из тега <reminder>...</reminder>.
+    Возвращает {"text": str, "remind_at": "YYYY-MM-DD HH:MM:SS"} или None.
+    """
+    match = _REMINDER_RE.search(raw)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(1).strip())
+        if not isinstance(data, dict):
+            return None
+        if "text" not in data or "remind_at" not in data:
+            return None
+
+        remind_str = str(data["remind_at"]).strip()
+        if len(remind_str) == 16:          # YYYY-MM-DD HH:MM → добавляем секунды
+            remind_str += ":00"
+        data["remind_at"] = remind_str
+
+        remind_dt = datetime.strptime(remind_str, _TIME_FMT)
+        if remind_dt <= now_utc:
+            logger.warning("parse_reminder: время в прошлом %s", remind_str)
+            return None
+
+        logger.info("⏰ Напоминание: '%s' на %s UTC", data["text"], remind_str)
+        return data
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("parse_reminder: ошибка парсинга: %s", e)
+        return None
+
+
+def clean_reminder_tag(text: str) -> str:
+    """Убирает тег <reminder>...</reminder> из текста ответа."""
+    return _REMINDER_CLEAN_RE.sub("", text).strip()
+
+
+def build_reminder_prompt_block(now_utc: datetime) -> str:
+    """
+    Формирует блок инструкций по напоминаниям для системного промпта.
+    Передаём явное UTC время — модель не угадывает его.
+    """
+    from datetime import timedelta
+    ex_5min     = (now_utc + timedelta(minutes=5)).strftime(_TIME_FMT)
+    ex_1h       = (now_utc + timedelta(hours=1)).strftime(_TIME_FMT)
+    ex_tomorrow = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d") + " 09:00:00"
+
+    return f"""
+
+--- НАПОМИНАНИЯ ---
+Текущее время UTC: {now_utc.strftime(_TIME_FMT)}
+
+Если пользователь просит напомнить — включи в ответ:
+<reminder>{{"text": "текст", "remind_at": "YYYY-MM-DD HH:MM:SS"}}</reminder>
+
+Примеры:
+- "через 5 минут" → {ex_5min}
+- "через час"     → {ex_1h}
+- "завтра в 9"    → {ex_tomorrow}
+
+Если напоминания нет — НЕ включай тег.
+Слова-триггеры: напомни, напоминание, не забудь, через X минут/часов, завтра в.
+--- КОНЕЦ ---"""

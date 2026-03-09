@@ -1,23 +1,43 @@
+"""
+database.py — работа с SQLite.
+WAL-режим, connection-per-call через контекстный менеджер.
+"""
 import logging
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Generator
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path("database.db")
+_TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+@contextmanager
+def _conn() -> Generator[sqlite3.Connection, None, None]:
+    """Контекстный менеджер соединения с авто-commit/rollback."""
+    con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA synchronous=NORMAL")
+    con.execute("PRAGMA foreign_keys=ON")
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def init_db() -> None:
-    """Создаёт все таблицы, индексы и настраивает параметры БД."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript("""
+    """Создаёт таблицы, индексы и настраивает БД."""
+    with _conn() as con:
+        con.executescript("""
             CREATE TABLE IF NOT EXISTS history (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id    INTEGER NOT NULL,
@@ -32,12 +52,19 @@ def init_db() -> None:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS reminders (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id     INTEGER NOT NULL,
-                text        TEXT    NOT NULL,
-                remind_at   DATETIME NOT NULL,
-                done        INTEGER NOT NULL DEFAULT 0,
-                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                text       TEXT    NOT NULL,
+                remind_at  DATETIME NOT NULL,
+                done       INTEGER  NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS diary (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                entry      TEXT    NOT NULL,
+                mood       TEXT    DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS idx_history_user
                 ON history(user_id, created_at);
@@ -45,208 +72,139 @@ def init_db() -> None:
                 ON user_memory(user_id);
             CREATE INDEX IF NOT EXISTS idx_reminders_due
                 ON reminders(remind_at, done);
+            CREATE INDEX IF NOT EXISTS idx_diary_user
+                ON diary(user_id, created_at);
         """)
-        conn.commit()
-    finally:
-        conn.close()
     logger.info("✅ База данных готова: %s", DB_PATH)
 
 
-def _connect() -> sqlite3.Connection:
-    """Открывает соединение с нужными прагмами."""
-    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
-
-
-# ── История разговора ──────────────────────────────────────────────────────────
+# ── История ───────────────────────────────────────────────────────────────────
 
 def load_history(user_id: int, limit: int = 20) -> list[BaseMessage]:
     """Загружает последние N сообщений в хронологическом порядке."""
-    conn = _connect()
-    try:
-        rows = conn.execute("""
+    with _conn() as con:
+        rows = con.execute("""
             SELECT role, content FROM (
-                SELECT role, content, created_at
-                FROM history
+                SELECT role, content, created_at FROM history
                 WHERE user_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            ) AS sub
-            ORDER BY created_at ASC
+                ORDER BY created_at DESC LIMIT ?
+            ) ORDER BY created_at ASC
         """, (user_id, limit)).fetchall()
-    finally:
-        conn.close()
-
-    result: list[BaseMessage] = []
-    for role, content in rows:
-        if role == "human":
-            result.append(HumanMessage(content=content))
-        elif role == "ai":
-            result.append(AIMessage(content=content))
-    return result
+    return [
+        HumanMessage(content=c) if r == "human" else AIMessage(content=c)
+        for r, c in rows
+    ]
 
 
 def save_messages(user_id: int, human: str, ai: str) -> None:
     """Сохраняет пару сообщений одной транзакцией."""
-    conn = _connect()
-    try:
-        conn.executemany(
+    with _conn() as con:
+        con.executemany(
             "INSERT INTO history (user_id, role, content) VALUES (?, ?, ?)",
             [(user_id, "human", human), (user_id, "ai", ai)],
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def clear_history(user_id: int) -> None:
-    """Удаляет историю разговора пользователя."""
-    conn = _connect()
-    try:
-        conn.execute("DELETE FROM history WHERE user_id = ?", (user_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with _conn() as con:
+        con.execute("DELETE FROM history WHERE user_id = ?", (user_id,))
 
 
-# ── Долгосрочная память ────────────────────────────────────────────────────────
+# ── Память ────────────────────────────────────────────────────────────────────
 
 def load_memory(user_id: int) -> list[str]:
-    """Возвращает все сохранённые факты о пользователе."""
-    conn = _connect()
-    try:
-        rows = conn.execute(
+    with _conn() as con:
+        rows = con.execute(
             "SELECT fact FROM user_memory WHERE user_id = ? ORDER BY created_at ASC",
             (user_id,),
         ).fetchall()
-    finally:
-        conn.close()
-    return [row[0] for row in rows]
+    return [r[0] for r in rows]
 
 
 def save_memory(user_id: int, facts: list[str]) -> None:
-    """Сохраняет новые факты, пропуская точные дубли."""
     if not facts:
         return
     existing = set(load_memory(user_id))
     new_facts = [f for f in facts if f not in existing]
     if not new_facts:
         return
-    conn = _connect()
-    try:
-        conn.executemany(
+    with _conn() as con:
+        con.executemany(
             "INSERT INTO user_memory (user_id, fact) VALUES (?, ?)",
-            [(user_id, fact) for fact in new_facts],
+            [(user_id, f) for f in new_facts],
         )
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-    logger.debug("user_id=%s | сохранено фактов: %d", user_id, len(new_facts))
+    logger.debug("user_id=%s | факты сохранены: %d", user_id, len(new_facts))
 
 
 def clear_memory(user_id: int) -> None:
-    """Удаляет всю память о пользователе."""
-    conn = _connect()
-    try:
-        conn.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with _conn() as con:
+        con.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
 
 
-# ── Напоминания ────────────────────────────────────────────────────────────────
+# ── Напоминания ───────────────────────────────────────────────────────────────
 
 def save_reminder(user_id: int, text: str, remind_at: datetime) -> int:
-    """Сохраняет напоминание. Возвращает id записи."""
-    conn = _connect()
-    try:
-        cur = conn.execute(
+    with _conn() as con:
+        cur = con.execute(
             "INSERT INTO reminders (user_id, text, remind_at) VALUES (?, ?, ?)",
-            (user_id, text, remind_at.strftime("%Y-%m-%d %H:%M:%S")),
+            (user_id, text, remind_at.strftime(_TIME_FMT)),
         )
-        conn.commit()
         return cur.lastrowid or 0
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def get_due_reminders(now: datetime) -> list[tuple[int, int, str]]:
-    """
-    Возвращает все напоминания у которых время пришло.
-    Формат: [(id, user_id, text), ...]
-    """
-    conn = _connect()
-    try:
-        rows = conn.execute("""
+    """[(id, user_id, text)] — напоминания время которых пришло."""
+    with _conn() as con:
+        rows = con.execute("""
             SELECT id, user_id, text FROM reminders
             WHERE done = 0 AND remind_at <= ?
             ORDER BY remind_at ASC
-        """, (now.strftime("%Y-%m-%d %H:%M:%S"),)).fetchall()
-    finally:
-        conn.close()
-    return [(row[0], row[1], row[2]) for row in rows]
+        """, (now.strftime(_TIME_FMT),)).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def mark_reminder_done(reminder_id: int) -> None:
-    """Помечает напоминание как выполненное."""
-    conn = _connect()
-    try:
-        conn.execute("UPDATE reminders SET done = 1 WHERE id = ?", (reminder_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with _conn() as con:
+        con.execute("UPDATE reminders SET done = 1 WHERE id = ?", (reminder_id,))
 
 
 def get_active_reminders(user_id: int) -> list[tuple[int, str, str]]:
-    """
-    Возвращает активные напоминания пользователя.
-    Формат: [(id, text, remind_at), ...]
-    """
-    conn = _connect()
-    try:
-        rows = conn.execute("""
+    """[(id, text, remind_at)] — активные напоминания пользователя."""
+    with _conn() as con:
+        rows = con.execute("""
             SELECT id, text, remind_at FROM reminders
             WHERE user_id = ? AND done = 0
             ORDER BY remind_at ASC
         """, (user_id,)).fetchall()
-    finally:
-        conn.close()
-    return [(row[0], row[1], row[2]) for row in rows]
+    return [(r[0], r[1], r[2]) for r in rows]
 
 
 def delete_reminder(reminder_id: int, user_id: int) -> bool:
-    """Удаляет напоминание. Возвращает True если удалено."""
-    conn = _connect()
-    try:
-        cur = conn.execute(
+    with _conn() as con:
+        cur = con.execute(
             "DELETE FROM reminders WHERE id = ? AND user_id = ?",
             (reminder_id, user_id),
         )
-        conn.commit()
         return cur.rowcount > 0
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+
+
+# ── Дневник ───────────────────────────────────────────────────────────────────
+
+def save_diary_entry(user_id: int, entry: str, mood: str = "") -> int:
+    with _conn() as con:
+        cur = con.execute(
+            "INSERT INTO diary (user_id, entry, mood) VALUES (?, ?, ?)",
+            (user_id, entry, mood),
+        )
+        return cur.lastrowid or 0
+
+
+def load_diary_entries(user_id: int, limit: int = 5) -> list[tuple[str, str]]:
+    """[(created_at, entry)] — последние записи дневника."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT created_at, entry FROM diary "
+            "WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    return [(r[0], r[1]) for r in rows]

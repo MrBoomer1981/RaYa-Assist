@@ -1,16 +1,19 @@
+"""
+llm_service.py — сервис обработки сообщений.
+Делегирует оркестратору, сохраняет историю, извлекает факты в фоне.
+"""
 import asyncio
 import json
 import logging
 from collections.abc import Coroutine
-from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 
 from app.config import settings
-from app.database import load_history, save_messages, load_memory, save_memory
+from app.database import load_memory, save_memory, save_messages
 
 logger = logging.getLogger(__name__)
 
@@ -37,42 +40,16 @@ _MEMORY_EXTRACTION_PROMPT = """\
 class ChatResult:
     """Результат одного обращения к модели."""
     reply: str
-    reminder: Optional[dict] = field(default=None)
-    agent_name: str = "raya"                        # какой агент ответил
-    metadata: dict = field(default_factory=dict)    # доп. данные агента
-
-
-def _build_chat_system(base_prompt: str, now_utc: datetime) -> str:
-    """
-    Формирует системный промпт с инструкцией по напоминаниям.
-    Время передаётся явно — модель не угадывает его.
-    """
-    ex_5min     = (now_utc + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-    ex_1h       = (now_utc + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-    ex_tomorrow = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d") + " 09:00:00"
-
-    reminder_instruction = f"""
-
---- НАПОМИНАНИЯ ---
-Текущее время UTC: {now_utc.strftime("%Y-%m-%d %H:%M:%S")}
-
-Если пользователь просит поставить напоминание — ОБЯЗАТЕЛЬНО включи в ответ JSON-блок:
-<reminder>{{"text": "текст напоминания", "remind_at": "YYYY-MM-DD HH:MM:SS"}}</reminder>
-
-Примеры расчёта времени от текущего момента:
-- "через 5 минут" → {ex_5min}
-- "через час" → {ex_1h}
-- "завтра в 9 утра" → {ex_tomorrow}
-
-Если напоминания нет — НЕ включай тег <reminder>.
-Слова-триггеры: напомни, напоминание, не забудь, через X минут/часов, завтра в.
---- КОНЕЦ ---"""
-
-    return base_prompt + reminder_instruction
+    reminder: Optional[dict]  = field(default=None)
+    agent_name: str           = "raya"
+    metadata: dict            = field(default_factory=dict)
 
 
 class LLMService:
-    """Сервис для общения с языковой моделью Groq."""
+    """
+    Сервис для обработки сообщений.
+    Делегирует оркестратору — не содержит бизнес-логики агентов.
+    """
 
     def __init__(self) -> None:
         self._llm = ChatGroq(
@@ -87,15 +64,13 @@ class LLMService:
             logger.info("🔍 Поиск в интернете включён")
 
         self._msg_counter: dict[int, int] = {}
-        # Явное хранение ссылок — защита от GC
         self._background_tasks: set[asyncio.Task[None]] = set()
-        # Оркестратор — инициализируется лениво при первом chat()
         self._orchestrator: Optional[Any] = None
 
-    # ── Вспомогательные методы ────────────────────────────────────────────────
+    # ── Вспомогательные ───────────────────────────────────────────────────────
 
     def _run_background(self, coro: Coroutine[Any, Any, None]) -> None:
-        """Запускает корутину в фоне, защищая задачу от сборщика мусора."""
+        """Запускает корутину в фоне, защищая задачу от GC."""
         task: asyncio.Task[None] = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -111,62 +86,12 @@ class LLMService:
         self._msg_counter[user_id] = count
         return count % _MEMORY_EXTRACTION_EVERY_N == 1
 
-    def _build_system_prompt(self, memory_facts: list[str]) -> str:
-        """Базовый системный промпт без инструкции по напоминаниям."""
-        if not memory_facts:
-            return settings.system_prompt
-        facts_text = "\n".join(f"- {f}" for f in memory_facts)
-        return (
-            f"{settings.system_prompt}\n\n"
-            f"Что ты знаешь об этом пользователе:\n{facts_text}"
-        )
-
-    @staticmethod
-    def _parse_reminder(raw: str, now_utc: datetime) -> Optional[dict]:
-        """
-        Извлекает JSON напоминания из тега <reminder>...</reminder>.
-        Возвращает dict или None.
-        """
-        import re
-        match = re.search(r"<reminder>(.*?)</reminder>", raw, re.DOTALL)
-        if not match:
-            return None
-        try:
-            data = json.loads(match.group(1).strip())
-            if not isinstance(data, dict):
-                return None
-            if "text" not in data or "remind_at" not in data:
-                return None
-
-            # Нормализуем формат — принимаем HH:MM и HH:MM:SS
-            remind_str = str(data["remind_at"]).strip()
-            if len(remind_str) == 16:
-                remind_str += ":00"
-            data["remind_at"] = remind_str
-
-            # Валидация: время должно быть в будущем
-            remind_dt = datetime.strptime(remind_str, "%Y-%m-%d %H:%M:%S")
-            if remind_dt <= now_utc:
-                logger.warning(
-                    "Напоминание в прошлом: %s (сейчас UTC: %s)",
-                    remind_str, now_utc.strftime("%Y-%m-%d %H:%M:%S")
-                )
-                return None
-
-            logger.info(
-                "⏰ Напоминание распознано: '%s' на %s UTC",
-                data["text"], remind_str
-            )
-            return data
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning("_parse_reminder: ошибка парсинга: %s", e)
-            return None
-
-    @staticmethod
-    def _clean_reply(raw: str) -> str:
-        """Убирает тег <reminder>...</reminder> из текста ответа боту."""
-        import re
-        return re.sub(r"\s*<reminder>.*?</reminder>", "", raw, flags=re.DOTALL).strip()
+    def _get_orchestrator(self):
+        """Ленивая инициализация оркестратора."""
+        if self._orchestrator is None:
+            from app.agents.orchestrator import Orchestrator
+            self._orchestrator = Orchestrator()
+        return self._orchestrator
 
     # ── Фоновые задачи ────────────────────────────────────────────────────────
 
@@ -187,22 +112,18 @@ class LLMService:
         except Exception:
             logger.debug("Не удалось извлечь факты для user_id=%s", user_id)
 
-    # ── Основной метод — делегирует оркестратору ────────────────────────────
+    # ── Основной метод ────────────────────────────────────────────────────────
 
     async def chat(self, user_id: int, user_message: str) -> ChatResult:
         """
-        Точка входа для текстовых сообщений.
-        Делегирует оркестратору — тот выбирает нужного агента.
-        Сохраняет результат в историю и извлекает факты в фоне.
+        Точка входа — делегирует оркестратору.
+        Сохраняет в историю, извлекает факты в фоне.
         """
-        # Поиск запускаем параллельно пока роутер думает
+        # Поиск параллельно пока роутер думает
         search_task: Optional[asyncio.Task[str]] = None
         if self._needs_search(user_message) and self._search is not None:
-            search_task = asyncio.create_task(
-                self._search.search(user_message)
-            )
+            search_task = asyncio.create_task(self._search.search(user_message))
 
-        # Ждём результат поиска
         search_results = ""
         if search_task is not None:
             try:
@@ -213,27 +134,17 @@ class LLMService:
                 logger.exception("user_id=%s | ошибка поиска", user_id)
                 search_task.cancel()
 
-        # Ленивая инициализация оркестратора
-        if self._orchestrator is None:
-            from app.agents.orchestrator import Orchestrator
-            self._orchestrator = Orchestrator()
-
-        # Делегируем оркестратору
-        agent_result = await self._orchestrator.run(
+        agent_result = await self._get_orchestrator().run(
             user_id=user_id,
             message=user_message,
             search_results=search_results,
         )
 
-        reply = agent_result.content
+        reply    = agent_result.content
+        reminder = (agent_result.metadata or {}).get("reminder")
 
-        # Напоминание — только RaYa агент его возвращает
-        reminder = agent_result.metadata.get("reminder") if agent_result.metadata else None
-
-        # Сохраняем в историю (всегда — независимо от агента)
         save_messages(user_id, user_message, reply)
 
-        # Извлекаем факты в фоне каждые N сообщений
         if self._should_extract_facts(user_id):
             self._run_background(
                 self._extract_facts_background(user_id, user_message)
@@ -250,12 +161,12 @@ class LLMService:
             metadata=agent_result.metadata or {},
         )
 
-    # ── Вспомогательные методы для других обработчиков ───────────────────────
+    # ── Вспомогательные для других обработчиков ───────────────────────────────
 
     def save_photo_exchange(
         self, user_id: int, user_note: str, vision_result: str
     ) -> None:
-        """Сохраняет фото-обмен в историю разговора."""
+        """Сохраняет фото-обмен в историю. Синхронный — без await."""
         save_messages(user_id, user_note, vision_result)
 
     async def chat_with_document(
@@ -266,10 +177,16 @@ class LLMService:
         doc_name: str = "документ",
     ) -> str:
         """Отвечает на вопрос по содержимому документа."""
-        memory_facts = load_memory(user_id)
-        system = self._build_system_prompt(memory_facts)
-        question = user_question.strip() or "Кратко изложи содержание документа."
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from app.database import load_memory
 
+        memory_facts = load_memory(user_id)
+        system = settings.system_prompt
+        if memory_facts:
+            facts = "\n".join(f"- {f}" for f in memory_facts)
+            system = f"{system}\n\nЧто известно о пользователе:\n{facts}"
+
+        question = user_question.strip() or "Кратко изложи содержание документа."
         combined = (
             f"Вот содержимое документа «{doc_name}»:\n\n"
             f"{doc_text}\n\n"
@@ -284,10 +201,6 @@ class LLMService:
         response = await self._llm.ainvoke(messages)
         reply = str(response.content)
 
-        save_messages(
-            user_id,
-            f"[Документ: {doc_name}] {question}",
-            reply,
-        )
-        logger.debug("user_id=%s | документ обработан: %s", user_id, doc_name)
+        save_messages(user_id, f"[Документ: {doc_name}] {question}", reply)
+        logger.debug("user_id=%s | документ: %s", user_id, doc_name)
         return reply
