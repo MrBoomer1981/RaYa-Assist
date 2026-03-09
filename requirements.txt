@@ -11,3 +11,5 @@ httpx
 fastapi
 uvicorn[standard]
 python-multipart
+
+gtts
