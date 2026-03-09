@@ -126,15 +126,36 @@ def create_app(llm_service) -> FastAPI:
     async def memory(token: str = Query(default="")):
         _check_token(token)
         user_id = settings.telegram_user_id
-        facts = load_memory(user_id)
-        return {"facts": facts}
+        from app.database import get_structured_memory, MEMORY_CATEGORIES
+        structured = get_structured_memory(user_id)
+        # Также возвращаем старые факты для совместимости
+        legacy = load_memory(user_id)
+        return {
+            "structured": structured,
+            "categories":  MEMORY_CATEGORIES,
+            "legacy_facts": legacy,
+        }
 
     @app.delete("/api/memory")
     async def delete_memory(token: str = Query(default="")):
         _check_token(token)
         user_id = settings.telegram_user_id
+        from app.database import clear_structured_memory
         clear_memory(user_id)
+        clear_structured_memory(user_id)
         return {"ok": True}
+
+    @app.delete("/api/memory/{category}/{key}")
+    async def delete_memory_entry(
+        category: str, key: str,
+        token: str = Query(default=""),
+    ):
+        """Удаляет конкретную запись из структурированной памяти."""
+        _check_token(token)
+        user_id = settings.telegram_user_id
+        from app.database import delete_memory_entry as _del
+        ok = _del(user_id, category, key)
+        return {"ok": ok}
 
     # ── Напоминания ───────────────────────────────────────────────────────────
 

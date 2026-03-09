@@ -404,6 +404,47 @@ textarea::placeholder { color: var(--muted); }
 }
 .card:hover { border-color: var(--border2); }
 
+.memory-category { margin-bottom: 20px; }
+.memory-cat-title {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.memory-entry {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+}
+.memory-key {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  min-width: 110px;
+  text-transform: capitalize;
+  flex-shrink: 0;
+}
+.memory-del-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.memory-entry:hover .memory-del-btn { opacity: 1; }
+.memory-del-btn:hover { color: var(--red); }
+
 .fact-card {
   display: flex;
   align-items: flex-start;
@@ -1068,25 +1109,68 @@ async function clearHistory() {
 }
 
 // ── Память ────────────────────────────────────────────────────────────────────
+const CATEGORY_LABELS = {
+  facts:       '👤 Факты',
+  interests:   '💡 Интересы',
+  projects:    '🚀 Проекты',
+  skills:      '🛠️ Навыки',
+  preferences: '⚙️ Предпочтения',
+  goals:       '🎯 Цели',
+  context:     '🔄 Сейчас работает над',
+};
+
 async function loadMemory() {
   const el = document.getElementById('memoryList');
   el.innerHTML = '<div class="loader">Загрузка...</div>';
   try {
-    const res = await fetch(api('/api/memory'));
+    const res  = await fetch(api('/api/memory'));
     const data = await res.json();
-    const facts = data.facts || [];
-    if (!facts.length) {
+    const structured = data.structured || {};
+    const legacy     = data.legacy_facts || [];
+
+    const hasStructured = Object.values(structured).some(cat => Object.keys(cat).length > 0);
+
+    if (!hasStructured && !legacy.length) {
       el.innerHTML = '<div class="empty"><div class="empty-icon">🧠</div>Память пуста</div>';
       return;
     }
-    el.innerHTML = facts.map((f,i) => `
-      <div class="card fact-card">
-        <div class="fact-icon">💡</div>
-        <div class="fact-text">${f.replace(/</g,'&lt;')}</div>
-      </div>`).join('');
+
+    let html = '';
+
+    if (hasStructured) {
+      for (const [cat, entries] of Object.entries(structured)) {
+        if (!entries || !Object.keys(entries).length) continue;
+        html += `<div class="memory-category">
+          <div class="memory-cat-title">${CATEGORY_LABELS[cat] || cat}</div>`;
+        for (const [key, value] of Object.entries(entries)) {
+          html += `<div class="card fact-card memory-entry">
+            <div class="memory-key">${key.replace(/_/g,' ')}</div>
+            <div class="fact-text">${String(value).replace(/</g,'&lt;')}</div>
+            <button class="memory-del-btn" onclick="deleteMemoryEntry('${cat}','${key}')" title="Удалить">✕</button>
+          </div>`;
+        }
+        html += '</div>';
+      }
+    } else {
+      html += '<div class="memory-category"><div class="memory-cat-title">📝 Факты</div>';
+      html += legacy.map(f =>
+        `<div class="card fact-card"><div class="fact-icon">💡</div><div class="fact-text">${f.replace(/</g,'&lt;')}</div></div>`
+      ).join('');
+      html += '</div>';
+    }
+
+    el.innerHTML = html;
   } catch(e) {
     el.innerHTML = `<div class="empty">Ошибка загрузки</div>`;
   }
+}
+
+async function deleteMemoryEntry(category, key) {
+  try {
+    await fetch(api(`/api/memory/${category}/${encodeURIComponent(key)}`), { method: 'DELETE' });
+    showToast('Запись удалена', 'success');
+    loadMemory();
+  } catch(e) { showToast('Ошибка удаления', 'error'); }
 }
 
 async function clearMemory() {

@@ -98,6 +98,17 @@ def init_db() -> None:
                 ON tasks(user_id, done);
             CREATE INDEX IF NOT EXISTS idx_mood_user
                 ON mood_log(user_id, created_at);
+            CREATE TABLE IF NOT EXISTS structured_memory (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                category   TEXT    NOT NULL,
+                key        TEXT    NOT NULL,
+                value      TEXT    NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, category, key) ON CONFLICT REPLACE
+            );
+            CREATE INDEX IF NOT EXISTS idx_structured_memory_user
+                ON structured_memory(user_id, category);
         """)
     logger.info("✅ База данных готова: %s", DB_PATH)
 
@@ -293,3 +304,109 @@ def get_recent_moods(user_id: int, limit: int = 7) -> list[tuple[str, str, str]]
             ORDER BY created_at DESC LIMIT ?
         """, (user_id, limit)).fetchall()
     return [(r[0], r[1], r[2]) for r in rows]
+
+
+# ── Структурированная память ──────────────────────────────────────────────────
+
+# Категории памяти
+MEMORY_CATEGORIES = {
+    "facts":       "Факты (имя, город, возраст, профессия)",
+    "interests":   "Интересы и увлечения",
+    "projects":    "Проекты над которыми работает",
+    "skills":      "Навыки и компетенции",
+    "preferences": "Предпочтения (стиль общения, любимые темы, привычки)",
+    "goals":       "Цели и планы",
+    "context":     "Текущий контекст (над чем сейчас работает, что происходит)",
+}
+
+
+def upsert_memory(user_id: int, category: str, key: str, value: str) -> None:
+    """Сохраняет или обновляет запись в структурированной памяти."""
+    now = datetime.utcnow().strftime(_TIME_FMT)
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO structured_memory (user_id, category, key, value, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, category, key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+        """, (user_id, category, key, value, now))
+
+
+def get_structured_memory(user_id: int) -> dict[str, dict[str, str]]:
+    """
+    Возвращает всю структурированную память пользователя.
+    Формат: {category: {key: value}}
+    """
+    with _conn() as con:
+        rows = con.execute("""
+            SELECT category, key, value FROM structured_memory
+            WHERE user_id = ?
+            ORDER BY category, updated_at DESC
+        """, (user_id,)).fetchall()
+
+    result: dict[str, dict[str, str]] = {}
+    for category, key, value in rows:
+        if category not in result:
+            result[category] = {}
+        result[category][key] = value
+    return result
+
+
+def get_memory_by_category(user_id: int, category: str) -> dict[str, str]:
+    """Возвращает память одной категории. Формат: {key: value}"""
+    with _conn() as con:
+        rows = con.execute("""
+            SELECT key, value FROM structured_memory
+            WHERE user_id = ? AND category = ?
+            ORDER BY updated_at DESC
+        """, (user_id, category)).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def delete_memory_entry(user_id: int, category: str, key: str) -> bool:
+    """Удаляет конкретную запись памяти."""
+    with _conn() as con:
+        cur = con.execute("""
+            DELETE FROM structured_memory
+            WHERE user_id = ? AND category = ? AND key = ?
+        """, (user_id, category, key))
+        return cur.rowcount > 0
+
+
+def clear_structured_memory(user_id: int) -> None:
+    """Очищает всю структурированную память пользователя."""
+    with _conn() as con:
+        con.execute(
+            "DELETE FROM structured_memory WHERE user_id = ?", (user_id,)
+        )
+
+
+def format_memory_for_prompt(user_id: int) -> str:
+    """
+    Форматирует структурированную память в текст для системного промпта.
+    Возвращает пустую строку если памяти нет.
+    """
+    memory = get_structured_memory(user_id)
+    if not memory:
+        return ""
+
+    labels = {
+        "facts":       "О Сократе",
+        "interests":   "Интересы",
+        "projects":    "Проекты",
+        "skills":      "Навыки",
+        "preferences": "Предпочтения",
+        "goals":       "Цели",
+        "context":     "Сейчас работает над",
+    }
+
+    lines = ["📋 Что RaYa знает о Сократе:"]
+    for category, entries in memory.items():
+        if not entries:
+            continue
+        label = labels.get(category, category)
+        items = "; ".join(f"{k}: {v}" for k, v in entries.items())
+        lines.append(f"  {label}: {items}")
+
+    return "\n".join(lines)

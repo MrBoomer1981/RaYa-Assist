@@ -67,6 +67,10 @@ class LLMService:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._orchestrator: Optional[Any] = None
 
+        # Структурированная память
+        from app.memory_service import MemoryService
+        self._memory = MemoryService(self._llm)
+
     # ── Вспомогательные ───────────────────────────────────────────────────────
 
     def _run_background(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -95,23 +99,6 @@ class LLMService:
 
     # ── Фоновые задачи ────────────────────────────────────────────────────────
 
-    async def _extract_facts_background(self, user_id: int, message: str) -> None:
-        try:
-            prompt = _MEMORY_EXTRACTION_PROMPT.format(message=message)
-            response = await self._llm.ainvoke([HumanMessage(content=prompt)])
-            text = (
-                str(response.content)
-                .strip()
-                .replace("```json", "")
-                .replace("```", "")
-                .strip()
-            )
-            facts: list[str] = json.loads(text)
-            if isinstance(facts, list) and facts:
-                save_memory(user_id, facts)
-        except Exception:
-            logger.debug("Не удалось извлечь факты для user_id=%s", user_id)
-
     # ── Основной метод ────────────────────────────────────────────────────────
 
     async def chat(self, user_id: int, user_message: str) -> ChatResult:
@@ -119,6 +106,9 @@ class LLMService:
         Точка входа — делегирует оркестратору.
         Сохраняет в историю, извлекает факты в фоне.
         """
+        # Миграция старых фактов → structured_memory (один раз, фоново)
+        self._run_background(self._memory.migrate_old_memory(user_id))
+
         # Поиск параллельно пока роутер думает
         search_task: Optional[asyncio.Task[str]] = None
         if self._needs_search(user_message) and self._search is not None:
@@ -145,9 +135,10 @@ class LLMService:
 
         save_messages(user_id, user_message, reply)
 
-        if self._should_extract_facts(user_id):
+        # Структурированная память — извлекаем каждые N сообщений
+        if self._memory.should_extract(user_id):
             self._run_background(
-                self._extract_facts_background(user_id, user_message)
+                self._memory.extract_and_save(user_id, user_message)
             )
 
         logger.debug(
