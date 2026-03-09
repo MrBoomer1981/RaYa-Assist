@@ -95,6 +95,7 @@ def create_app(llm_service) -> FastAPI:
                 "agent_name": result.agent_name,
                 "reminder":   result.reminder,
                 "image_url":  image_url,
+                "emotion":    result.metadata.get("emotion", "calm"),
             }
         except Exception as e:
             logger.exception("Ошибка чата")
@@ -216,11 +217,13 @@ def create_app(llm_service) -> FastAPI:
             audio_bytes = await _tts.synthesize(result.reply) if _tts.enabled else None
             audio_b64   = base64.b64encode(audio_bytes).decode() if audio_bytes else None
 
+            emotion = result.metadata.get("emotion", "calm")
             return {
                 "text":        text,
                 "reply":       result.reply,
                 "audio_base64": audio_b64,
                 "agent_name":  result.agent_name,
+                "emotion":     emotion,
             }
 
         except HTTPException:

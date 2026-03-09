@@ -1,7 +1,8 @@
 """
 raya_agent.py — главный агент RaYa.
-Fallback для общих разговоров и единственный агент с напоминаниями.
+Fallback для общих разговоров, напоминания, полный эмоциональный интеллект.
 """
+import asyncio
 import logging
 from datetime import datetime
 
@@ -9,6 +10,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
+from app.emotional_service import (
+    detect_mood,
+    detect_task_type,
+    extract_emotion_tag,
+    get_response_length_hint,
+    mood_context,
+)
 from app.utils import build_reminder_prompt_block, clean_reminder_tag, parse_reminder
 
 logger = logging.getLogger(__name__)
@@ -16,21 +24,48 @@ logger = logging.getLogger(__name__)
 
 class RayaAgent(BaseAgent):
     agent_name = "raya"
-    timeout = 30
+    timeout    = 30
 
     def _system_prompt(self) -> str:
         return settings.system_prompt
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
-        now_utc = datetime.utcnow()
+        now_utc   = datetime.utcnow()
+        is_voice  = ctx.extra.get("is_voice", False)
 
-        # Динамический системный промпт с временем и инструкцией по напоминаниям
-        system = settings.system_prompt + build_reminder_prompt_block(now_utc)
+        # ── 1. Трекинг настроения (фоново) ───────────────────────────────────
+        asyncio.create_task(self._track_mood(ctx))
+
+        # ── 2. Эмоциональный контекст из истории настроений ──────────────────
+        from app.database import get_recent_moods
+        moods    = get_recent_moods(ctx.user_id, limit=7)
+        emot_ctx = mood_context(moods)
+
+        # ── 3. Тип задачи → тон ──────────────────────────────────────────────
+        task_type, expected_emotion, tone_hint = detect_task_type(ctx.message)
+
+        # ── 4. Подсказка по длине ответа ─────────────────────────────────────
+        length_hint = get_response_length_hint(ctx.message, is_voice=is_voice)
+
+        # ── 5. Собираем системный промпт ─────────────────────────────────────
+        system = settings.system_prompt
+
+        if emot_ctx:
+            system += f"\n\n{emot_ctx}"
 
         if ctx.memory_facts:
-            facts = "\n".join(f"- {f}" for f in ctx.memory_facts)
-            system = f"{system}\n\nЧто известно о пользователе:\n{facts}"
+            facts   = "\n".join(f"- {f}" for f in ctx.memory_facts)
+            system += f"\n\nЧто известно о Сократе:\n{facts}"
 
+        if tone_hint:
+            system += f"\n\n{tone_hint}"
+
+        if length_hint:
+            system += f"\n\n{length_hint}"
+
+        system += build_reminder_prompt_block(now_utc)
+
+        # ── 6. Сообщение + поисковый контекст ────────────────────────────────
         content = ctx.message
         if ctx.search_results:
             content = f"{ctx.message}\n\n[Контекст из поиска:]\n{ctx.search_results}"
@@ -41,16 +76,37 @@ class RayaAgent(BaseAgent):
             HumanMessage(content=content),
         ]
 
+        # ── 7. Вызов модели ───────────────────────────────────────────────────
         response = await self._llm.ainvoke(messages)
-        raw = str(response.content)
+        raw      = str(response.content)
 
-        reminder = parse_reminder(raw, now_utc)
-        reply    = clean_reminder_tag(raw)
+        # ── 8. Извлекаем emotion tag и чистим ответ ──────────────────────────
+        emotion, raw_clean = extract_emotion_tag(raw)
+
+        reminder = parse_reminder(raw_clean, now_utc)
+        reply    = clean_reminder_tag(raw_clean)
+
+        logger.debug("emotion: %s | task: %s | user=%s", emotion, task_type, ctx.user_id)
 
         return AgentResult(
             success=True,
             content=reply,
             agent_name=self.agent_name,
             needs_critic=False,
-            metadata={"reminder": reminder},
+            metadata={
+                "reminder":  reminder,
+                "emotion":   emotion,
+                "task_type": task_type,
+            },
         )
+
+    async def _track_mood(self, ctx: AgentContext) -> None:
+        """Определяет настроение пользователя и сохраняет в mood_log фоново."""
+        try:
+            from app.database import save_mood
+            mood = await detect_mood(ctx.message, self._llm)
+            if mood != "нейтрально":
+                save_mood(ctx.user_id, mood, ctx.message[:100])
+                logger.debug("mood: %s | user=%s", mood, ctx.user_id)
+        except Exception:
+            pass
