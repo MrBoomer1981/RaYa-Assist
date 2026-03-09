@@ -755,6 +755,7 @@ function handleKey(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 }
 
+
 function addMessage(role, text, agentName) {
   const msgs = document.getElementById('messages');
   const time = new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
@@ -798,6 +799,27 @@ function hideTyping() {
   if (el) el.remove();
 }
 
+function addImage(url, caption, agentName) {
+  const msgs = document.getElementById('messages');
+  const time = new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ai';
+  wrap.style.animation = 'fadeUp 0.25s ease-out';
+  wrap.innerHTML = `
+    <div class="msg-avatar" style="width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:white;display:flex;align-items:center;justify-content:center;font-family:Syne;font-weight:700;font-size:11px;flex-shrink:0">R</div>
+    <div class="msg-body">
+      <div class="msg-agent">${agentName || 'image'}</div>
+      <div class="msg-bubble" style="padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);border-top-left-radius:3px">
+        <img src="${url}" alt="generated"
+          style="max-width:340px;width:100%;border-radius:8px;display:block;margin-bottom:${caption ? '8px' : '0'}">
+        ${caption ? `<div style="font-size:13px;color:var(--muted);padding:4px 2px">${caption.replace(/</g,'&lt;')}</div>` : ''}
+      </div>
+      <div class="msg-meta">${time}</div>
+    </div>`;
+  msgs.appendChild(wrap);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
 async function sendMessage() {
   if (isLoading) return;
   const inp = document.getElementById('input');
@@ -823,7 +845,12 @@ async function sendMessage() {
 
     if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
 
-    addMessage('ai', data.reply, data.agent_name);
+    // Изображение от ImageAgent
+    if (data.image_url) {
+      addImage(data.image_url, data.reply, data.agent_name);
+    } else {
+      addMessage('ai', data.reply, data.agent_name);
+    }
     document.getElementById('lastAgent').textContent = data.agent_name || 'raya';
 
     if (data.reminder) {

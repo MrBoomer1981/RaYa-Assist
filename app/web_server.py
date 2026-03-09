@@ -23,7 +23,9 @@ from app.database import (
 
 logger = logging.getLogger(__name__)
 
-STATIC_DIR = Path("static")
+STATIC_DIR  = Path("static")
+_MEDIA_DIR  = Path("static/media")
+_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 _WEB_TOKEN: str = os.getenv("WEB_TOKEN", "")
 
 # ── Pydantic схемы ────────────────────────────────────────────────────────────
@@ -66,10 +68,24 @@ def create_app(llm_service) -> FastAPI:
         _check_token(token)
         try:
             result = await llm_service.chat(req.user_id, req.message)
+
+            # Изображение от ImageAgent — сохраняем и отдаём URL
+            image_url: Optional[str] = None
+            if "image" in result.agent_name:
+                image_bytes = (result.metadata or {}).get("image_bytes")
+                if image_bytes:
+                    import uuid
+                    fname = f"{uuid.uuid4().hex}.jpg"
+                    fpath = _MEDIA_DIR / fname
+                    fpath.write_bytes(image_bytes)
+                    image_url = f"/static/media/{fname}"
+                    logger.info("🎨 Изображение сохранено: %s", fname)
+
             return {
                 "reply":      result.reply,
                 "agent_name": result.agent_name,
                 "reminder":   result.reminder,
+                "image_url":  image_url,
             }
         except Exception as e:
             logger.exception("Ошибка чата")
