@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.config import settings
 from app.database import (
     clear_history, clear_memory,
     delete_reminder, get_active_reminders,
@@ -32,7 +33,6 @@ _WEB_TOKEN: str = os.getenv("WEB_TOKEN", "")
 
 class ChatRequest(BaseModel):
     message: str
-    user_id: int = 1  # для личного бота — всегда один пользователь
 
 class ReminderRequest(BaseModel):
     text: str
@@ -67,7 +67,8 @@ def create_app(llm_service) -> FastAPI:
     async def chat(req: ChatRequest, token: str = Query(default="")):
         _check_token(token)
         try:
-            result = await llm_service.chat(req.user_id, req.message)
+            user_id = settings.telegram_user_id
+            result = await llm_service.chat(user_id, req.message)
 
             # Изображение от ImageAgent — сохраняем и отдаём URL
             image_url: Optional[str] = None
@@ -92,8 +93,9 @@ def create_app(llm_service) -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/api/history")
-    async def history(user_id: int = 1, token: str = Query(default="")):
+    async def history(token: str = Query(default="")):
         _check_token(token)
+        user_id = settings.telegram_user_id
         messages = load_history(user_id, limit=50)
         return [
             {"role": "human" if m.__class__.__name__ == "HumanMessage" else "ai",
@@ -102,30 +104,34 @@ def create_app(llm_service) -> FastAPI:
         ]
 
     @app.delete("/api/history")
-    async def delete_history(user_id: int = 1, token: str = Query(default="")):
+    async def delete_history(token: str = Query(default="")):
         _check_token(token)
+        user_id = settings.telegram_user_id
         clear_history(user_id)
         return {"ok": True}
 
     # ── Память ────────────────────────────────────────────────────────────────
 
     @app.get("/api/memory")
-    async def memory(user_id: int = 1, token: str = Query(default="")):
+    async def memory(token: str = Query(default="")):
         _check_token(token)
+        user_id = settings.telegram_user_id
         facts = load_memory(user_id)
         return {"facts": facts}
 
     @app.delete("/api/memory")
-    async def delete_memory(user_id: int = 1, token: str = Query(default="")):
+    async def delete_memory(token: str = Query(default="")):
         _check_token(token)
+        user_id = settings.telegram_user_id
         clear_memory(user_id)
         return {"ok": True}
 
     # ── Напоминания ───────────────────────────────────────────────────────────
 
     @app.get("/api/reminders")
-    async def reminders(user_id: int = 1, token: str = Query(default="")):
+    async def reminders(token: str = Query(default="")):
         _check_token(token)
+        user_id = settings.telegram_user_id
         items = get_active_reminders(user_id)
         return {"reminders": [
             {"id": r[0], "text": r[1], "remind_at": r[2]}
@@ -133,9 +139,10 @@ def create_app(llm_service) -> FastAPI:
         ]}
 
     @app.post("/api/reminders")
-    async def add_reminder(req: ReminderRequest, user_id: int = 1, token: str = Query(default="")):
+    async def add_reminder(req: ReminderRequest, token: str = Query(default="")):
         _check_token(token)
         try:
+            user_id = settings.telegram_user_id
             remind_at = datetime.strptime(req.remind_at, "%Y-%m-%d %H:%M:%S")
             rid = save_reminder(user_id, req.text, remind_at)
             return {"id": rid, "ok": True}
@@ -145,18 +152,19 @@ def create_app(llm_service) -> FastAPI:
     @app.delete("/api/reminders/{reminder_id}")
     async def remove_reminder(
         reminder_id: int,
-        user_id: int = 1,
         token: str = Query(default=""),
     ):
         _check_token(token)
+        user_id = settings.telegram_user_id
         ok = delete_reminder(reminder_id, user_id)
         return {"ok": ok}
 
     # ── Дневник ───────────────────────────────────────────────────────────────
 
     @app.get("/api/diary")
-    async def diary(user_id: int = 1, limit: int = 20, token: str = Query(default="")):
+    async def diary(limit: int = 20, token: str = Query(default="")):
         _check_token(token)
+        user_id = settings.telegram_user_id
         entries = load_diary_entries(user_id, limit=limit)
         return {"entries": [
             {"created_at": e[0], "entry": e[1]}
