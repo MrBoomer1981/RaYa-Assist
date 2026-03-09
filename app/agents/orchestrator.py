@@ -38,6 +38,12 @@ def _create_agent(name: str):
             case "science":
                 from app.agents.science_agent import ScienceAgent
                 return ScienceAgent()
+            case "todo":
+                from app.agents.todo_agent import TodoAgent
+                return TodoAgent()
+            case "morning":
+                from app.agents.morning_agent import MorningAgent
+                return MorningAgent()
             case "critic":
                 return CriticAgent()
             case _:

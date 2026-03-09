@@ -22,6 +22,7 @@ from app.database import (
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
 from app.scheduler_service import SchedulerService
+from app.proactive_service import ProactiveService
 from app.voice_service import VoiceService
 from app.vision_service import VisionService
 
@@ -164,6 +165,7 @@ async def main() -> None:
     voice = VoiceService()
     vision = VisionService()
     scheduler = SchedulerService(bot)
+    proactive = ProactiveService(bot, llm)
 
     # Веб-сервер — запускается параллельно с ботом
     import uvicorn
@@ -425,6 +427,7 @@ async def main() -> None:
     )
 
     scheduler.start()
+    proactive.start()
     try:
         # Запускаем бот и веб-сервер параллельно
         await asyncio.gather(
@@ -433,6 +436,7 @@ async def main() -> None:
         )
     finally:
         scheduler.stop()
+        proactive.stop()
         await bot.session.close()
         logger.info("🛑 RaYa остановлена")
 

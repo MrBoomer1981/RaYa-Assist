@@ -122,6 +122,30 @@ AGENTS: dict[str, AgentInfo] = {
         needs_critic=True,
     ),
 
+    "todo": AgentInfo(
+        name="todo",
+        title="Todo агент",
+        description="Управление задачами: добавить, показать, выполнить, удалить. Приоритеты и дедлайны.",
+        keywords=(
+            "задача", "задачи", "todo", "сделать", "напомни сделать",
+            "добавь задачу", "список дел", "выполнено", "выполни задачу",
+            "удали задачу", "покажи задачи", "мои задачи", "дедлайн",
+        ),
+        parallelizable=False,
+        needs_critic=False,
+        enabled=True,
+    ),
+    "morning": AgentInfo(
+        name="morning",
+        title="Утренний дайджест",
+        description="Утренний дайджест: погода, tech-новости, задачи, напоминания.",
+        keywords=(
+            "утренний дайджест", "дайджест", "что сегодня", "погода сегодня",
+        ),
+        parallelizable=False,
+        needs_critic=False,
+        enabled=True,
+    ),
     "critic": AgentInfo(
         name="critic",
         title="Critic Agent",

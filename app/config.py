@@ -51,10 +51,9 @@ class Settings(BaseSettings):
 
     # Опциональные ключи для расширений
     tavily_api_key: str = ""
+    telegram_user_id: int = 1h
 
-    # Telegram user_id владельца — нужен для веб-интерфейса
-    # Найти: написать боту /start и посмотреть логи Railway (user_id=XXXXXXXXX)
-    telegram_user_id: int = 1
+
 
     # Параметры модели
     model_name: str = "llama-3.3-70b-versatile"

@@ -75,6 +75,29 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_diary_user
                 ON diary(user_id, created_at);
         """)
+    # Таблица задач
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                text       TEXT    NOT NULL,
+                priority   INTEGER NOT NULL DEFAULT 2,  -- 1=высокий, 2=средний, 3=низкий
+                due_date   TEXT    DEFAULT '',
+                done       INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS mood_log (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                mood       TEXT    NOT NULL,
+                context    TEXT    DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_tasks_user
+                ON tasks(user_id, done);
+            CREATE INDEX IF NOT EXISTS idx_mood_user
+                ON mood_log(user_id, created_at);
+        """)
     logger.info("✅ База данных готова: %s", DB_PATH)
 
 
@@ -208,3 +231,64 @@ def load_diary_entries(user_id: int, limit: int = 5) -> list[tuple[str, str]]:
             (user_id, limit),
         ).fetchall()
     return [(r[0], r[1]) for r in rows]
+
+
+# ── Задачи ────────────────────────────────────────────────────────────────────
+
+def save_task(user_id: int, text: str, priority: int = 2, due_date: str = "") -> int:
+    with _conn() as con:
+        cur = con.execute(
+            "INSERT INTO tasks (user_id, text, priority, due_date) VALUES (?, ?, ?, ?)",
+            (user_id, text, priority, due_date),
+        )
+        return cur.lastrowid or 0
+
+
+def get_active_tasks(user_id: int) -> list[tuple[int, str, int, str]]:
+    """[(id, text, priority, due_date)] — незавершённые задачи по приоритету."""
+    with _conn() as con:
+        rows = con.execute("""
+            SELECT id, text, priority, due_date FROM tasks
+            WHERE user_id = ? AND done = 0
+            ORDER BY priority ASC, created_at ASC
+        """, (user_id,)).fetchall()
+    return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+
+def mark_task_done(task_id: int, user_id: int) -> bool:
+    with _conn() as con:
+        cur = con.execute(
+            "UPDATE tasks SET done = 1 WHERE id = ? AND user_id = ?",
+            (task_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_task(task_id: int, user_id: int) -> bool:
+    with _conn() as con:
+        cur = con.execute(
+            "DELETE FROM tasks WHERE id = ? AND user_id = ?",
+            (task_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+# ── Настроение / эмоциональная память ────────────────────────────────────────
+
+def save_mood(user_id: int, mood: str, context: str = "") -> None:
+    with _conn() as con:
+        con.execute(
+            "INSERT INTO mood_log (user_id, mood, context) VALUES (?, ?, ?)",
+            (user_id, mood, context),
+        )
+
+
+def get_recent_moods(user_id: int, limit: int = 7) -> list[tuple[str, str, str]]:
+    """[(mood, context, created_at)] — последние N записей настроения."""
+    with _conn() as con:
+        rows = con.execute("""
+            SELECT mood, context, created_at FROM mood_log
+            WHERE user_id = ?
+            ORDER BY created_at DESC LIMIT ?
+        """, (user_id, limit)).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
