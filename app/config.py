@@ -51,7 +51,7 @@ class Settings(BaseSettings):
 
     # Опциональные ключи для расширений
     tavily_api_key: str = ""
-    telegram_user_id: int = 1h
+    telegram_user_id: int = 1
 
 
 
