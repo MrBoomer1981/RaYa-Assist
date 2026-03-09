@@ -44,6 +44,15 @@ def _create_agent(name: str):
             case "morning":
                 from app.agents.morning_agent import MorningAgent
                 return MorningAgent()
+            case "text":
+                from app.agents.text_agent import TextAgent
+                return TextAgent()
+            case "ideas":
+                from app.agents.ideas_agent import IdeasAgent
+                return IdeasAgent()
+            case "planning":
+                from app.agents.planning_agent import PlanningAgent
+                return PlanningAgent()
             case "critic":
                 return CriticAgent()
             case _:
