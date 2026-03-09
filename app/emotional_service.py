@@ -10,6 +10,7 @@ emotional_service.py — эмоциональный интеллект RaYa.
 - get_last_message_time()    — время последнего сообщения
 - generate_initiative_message() — RaYa пишет первой
 """
+import itertools as _itertools
 import logging
 import re
 from datetime import datetime
@@ -212,12 +213,11 @@ _INITIATIVE_PROMPTS = [
     "Можешь упомянуть что-то из его последних разговоров или задач. 1-2 предложения.",
 ]
 
-_initiative_index = 0
+_initiative_cycle = _itertools.cycle(_INITIATIVE_PROMPTS)
 
 
 async def generate_initiative_message(user_id: int, llm) -> str:
     """Генерирует инициативное сообщение от RaYa."""
-    global _initiative_index
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
         from app.database import load_memory, get_active_tasks
@@ -231,8 +231,7 @@ async def generate_initiative_message(user_id: int, llm) -> str:
         if tasks:
             context += f"Его активные задачи: {', '.join(t[1] for t in tasks[:2])}\n"
 
-        prompt = _INITIATIVE_PROMPTS[_initiative_index % len(_INITIATIVE_PROMPTS)]
-        _initiative_index += 1
+        prompt = next(_initiative_cycle)
 
         response = await llm.ainvoke([
             SystemMessage(content="Ты RaYa — личный ассистент и друг Сократа. Обращайся только 'Сократ'."),

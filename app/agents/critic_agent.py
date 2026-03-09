@@ -5,7 +5,7 @@ critic_agent.py — финальный агент проверки резуль�
 """
 import logging
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
@@ -66,10 +66,7 @@ class CriticAgent(BaseAgent):
 
         try:
             response = await self._llm.ainvoke([
-                __import__(
-                    'langchain_core.messages',
-                    fromlist=['SystemMessage']
-                ).SystemMessage(content=_SYSTEM),
+                SystemMessage(content=_SYSTEM),
                 HumanMessage(content=prompt),
             ])
             reviewed_content = str(response.content)

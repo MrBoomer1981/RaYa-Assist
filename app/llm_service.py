@@ -177,7 +177,6 @@ class LLMService:
         doc_name: str = "документ",
     ) -> str:
         """Отвечает на вопрос по содержимому документа."""
-        from langchain_core.messages import HumanMessage, SystemMessage
         from app.database import load_memory
 
         memory_facts = load_memory(user_id)

@@ -55,10 +55,29 @@ class MorningAgent(BaseAgent):
         todays_reminders = [r for r in reminders if r[2].startswith(today)]
 
         # Формируем контекст для модели
+        # Поиск tech-новостей параллельно с погодой
+        news_task = None
+        if settings.search_enabled:
+            from app.search_service import SearchService
+            _search = SearchService()
+            import asyncio
+            news_task = asyncio.create_task(
+                _search.search("AI технологии новости сегодня")
+            )
+
         context_parts = [f"Текущее время UTC: {now.strftime('%Y-%m-%d %H:%M')}"]
 
         if weather:
             context_parts.append(f"Погода в Самаре:\n{weather}")
+
+        # Ждём новости
+        if news_task is not None:
+            try:
+                news = await news_task
+                if news:
+                    context_parts.append(f"Актуальные tech-новости из поиска:\n{news[:1500]}")
+            except Exception:
+                pass
 
         if tasks:
             priority_map = {1: "🔴 высокий", 2: "🟡 средний", 3: "🟢 низкий"}
@@ -83,7 +102,6 @@ class MorningAgent(BaseAgent):
         user_content = (
             "Подготовь утренний дайджест.\n\n"
             + "\n\n".join(context_parts)
-            + "\n\nТех-новости найди сам через поиск — самое актуальное в AI и технологиях."
         )
 
         messages = [

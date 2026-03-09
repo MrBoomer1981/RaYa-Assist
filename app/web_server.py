@@ -3,8 +3,10 @@ web_server.py — FastAPI веб-интерфейс RaYa.
 Защита через токен в URL: /?token=YOUR_TOKEN
 Все разделы: чат, память, дневник, напоминания.
 """
+import base64
 import logging
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -15,10 +17,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.config import settings
-import base64
-import tempfile
-from pathlib import Path
-
 from app.tts_service import TTSService
 from app.voice_service import VoiceService
 from app.database import (
@@ -54,6 +52,9 @@ def create_app(llm_service) -> FastAPI:
     app = FastAPI(title="RaYa", docs_url=None, redoc_url=None)
     _tts   = TTSService()
     _voice = VoiceService()
+
+    # Создаём директорию для изображений если нет
+    (STATIC_DIR / "media").mkdir(parents=True, exist_ok=True)
 
     def _check_token(token: str = Query(default="")) -> None:
         """Проверяет токен. Если WEB_TOKEN не задан — пропускает всех."""
@@ -194,17 +195,8 @@ def create_app(llm_service) -> FastAPI:
             if not body:
                 raise HTTPException(status_code=400, detail="Пустое аудио")
 
-            # Сохраняем во временный файл
-            suffix = ".webm"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(body)
-                tmp_path = Path(tmp.name)
-
-            try:
-                # Whisper — распознаём речь
-                text = await _voice.transcribe(tmp_path.read_bytes())
-            finally:
-                tmp_path.unlink(missing_ok=True)
+            # Whisper — передаём байты напрямую
+            text = await _voice.transcribe(body)
 
             if not text:
                 return {"text": "", "reply": "Не удалось распознать речь", "audio_base64": None, "agent_name": "raya"}

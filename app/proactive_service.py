@@ -7,7 +7,7 @@ proactive_service.py — проактивные сообщения от RaYa.
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from aiogram import Bot
 
@@ -93,8 +93,7 @@ class ProactiveService:
                 logger.info("🤫 Тишина %.1f ч — RaYa пишет первой", silence_hours)
 
                 # Берём лёгкую модель для инициативы
-                from app.llm_service import LLMService
-                llm = self._llm._get_router_llm() if hasattr(self._llm, '_get_router_llm') else self._llm._llm
+                llm = self._llm._llm
 
                 text = await generate_initiative_message(user_id, llm)
 

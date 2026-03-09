@@ -50,15 +50,8 @@ class ScienceAgent(BaseAgent):
             except Exception:
                 logger.warning("Science: поиск недоступен")
 
-        enriched_ctx = AgentContext(
-            user_id=ctx.user_id,
-            message=ctx.message,
-            history=ctx.history,
-            memory_facts=ctx.memory_facts,
-            search_results=search_results,
-            extra=ctx.extra,
-        )
-
+        import dataclasses
+        enriched_ctx = dataclasses.replace(ctx, search_results=search_results)
         messages = self._build_messages(enriched_ctx)
         response = await self._llm.ainvoke(messages)
         content = str(response.content)

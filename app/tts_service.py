@@ -2,6 +2,7 @@
 tts_service.py — синтез речи через gTTS (Google Text-to-Speech).
 Бесплатно, без API ключей, поддерживает русский язык.
 """
+import asyncio
 import io
 import logging
 import re
@@ -39,9 +40,7 @@ class TTSService:
             return None
 
         try:
-            import asyncio
-            # gTTS синхронный — запускаем в executor чтобы не блокировать event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             audio = await loop.run_in_executor(None, _synthesize_sync, clean)
             logger.info("🔊 TTS: синтезировано %d символов", len(clean))
             return audio
