@@ -13,7 +13,11 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("database.db")
+# Railway Volume — данные хранятся на постоянном диске
+# Локально (разработка): ./database.db
+# Railway (прод): /data/database.db (Volume примонтирован к /data)
+import os as _os
+DB_PATH = Path(_os.getenv("DB_PATH", "database.db"))
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -66,22 +70,11 @@ def init_db() -> None:
                 mood       TEXT    DEFAULT '',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
-            CREATE INDEX IF NOT EXISTS idx_history_user
-                ON history(user_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_memory_user
-                ON user_memory(user_id);
-            CREATE INDEX IF NOT EXISTS idx_reminders_due
-                ON reminders(remind_at, done);
-            CREATE INDEX IF NOT EXISTS idx_diary_user
-                ON diary(user_id, created_at);
-        """)
-    # Таблица задач
-        con.executescript("""
             CREATE TABLE IF NOT EXISTS tasks (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id    INTEGER NOT NULL,
                 text       TEXT    NOT NULL,
-                priority   INTEGER NOT NULL DEFAULT 2,  -- 1=высокий, 2=средний, 3=низкий
+                priority   INTEGER NOT NULL DEFAULT 2,
                 due_date   TEXT    DEFAULT '',
                 done       INTEGER NOT NULL DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -93,6 +86,14 @@ def init_db() -> None:
                 context    TEXT    DEFAULT '',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE INDEX IF NOT EXISTS idx_history_user
+                ON history(user_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_user
+                ON user_memory(user_id);
+            CREATE INDEX IF NOT EXISTS idx_reminders_due
+                ON reminders(remind_at, done);
+            CREATE INDEX IF NOT EXISTS idx_diary_user
+                ON diary(user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_tasks_user
                 ON tasks(user_id, done);
             CREATE INDEX IF NOT EXISTS idx_mood_user
