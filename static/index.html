@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RaYa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=DM+Mono:ital,wght@0,300;0,400;1,300&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #0e0e10;
+  --surface:   #16161a;
+  --surface2:  #1e1e24;
+  --border:    #2a2a32;
+  --border2:   #363642;
+  --text:      #e8e8f0;
+  --muted:     #6b6b80;
+  --accent:    #a78bfa;
+  --accent2:   #7c3aed;
+  --gold:      #f59e0b;
+  --green:     #34d399;
+  --red:       #f87171;
+  --code:      #DM Mono, monospace;
+  --radius:    12px;
+  --radius-sm: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-weight: 300;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Layout ── */
+.app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 56px 1fr;
+  height: 100vh;
+}
+
+/* ── Header ── */
+header {
+  grid-column: 1 / -1;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 12px;
+  position: relative;
+}
+
+.logo {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.04em;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--gold) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.logo-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  flex-shrink: 0;
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(0.85); }
+}
+
+.header-status {
+  margin-left: auto;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  gap: 16px;
+}
+.header-status span { color: var(--accent); }
+
+/* ── Sidebar ── */
+nav {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-section {
+  padding: 8px 16px 4px;
+  font-size: 10px;
+  font-family: 'DM Mono', monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  cursor: pointer;
+  border-radius: 0;
+  font-size: 13.5px;
+  font-weight: 400;
+  color: var(--muted);
+  transition: all 0.15s;
+  border-left: 2px solid transparent;
+  margin: 0 8px;
+  border-radius: var(--radius-sm);
+}
+.nav-item:hover { color: var(--text); background: var(--surface2); }
+.nav-item.active {
+  color: var(--accent);
+  background: rgba(167, 139, 250, 0.08);
+  border-left-color: var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-left: 0;
+  padding-left: 22px;
+}
+.nav-icon { font-size: 15px; flex-shrink: 0; }
+
+.nav-footer {
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.agent-badge {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: rgba(167,139,250,0.1);
+  color: var(--accent);
+  border: 1px solid rgba(167,139,250,0.2);
+  display: inline-block;
+  margin: 2px;
+}
+
+/* ── Main content ── */
+main {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.panel { display: none; flex-direction: column; height: 100%; }
+.panel.active { display: flex; }
+
+/* ── Chat panel ── */
+.chat-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.chat-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 15px;
+  font-weight: 600;
+}
+.agent-indicator {
+  margin-left: auto;
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+.agent-indicator b { color: var(--accent); font-weight: 400; }
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+}
+.messages::-webkit-scrollbar { width: 4px; }
+.messages::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.msg {
+  display: flex;
+  gap: 12px;
+  max-width: 72%;
+  animation: fadeUp 0.25s ease-out;
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.msg.user { align-self: flex-end; flex-direction: row-reverse; }
+
+.msg-avatar {
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+}
+.msg.ai .msg-avatar {
+  background: linear-gradient(135deg, var(--accent2), var(--accent));
+  color: white;
+  font-size: 11px;
+}
+.msg.user .msg-avatar {
+  background: var(--surface2);
+  color: var(--gold);
+}
+
+.msg-body { display: flex; flex-direction: column; gap: 4px; }
+.msg-bubble {
+  padding: 11px 15px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.ai .msg-bubble {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top-left-radius: 3px;
+  color: var(--text);
+}
+.msg.user .msg-bubble {
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  border-top-right-radius: 3px;
+  color: var(--text);
+}
+.msg-meta {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.msg.user .msg-meta { text-align: right; }
+
+.msg-agent {
+  display: inline-block;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(167,139,250,0.1);
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.typing {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+.typing-dots {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  border-bottom-left-radius: 3px;
+  padding: 14px 18px;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.typing-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: bounce 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40%            { transform: translateY(-6px); opacity: 1; }
+}
+
+.chat-input-area {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.chat-input-wrap {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  transition: border-color 0.2s;
+}
+.chat-input-wrap:focus-within { border-color: var(--accent); }
+
+textarea {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 300;
+  resize: none;
+  max-height: 120px;
+  min-height: 22px;
+  line-height: 1.5;
+}
+textarea::placeholder { color: var(--muted); }
+
+.send-btn {
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  background: var(--accent2);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 16px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.send-btn:hover { background: var(--accent); transform: scale(1.05); }
+.send-btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+
+/* ── Generic panel header ── */
+.panel-header {
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.panel-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+}
+.panel-subtitle { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+}
+.panel-body::-webkit-scrollbar { width: 4px; }
+.panel-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+/* ── Cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 10px;
+  transition: border-color 0.2s;
+}
+.card:hover { border-color: var(--border2); }
+
+.fact-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.fact-icon {
+  width: 28px; height: 28px;
+  border-radius: 7px;
+  background: rgba(167,139,250,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.fact-text { font-size: 14px; line-height: 1.5; padding-top: 4px; }
+
+/* Напоминания */
+.reminder-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.reminder-time {
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  color: var(--gold);
+  min-width: 140px;
+  flex-shrink: 0;
+}
+.reminder-text { flex: 1; font-size: 14px; }
+.del-btn {
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248,113,113,0.2);
+  color: var(--red);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.del-btn:hover { background: rgba(248,113,113,0.2); }
+
+/* Дневник */
+.diary-card {
+  border-left: 2px solid var(--accent2);
+}
+.diary-date {
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.diary-text { font-size: 14px; line-height: 1.65; color: var(--text); }
+
+/* Добавление напоминания */
+.add-reminder-form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 20px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.add-reminder-form input {
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.add-reminder-form input:focus { border-color: var(--accent); }
+.add-reminder-form input.text-inp { flex: 1; min-width: 160px; }
+.add-reminder-form input.date-inp { width: 190px; }
+.add-btn {
+  padding: 8px 16px;
+  background: var(--accent2);
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  transition: background 0.15s;
+}
+.add-btn:hover { background: var(--accent); }
+
+/* Danger zone */
+.danger-btn {
+  padding: 8px 14px;
+  background: rgba(248,113,113,0.1);
+  color: var(--red);
+  border: 1px solid rgba(248,113,113,0.25);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: 'DM Mono', monospace;
+  transition: all 0.15s;
+}
+.danger-btn:hover { background: rgba(248,113,113,0.2); }
+
+/* Empty state */
+.empty {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.5; }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--text);
+  z-index: 999;
+  transform: translateY(60px);
+  opacity: 0;
+  transition: all 0.3s ease;
+  pointer-events: none;
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.success { border-color: rgba(52,211,153,0.4); color: var(--green); }
+.toast.error   { border-color: rgba(248,113,113,0.4); color: var(--red); }
+
+/* Loader */
+.loader {
+  text-align: center;
+  padding: 40px;
+  color: var(--muted);
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+}
+
+/* Status panel */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.status-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.status-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+.status-value { font-size: 14px; font-weight: 500; }
+.status-ok { color: var(--green); }
+.agents-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="logo-dot"></div>
+    <div class="logo">RaYa</div>
+    <div class="header-status" id="headerStatus">
+      <span id="hTime">—</span>
+      <span id="hModel">—</span>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <nav>
+    <div class="nav-section">Основное</div>
+    <div class="nav-item active" data-panel="chat" onclick="switchPanel('chat', this)">
+      <span class="nav-icon">💬</span> Чат с RaYa
+    </div>
+
+    <div class="nav-section" style="margin-top:8px">Данные</div>
+    <div class="nav-item" data-panel="memory" onclick="switchPanel('memory', this)">
+      <span class="nav-icon">🧠</span> Память
+    </div>
+    <div class="nav-item" data-panel="diary" onclick="switchPanel('diary', this)">
+      <span class="nav-icon">📔</span> Дневник
+    </div>
+    <div class="nav-item" data-panel="reminders" onclick="switchPanel('reminders', this)">
+      <span class="nav-icon">⏰</span> Напоминания
+    </div>
+
+    <div class="nav-section" style="margin-top:8px">Система</div>
+    <div class="nav-item" data-panel="status" onclick="switchPanel('status', this)">
+      <span class="nav-icon">⚡</span> Статус
+    </div>
+
+    <div class="nav-footer">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:6px;font-family:'DM Mono',monospace;">АГЕНТЫ</div>
+      <div id="agentBadges"></div>
+    </div>
+  </nav>
+
+  <!-- Main -->
+  <main>
+
+    <!-- ── Chat ── -->
+    <div class="panel active" id="panel-chat">
+      <div class="chat-header">
+        <span style="font-size:16px">💬</span>
+        <div class="chat-title">Чат с RaYa</div>
+        <div class="agent-indicator">агент: <b id="lastAgent">raya</b></div>
+      </div>
+      <div class="messages" id="messages">
+        <div class="msg ai">
+          <div class="msg-avatar">R</div>
+          <div class="msg-body">
+            <div class="msg-agent">raya</div>
+            <div class="msg-bubble">Hi Sokrat, я RaYa. Готова к работе 🚀</div>
+            <div class="msg-meta">сейчас</div>
+          </div>
+        </div>
+      </div>
+      <div class="chat-input-area">
+        <div class="chat-input-wrap">
+          <textarea id="input" placeholder="Напиши что-нибудь..." rows="1"
+            onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+          <button class="send-btn" id="sendBtn" onclick="sendMessage()">→</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Memory ── -->
+    <div class="panel" id="panel-memory">
+      <div class="panel-header">
+        <span style="font-size:18px">🧠</span>
+        <div class="panel-title">Долгосрочная память</div>
+        <button class="danger-btn" onclick="clearMemory()">Очистить</button>
+      </div>
+      <div class="panel-body" id="memoryList">
+        <div class="loader">Загрузка...</div>
+      </div>
+    </div>
+
+    <!-- ── Diary ── -->
+    <div class="panel" id="panel-diary">
+      <div class="panel-header">
+        <span style="font-size:18px">📔</span>
+        <div class="panel-title">Дневник</div>
+        <div class="panel-subtitle" id="diaryCount">—</div>
+      </div>
+      <div class="panel-body" id="diaryList">
+        <div class="loader">Загрузка...</div>
+      </div>
+    </div>
+
+    <!-- ── Reminders ── -->
+    <div class="panel" id="panel-reminders">
+      <div class="panel-header">
+        <span style="font-size:18px">⏰</span>
+        <div class="panel-title">Напоминания</div>
+      </div>
+      <div class="panel-body">
+        <div class="add-reminder-form">
+          <input class="text-inp" id="remText" placeholder="Текст напоминания" type="text">
+          <input class="date-inp" id="remDate" type="datetime-local">
+          <button class="add-btn" onclick="addReminder()">+ Добавить</button>
+        </div>
+        <div id="reminderList"><div class="loader">Загрузка...</div></div>
+      </div>
+    </div>
+
+    <!-- ── Status ── -->
+    <div class="panel" id="panel-status">
+      <div class="panel-header">
+        <span style="font-size:18px">⚡</span>
+        <div class="panel-title">Статус системы</div>
+      </div>
+      <div class="panel-body">
+        <div class="status-grid" id="statusGrid">
+          <div class="loader" style="grid-column:1/-1">Загрузка...</div>
+        </div>
+        <div style="margin-top:8px">
+          <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);margin-bottom:10px;text-transform:uppercase;letter-spacing:.08em">Активные агенты</div>
+          <div class="agents-wrap" id="statusAgents"></div>
+        </div>
+        <div style="margin-top:28px;padding-top:20px;border-top:1px solid var(--border)">
+          <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:.08em">Опасная зона</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="danger-btn" onclick="clearHistory()">🗑 Очистить историю чата</button>
+            <button class="danger-btn" onclick="clearMemory()">🗑 Очистить память</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── Конфигурация ──────────────────────────────────────────────────────────────
+const TOKEN  = new URLSearchParams(location.search).get('token') || '';
+const USER_ID = 1;
+const api = path => `${path}?token=${TOKEN}&user_id=${USER_ID}`;
+
+// ── Утилиты ───────────────────────────────────────────────────────────────────
+function showToast(msg, type = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  setTimeout(() => t.className = 'toast', 2800);
+}
+
+function timeAgo(dtStr) {
+  const d = new Date(dtStr.replace(' ', 'T') + 'Z');
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60)   return 'только что';
+  if (diff < 3600) return `${Math.floor(diff/60)} мин назад`;
+  if (diff < 86400) return `${Math.floor(diff/3600)} ч назад`;
+  return d.toLocaleDateString('ru-RU');
+}
+
+function nowLocal() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// ── Навигация ─────────────────────────────────────────────────────────────────
+function switchPanel(name, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById(`panel-${name}`).classList.add('active');
+  el.classList.add('active');
+  if (name === 'memory')    loadMemory();
+  if (name === 'diary')     loadDiary();
+  if (name === 'reminders') loadReminders();
+  if (name === 'status')    loadStatus();
+}
+
+// ── Чат ───────────────────────────────────────────────────────────────────────
+let isLoading = false;
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+function addMessage(role, text, agentName) {
+  const msgs = document.getElementById('messages');
+  const time = new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+  const isAI = role === 'ai';
+
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${isAI ? 'ai' : 'user'}`;
+
+  const avatar = `<div class="msg-avatar">${isAI ? 'R' : 'S'}</div>`;
+  const agentTag = isAI && agentName ? `<div class="msg-agent">${agentName}</div>` : '';
+  wrap.innerHTML = `
+    ${avatar}
+    <div class="msg-body">
+      ${agentTag}
+      <div class="msg-bubble">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+      <div class="msg-meta">${time}</div>
+    </div>`;
+  msgs.appendChild(wrap);
+  msgs.scrollTop = msgs.scrollHeight;
+  return wrap;
+}
+
+function showTyping() {
+  const msgs = document.getElementById('messages');
+  const el = document.createElement('div');
+  el.className = 'typing';
+  el.id = 'typing';
+  el.innerHTML = `
+    <div class="msg-avatar" style="width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#7c3aed,#a78bfa);color:white;display:flex;align-items:center;justify-content:center;font-family:Syne;font-weight:700;font-size:11px;flex-shrink:0">R</div>
+    <div class="typing-dots">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>`;
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function hideTyping() {
+  const el = document.getElementById('typing');
+  if (el) el.remove();
+}
+
+async function sendMessage() {
+  if (isLoading) return;
+  const inp = document.getElementById('input');
+  const text = inp.value.trim();
+  if (!text) return;
+
+  inp.value = '';
+  inp.style.height = 'auto';
+  addMessage('user', text);
+
+  isLoading = true;
+  document.getElementById('sendBtn').disabled = true;
+  showTyping();
+
+  try {
+    const res = await fetch(api('/api/chat'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({message: text, user_id: USER_ID}),
+    });
+    const data = await res.json();
+    hideTyping();
+
+    if (!res.ok) throw new Error(data.detail || 'Ошибка сервера');
+
+    addMessage('ai', data.reply, data.agent_name);
+    document.getElementById('lastAgent').textContent = data.agent_name || 'raya';
+
+    if (data.reminder) {
+      showToast(`⏰ Напоминание записано: ${data.reminder.text}`, 'success');
+    }
+  } catch(e) {
+    hideTyping();
+    addMessage('ai', `⚠️ Ошибка: ${e.message}`);
+    showToast(e.message, 'error');
+  } finally {
+    isLoading = false;
+    document.getElementById('sendBtn').disabled = false;
+    inp.focus();
+  }
+}
+
+async function clearHistory() {
+  if (!confirm('Очистить историю чата?')) return;
+  await fetch(api('/api/history'), {method:'DELETE'});
+  document.getElementById('messages').innerHTML = '';
+  showToast('История очищена', 'success');
+}
+
+// ── Память ────────────────────────────────────────────────────────────────────
+async function loadMemory() {
+  const el = document.getElementById('memoryList');
+  el.innerHTML = '<div class="loader">Загрузка...</div>';
+  try {
+    const res = await fetch(api('/api/memory'));
+    const data = await res.json();
+    const facts = data.facts || [];
+    if (!facts.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">🧠</div>Память пуста</div>';
+      return;
+    }
+    el.innerHTML = facts.map((f,i) => `
+      <div class="card fact-card">
+        <div class="fact-icon">💡</div>
+        <div class="fact-text">${f.replace(/</g,'&lt;')}</div>
+      </div>`).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="empty">Ошибка загрузки</div>`;
+  }
+}
+
+async function clearMemory() {
+  if (!confirm('Удалить всю память?')) return;
+  await fetch(api('/api/memory'), {method:'DELETE'});
+  showToast('Память удалена', 'success');
+  loadMemory();
+}
+
+// ── Дневник ───────────────────────────────────────────────────────────────────
+async function loadDiary() {
+  const el = document.getElementById('diaryList');
+  el.innerHTML = '<div class="loader">Загрузка...</div>';
+  try {
+    const res  = await fetch(api('/api/diary') + '&limit=30');
+    const data = await res.json();
+    const entries = data.entries || [];
+    document.getElementById('diaryCount').textContent = `${entries.length} записей`;
+    if (!entries.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">📔</div>Дневник пуст</div>';
+      return;
+    }
+    el.innerHTML = entries.map(e => `
+      <div class="card diary-card">
+        <div class="diary-date">${timeAgo(e.created_at)}</div>
+        <div class="diary-text">${e.entry.replace(/</g,'&lt;')}</div>
+      </div>`).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="empty">Ошибка загрузки</div>`;
+  }
+}
+
+// ── Напоминания ───────────────────────────────────────────────────────────────
+async function loadReminders() {
+  const el = document.getElementById('reminderList');
+  el.innerHTML = '<div class="loader">Загрузка...</div>';
+  try {
+    const res  = await fetch(api('/api/reminders'));
+    const data = await res.json();
+    const items = data.reminders || [];
+    document.getElementById('remDate').value = nowLocal();
+    if (!items.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">⏰</div>Напоминаний нет</div>';
+      return;
+    }
+    el.innerHTML = items.map(r => `
+      <div class="card reminder-card">
+        <div class="reminder-time">⏰ ${r.remind_at}</div>
+        <div class="reminder-text">${r.text.replace(/</g,'&lt;')}</div>
+        <button class="del-btn" onclick="deleteReminder(${r.id})" title="Удалить">✕</button>
+      </div>`).join('');
+  } catch(e) {
+    el.innerHTML = `<div class="empty">Ошибка загрузки</div>`;
+  }
+}
+
+async function addReminder() {
+  const text = document.getElementById('remText').value.trim();
+  const dt   = document.getElementById('remDate').value;
+  if (!text || !dt) { showToast('Заполни текст и время', 'error'); return; }
+
+  // datetime-local → "YYYY-MM-DD HH:MM:SS" UTC
+  const local = new Date(dt);
+  const utc   = new Date(local.getTime() - local.getTimezoneOffset() * 60000);
+  const pad   = n => String(n).padStart(2,'0');
+  const remAt = `${utc.getFullYear()}-${pad(utc.getMonth()+1)}-${pad(utc.getDate())} ${pad(utc.getHours())}:${pad(utc.getMinutes())}:00`;
+
+  try {
+    const res = await fetch(api('/api/reminders'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text, remind_at: remAt}),
+    });
+    if (!res.ok) throw new Error('Ошибка сохранения');
+    document.getElementById('remText').value = '';
+    showToast('Напоминание добавлено ✓', 'success');
+    loadReminders();
+  } catch(e) { showToast(e.message, 'error'); }
+}
+
+async function deleteReminder(id) {
+  await fetch(api(`/api/reminders/${id}`), {method:'DELETE'});
+  showToast('Удалено', '');
+  loadReminders();
+}
+
+// ── Статус ────────────────────────────────────────────────────────────────────
+async function loadStatus() {
+  const grid = document.getElementById('statusGrid');
+  grid.innerHTML = '<div class="loader" style="grid-column:1/-1">Загрузка...</div>';
+  try {
+    const res  = await fetch(api('/api/status'));
+    const data = await res.json();
+
+    grid.innerHTML = `
+      <div class="status-card">
+        <div class="status-label">Модель</div>
+        <div class="status-value" style="font-family:'DM Mono',monospace;font-size:12px">${data.model}</div>
+      </div>
+      <div class="status-card">
+        <div class="status-label">Поиск</div>
+        <div class="status-value ${data.search ? 'status-ok' : ''}">${data.search ? '✓ Включён' : '✗ Выключен'}</div>
+      </div>
+      <div class="status-card">
+        <div class="status-label">Время UTC</div>
+        <div class="status-value" style="font-family:'DM Mono',monospace;font-size:12px">${data.utc_time}</div>
+      </div>
+      <div class="status-card">
+        <div class="status-label">Агентов</div>
+        <div class="status-value status-ok">${data.agents.length}</div>
+      </div>`;
+
+    const agentsEl = document.getElementById('statusAgents');
+    agentsEl.innerHTML = data.agents.map(a =>
+      `<span class="agent-badge">${a}</span>`).join('');
+
+    // Обновляем шапку
+    document.getElementById('hTime').textContent = data.utc_time.split(' ')[1] + ' UTC';
+    document.getElementById('hModel').textContent = data.model.split('-').slice(0,2).join('-');
+
+    // Бейджи в сайдбаре
+    document.getElementById('agentBadges').innerHTML = data.agents.map(a =>
+      `<span class="agent-badge">${a}</span>`).join('');
+
+  } catch(e) {
+    grid.innerHTML = `<div class="empty">Сервер недоступен</div>`;
+  }
+}
+
+// ── Инициализация ─────────────────────────────────────────────────────────────
+loadStatus();
+setInterval(loadStatus, 30000);
+document.getElementById('input').focus();
+</script>
+</body>
+</html>

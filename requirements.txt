@@ -8,3 +8,6 @@ groq
 PyMuPDF
 python-docx
 httpx
+fastapi
+uvicorn[standard]
+python-multipart

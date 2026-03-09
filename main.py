@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 import tempfile
 import warnings
@@ -163,6 +164,19 @@ async def main() -> None:
     voice = VoiceService()
     vision = VisionService()
     scheduler = SchedulerService(bot)
+
+    # Веб-сервер — запускается параллельно с ботом
+    import uvicorn
+    from app.web_server import create_app
+    web_app = create_app(llm)
+    web_port = int(os.getenv("PORT", "8000"))
+    web_config = uvicorn.Config(
+        web_app,
+        host="0.0.0.0",
+        port=web_port,
+        log_level="warning",
+    )
+    web_server = uvicorn.Server(web_config)
 
     # ── Команды ───────────────────────────────────────────────────────────────
 
@@ -412,7 +426,11 @@ async def main() -> None:
 
     scheduler.start()
     try:
-        await dp.start_polling(bot, drop_pending_updates=True)
+        # Запускаем бот и веб-сервер параллельно
+        await asyncio.gather(
+            dp.start_polling(bot, drop_pending_updates=True),
+            web_server.serve(),
+        )
     finally:
         scheduler.stop()
         await bot.session.close()
