@@ -15,6 +15,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.config import settings
+import base64
+import tempfile
+from pathlib import Path
+
+from app.tts_service import TTSService
+from app.voice_service import VoiceService
 from app.database import (
     clear_history, clear_memory,
     delete_reminder, get_active_reminders,
@@ -46,6 +52,8 @@ def create_app(llm_service) -> FastAPI:
     llm_service передаётся снаружи — тот же экземпляр что использует бот.
     """
     app = FastAPI(title="RaYa", docs_url=None, redoc_url=None)
+    _tts   = TTSService()
+    _voice = VoiceService()
 
     def _check_token(token: str = Query(default="")) -> None:
         """Проверяет токен. Если WEB_TOKEN не задан — пропускает всех."""
@@ -170,6 +178,61 @@ def create_app(llm_service) -> FastAPI:
             {"created_at": e[0], "entry": e[1]}
             for e in entries
         ]}
+
+    # ── Голос ────────────────────────────────────────────────────────────────
+
+    @app.post("/api/voice")
+    async def voice_chat(request: Request, token: str = Query(default="")):
+        """
+        Принимает аудио (webm/ogg) → Whisper → LLM → TTS.
+        Возвращает: {text, reply, audio_base64 | null, agent_name}
+        """
+        _check_token(token)
+        try:
+            body = await request.body()
+            if not body:
+                raise HTTPException(status_code=400, detail="Пустое аудио")
+
+            # Сохраняем во временный файл
+            suffix = ".webm"
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(body)
+                tmp_path = Path(tmp.name)
+
+            try:
+                # Whisper — распознаём речь
+                text = await _voice.transcribe(tmp_path.read_bytes())
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+            if not text:
+                return {"text": "", "reply": "Не удалось распознать речь", "audio_base64": None, "agent_name": "raya"}
+
+            # LLM — генерируем ответ
+            user_id = settings.telegram_user_id
+            result  = await llm_service.chat(user_id, text)
+
+            # TTS — озвучиваем ответ
+            audio_bytes = await _tts.synthesize(result.reply) if _tts.enabled else None
+            audio_b64   = base64.b64encode(audio_bytes).decode() if audio_bytes else None
+
+            return {
+                "text":        text,
+                "reply":       result.reply,
+                "audio_base64": audio_b64,
+                "agent_name":  result.agent_name,
+            }
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception("Ошибка голосового чата")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/tts_enabled")
+    async def tts_status(token: str = Query(default="")):
+        _check_token(token)
+        return {"enabled": _tts.enabled}
 
     # ── Статус системы ────────────────────────────────────────────────────────
 
