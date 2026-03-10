@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_CHARS   = 800
 _LANG        = "ru"
-_SPEED       = 1.25          # коэффициент ускорения
+_SPEED       = 1.5          # коэффициент ускорения
 _FFMPEG_BIN  = shutil.which("ffmpeg")   # None если не установлен
 
 

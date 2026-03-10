@@ -55,6 +55,10 @@ class RayaAgent(BaseAgent):
         # ── 2б. Контекст разговора ────────────────────────────────────────────
         conv_ctx = ContextService.get_prompt_block(ctx.user_id)
 
+        # ── 2в. Personality block (mirroring, feedback, depth, emotional) ─────
+        from app.personality_service import build_personality_block
+        personality_ctx = build_personality_block(ctx.user_id, ctx.message)
+
         # ── 3. Тип задачи → тон ──────────────────────────────────────────────
         task_type, expected_emotion, tone_hint = detect_task_type(ctx.message)
 
@@ -69,6 +73,9 @@ class RayaAgent(BaseAgent):
 
         if conv_ctx:
             system += f"\n\n{conv_ctx}"
+
+        if personality_ctx:
+            system += f"\n\n{personality_ctx}"
 
         # Структурированная память — богатый контекст вместо плоского списка
         from app.database import format_memory_for_prompt

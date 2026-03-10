@@ -75,6 +75,10 @@ class LLMService:
         from app.context_service import ContextService
         self._context = ContextService(self._llm)
 
+        # Tone Controller
+        from app.tone_controller import make_tone_controller_factory
+        self._tone = make_tone_controller_factory(settings.groq_api_key)
+
     # ── Вспомогательные ───────────────────────────────────────────────────────
 
     def _run_background(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -149,10 +153,20 @@ class LLMService:
         if self._context.should_update(user_id):
             self._run_background(self._context.update(user_id))
 
+        # Personality feedback — каждые 6 сообщений
+        if (self._msg_counter.get(user_id, 0)) % 6 == 0:
+            from app.personality_service import update_feedback, update_emotional_patterns
+            self._run_background(update_feedback(user_id, self._llm))
+            self._run_background(update_emotional_patterns(user_id))
+
         logger.debug(
             "user_id=%s | агент=%s | reminder=%s",
             user_id, agent_result.agent_name, reminder is not None,
         )
+
+        # Tone Controller — корректируем тон если нужно (быстрая 8b модель)
+        reply = await self._tone.process(user_message, reply)
+
         return ChatResult(
             reply=reply,
             reminder=reminder,
