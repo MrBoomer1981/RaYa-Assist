@@ -5,6 +5,10 @@ RaYa — главный оркестратор, который распреде�
 
 ---
 
+
+
+
+
 ## Стек технологий
 
 | Компонент | Технология |
@@ -21,6 +25,26 @@ RaYa — главный оркестратор, который распреде�
 | Python | 3.11 |
 
 ---
+
+
+
+1. Railway Variables (главный источник)
+MODEL_NAME=llama-3.3-70b-versatile
+TEMPERATURE=0.7
+MAX_HISTORY=20
+2. app/config.py — дефолтные значения если переменные не заданы
+pythonmodel_name: str = "llama-3.3-70b-versatile"
+temperature: float = 0.7
+max_history: int = 20
+3. app/agents/router.py — роутер использует свою модель, захардкожено
+python_ROUTER_MODEL = "llama-3.1-8b-instant"  # не читает из config
+temperature=0.0                          # захардкожено
+4. app/agents/critic_agent.py — критик тоже захардкожен
+python_CRITIC_MODEL_TEMPERATURE = 0.0  # захардкожено
+# модель берёт из settings.model_name — это OK
+5. app/emotional_service.py — detect_mood использует основной llm переданный извне, параметры наследует от него
+6. app/agents/morning_agent.py, context_service.py, memory_service.py — используют self._llm унаследованный от BaseAgent, то есть читают из settings
+
 
 ## Возможности
 
