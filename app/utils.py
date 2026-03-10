@@ -98,6 +98,21 @@ _SOURCE_LINE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Inline-ссылки на источники внутри предложений:
+# "согласно данным с X," / "по данным X," / "на сайте X можно"
+_INLINE_SOURCE_RE = re.compile(
+    r",?\s*(согласно данным с|согласно данным|по данным|"
+    r"на сайте \S+ можно [^,\.]+|"
+    r"также,?\s*согласно|кроме того,?\s*на сайте \S+)[^,\.]*[,\.]?",
+    re.IGNORECASE,
+)
+
+# "Также, согласно..." в начале предложения — убираем всё предложение
+_ALSO_SOURCE_SENT_RE = re.compile(
+    r"[А-ЯЁ][^.!?]*(?:согласно данным|по данным|на сайте \S+ можно найти)[^.!?]*[.!?]",
+    re.IGNORECASE,
+)
+
 # Сноски и нумерованные источники: [1] ..., ¹ ..., * источник
 _FOOTNOTE_RE = re.compile(
     r"^[ \t]*(\[\d+\]|\d+\.|[\*†‡§]|¹|²|³)[ \t]+https?://\S+.*$",
@@ -132,10 +147,14 @@ def clean_reply(text: str) -> str:
     # Markdown ссылки → только анкорный текст
     text = _MD_LINK_RE.sub(r"\1", text)
 
+    # Предложения целиком с источниками ("согласно данным с X")
+    text = _ALSO_SOURCE_SENT_RE.sub("", text)
     # Блоки источников целиком
     text = _SOURCE_BLOCK_RE.sub("", text)
     # Отдельные строки-источники
     text = _SOURCE_LINE_RE.sub("", text)
+    # Inline-ссылки на источники внутри предложений
+    text = _INLINE_SOURCE_RE.sub("", text)
     # Нумерованные сноски с URL
     text = _FOOTNOTE_RE.sub("", text)
 
