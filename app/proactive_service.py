@@ -16,7 +16,8 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _MOSCOW_UTC_OFFSET  = 3
-_DIGEST_HOUR_MSK    = 8      # 08:00 МСК
+_DIGEST_HOUR_MSK    = 6      # 06:45 МСК
+_DIGEST_MINUTE_MSK  = 45
 _SILENCE_HOURS      = 4      # через сколько часов писать первой
 _CHECK_INTERVAL_SEC = 60     # проверка каждую минуту
 
@@ -34,8 +35,8 @@ class ProactiveService:
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "🌅 Проактивный сервис запущен | дайджест %d:00 МСК | тишина %dч",
-            _DIGEST_HOUR_MSK, _SILENCE_HOURS,
+            "🌅 Проактивный сервис запущен | дайджест %02d:%02d МСК | тишина %dч",
+            _DIGEST_HOUR_MSK, _DIGEST_MINUTE_MSK, _SILENCE_HOURS,
         )
 
     def stop(self) -> None:
@@ -57,8 +58,14 @@ class ProactiveService:
         now_msk_hour = (now_utc.hour + _MOSCOW_UTC_OFFSET) % 24
         today_str    = now_utc.strftime("%Y-%m-%d")
 
-        # ── Утренний дайджест ─────────────────────────────────────────────────
-        if now_msk_hour == _DIGEST_HOUR_MSK and self._digest_sent_date != today_str:
+        # ── Утренний дайджест — строго 6:45 МСК, 1 раз в день ──────────────
+        now_msk_minute = (now_utc.minute)  # минуты UTC == минутам МСК
+        is_digest_time = (
+            now_msk_hour   == _DIGEST_HOUR_MSK
+            and now_msk_minute == _DIGEST_MINUTE_MSK
+            and self._digest_sent_date != today_str
+        )
+        if is_digest_time:
             self._digest_sent_date = today_str
             await self._send_morning_digest()
             return  # не проверяем тишину в момент дайджеста

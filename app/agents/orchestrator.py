@@ -118,4 +118,9 @@ class Orchestrator:
             except Exception:
                 logger.exception("Критик упал — возвращаем оригинал")
 
+        # Чистим ответ от URL, ссылок, служебных тегов — всегда, для всех агентов
+        if result.success and result.content:
+            from app.utils import clean_reply
+            result.content = clean_reply(result.content)
+
         return result

@@ -5,7 +5,7 @@ utils.py — общие утилиты используемые нескольк
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -77,3 +77,61 @@ def build_reminder_prompt_block(now_utc: datetime) -> str:
 Если напоминания нет — НЕ включай тег.
 Слова-триггеры: напомни, напоминание, не забудь, через X минут/часов, завтра в.
 --- КОНЕЦ ---"""
+
+
+# ── Чистка ответа перед отправкой пользователю ────────────────────────────────
+
+# URL: http(s)://... или www....
+_URL_RE = re.compile(
+    r"https?://\S+|www\.\S+",
+    re.IGNORECASE,
+)
+
+# Markdown ссылки: [текст](url) → оставляем только текст
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(https?://[^\)]+\)")
+
+# Строки-источники: «Источник: ...», «Source: ...» и т.п.
+_SOURCE_LINE_RE = re.compile(
+    r"^[ \t]*(источник|source|url|ссылка|подробнее|читать далее|read more)[:\s].+$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Служебные теги модели — не для пользователя
+_SERVICE_TAGS_RE = re.compile(
+    r"<(emotion|reminder|task|done|delete|save_tasks)>.*?</(emotion|reminder|task|done|delete|save_tasks)>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Три и более пустых строки → две
+_EXCESS_NEWLINES_RE = re.compile(r"\n{3,}")
+
+
+def clean_reply(text: str) -> str:
+    """
+    Чистит ответ модели перед отправкой пользователю:
+    - markdown-ссылки [текст](url) → просто текст
+    - строки «Источник: ...», «URL: ...»
+    - голые URL (http/https/www)
+    - служебные теги <emotion>, <reminder>, <task> и т.д.
+    - лишние пустые строки (3+ → 2)
+    """
+    # Markdown ссылки → только анкорный текст
+    text = _MD_LINK_RE.sub(r"\1", text)
+
+    # Строки-источники целиком
+    text = _SOURCE_LINE_RE.sub("", text)
+
+    # Голые URL
+    text = _URL_RE.sub("", text)
+
+    # Служебные теги
+    text = _SERVICE_TAGS_RE.sub("", text)
+
+    # Артефакты: пустые скобки (), []
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\[\s*\]", "", text)
+
+    # Лишние пустые строки
+    text = _EXCESS_NEWLINES_RE.sub("\n\n", text)
+
+    return text.strip()
