@@ -54,21 +54,29 @@ class ProactiveService:
             await asyncio.sleep(_CHECK_INTERVAL_SEC)
 
     async def _tick(self) -> None:
-        now_utc      = datetime.utcnow()
-        now_msk_hour = (now_utc.hour + _MOSCOW_UTC_OFFSET) % 24
-        today_str    = now_utc.strftime("%Y-%m-%d")
+        now_utc = datetime.utcnow()
+
+        # Всё время считаем в МСК
+        msk_total_minutes = now_utc.hour * 60 + now_utc.minute + _MOSCOW_UTC_OFFSET * 60
+        msk_hour   = (msk_total_minutes // 60) % 24
+        msk_minute = msk_total_minutes % 60
+
+        # today по МСК — иначе в 21:00-23:59 МСК дата UTC уже другая
+        msk_date = (now_utc + timedelta(hours=_MOSCOW_UTC_OFFSET)).strftime("%Y-%m-%d")
 
         # ── Утренний дайджест — строго 6:45 МСК, 1 раз в день ──────────────
-        now_msk_minute = (now_utc.minute)  # минуты UTC == минутам МСК
-        is_digest_time = (
-            now_msk_hour   == _DIGEST_HOUR_MSK
-            and now_msk_minute == _DIGEST_MINUTE_MSK
-            and self._digest_sent_date != today_str
-        )
-        if is_digest_time:
-            self._digest_sent_date = today_str
+        # Окно ±2 минуты — защита от пропущенного тика под нагрузкой
+        digest_target = _DIGEST_HOUR_MSK * 60 + _DIGEST_MINUTE_MSK
+        current_msk   = msk_hour * 60 + msk_minute
+        in_window     = abs(current_msk - digest_target) <= 2
+
+        if in_window and self._digest_sent_date != msk_date:
+            self._digest_sent_date = msk_date
             await self._send_morning_digest()
             return  # не проверяем тишину в момент дайджеста
+
+        # Переопределяем now_msk_hour для остальной логики
+        now_msk_hour = msk_hour
 
         # ── Инициативное сообщение при тишине ────────────────────────────────
         # Не пишем ночью (23:00 - 08:00 МСК)
