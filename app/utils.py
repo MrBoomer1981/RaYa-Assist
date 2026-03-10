@@ -90,10 +90,24 @@ _URL_RE = re.compile(
 # Markdown ссылки: [текст](url) → оставляем только текст
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(https?://[^\)]+\)")
 
-# Строки-источники: «Источник: ...», «Source: ...» и т.п.
+# Строки-источники — расширенный список
 _SOURCE_LINE_RE = re.compile(
-    r"^[ \t]*(источник|source|url|ссылка|подробнее|читать далее|read more)[:\s].+$",
+    r"^[ \t]*(источник|источники|source|sources|url|urls|ссылка|ссылки|"
+    r"подробнее|читать далее|read more|узнать больше|more info|"
+    r"по данным|according to|via|from)[:\s].+$",
     re.IGNORECASE | re.MULTILINE,
+)
+
+# Сноски и нумерованные источники: [1] ..., ¹ ..., * источник
+_FOOTNOTE_RE = re.compile(
+    r"^[ \t]*(\[\d+\]|\d+\.|[\*†‡§]|¹|²|³)[ \t]+https?://\S+.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# Блоки «Источники:» с несколькими строками
+_SOURCE_BLOCK_RE = re.compile(
+    r"(источники?|sources?|ссылки?):?\s*\n([ \t]*[\-\*\d\.\[].+\n?)+",
+    re.IGNORECASE,
 )
 
 # Служебные теги модели — не для пользователя
@@ -118,8 +132,12 @@ def clean_reply(text: str) -> str:
     # Markdown ссылки → только анкорный текст
     text = _MD_LINK_RE.sub(r"\1", text)
 
-    # Строки-источники целиком
+    # Блоки источников целиком
+    text = _SOURCE_BLOCK_RE.sub("", text)
+    # Отдельные строки-источники
     text = _SOURCE_LINE_RE.sub("", text)
+    # Нумерованные сноски с URL
+    text = _FOOTNOTE_RE.sub("", text)
 
     # Голые URL
     text = _URL_RE.sub("", text)

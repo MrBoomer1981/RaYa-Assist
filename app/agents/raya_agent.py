@@ -11,6 +11,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
 from app.context_service import ContextService
+from app.internal_state import update_state, state_to_prompt
+from app.opinions import get_opinion_hint
 from app.emotional_service import (
     detect_mood,
     detect_task_type,
@@ -59,6 +61,17 @@ class RayaAgent(BaseAgent):
         from app.personality_service import build_personality_block
         personality_ctx = build_personality_block(ctx.user_id, ctx.message)
 
+        # ── 2г. Internal State ────────────────────────────────────────────────
+        state     = update_state(ctx.user_id, ctx.message, ctx.search_results)
+        state_ctx = state_to_prompt(state)
+
+        # ── 2д. Personal Opinions ─────────────────────────────────────────────
+        opinion_ctx = get_opinion_hint(ctx.message)
+
+        # ── 2е. Interaction Memory ────────────────────────────────────────────
+        from app.database import format_interaction_memory
+        interaction_ctx = format_interaction_memory(ctx.user_id)
+
         # ── 3. Тип задачи → тон ──────────────────────────────────────────────
         task_type, expected_emotion, tone_hint = detect_task_type(ctx.message)
 
@@ -76,6 +89,15 @@ class RayaAgent(BaseAgent):
 
         if personality_ctx:
             system += f"\n\n{personality_ctx}"
+
+        if state_ctx:
+            system += f"\n\n{state_ctx}"
+
+        if opinion_ctx:
+            system += f"\n\n{opinion_ctx}"
+
+        if interaction_ctx:
+            system += f"\n\n{interaction_ctx}"
 
         # Структурированная память — богатый контекст вместо плоского списка
         from app.database import format_memory_for_prompt

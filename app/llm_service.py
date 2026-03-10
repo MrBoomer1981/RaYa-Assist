@@ -109,7 +109,7 @@ class LLMService:
 
     # ── Основной метод ────────────────────────────────────────────────────────
 
-    async def chat(self, user_id: int, user_message: str) -> ChatResult:
+    async def chat(self, user_id: int, user_message: str, is_voice: bool = False) -> ChatResult:
         """
         Точка входа — делегирует оркестратору.
         Сохраняет в историю, извлекает факты в фоне.
@@ -136,6 +136,7 @@ class LLMService:
             user_id=user_id,
             message=user_message,
             search_results=search_results,
+            is_voice=is_voice,
         )
 
         reply    = agent_result.content
@@ -158,6 +159,10 @@ class LLMService:
             from app.personality_service import update_feedback, update_emotional_patterns
             self._run_background(update_feedback(user_id, self._llm))
             self._run_background(update_emotional_patterns(user_id))
+
+        # Interaction memory — каждое сообщение (фоново, лёгкая операция)
+        from app.memory_service import extract_interaction
+        self._run_background(extract_interaction(user_id, user_message, self._llm))
 
         logger.debug(
             "user_id=%s | агент=%s | reminder=%s",

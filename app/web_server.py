@@ -243,10 +243,10 @@ def create_app(llm_service) -> FastAPI:
 
             # LLM — генерируем ответ
             user_id = settings.telegram_user_id
-            result  = await llm_service.chat(user_id, text)
+            result  = await llm_service.chat(user_id, text, is_voice=True)
 
             # TTS — озвучиваем ответ
-            audio_bytes = await _tts.synthesize(result.reply) if _tts.enabled else None
+            audio_bytes = await _tts.synthesize(result.reply, is_voice=True) if _tts.enabled else None
             audio_b64   = base64.b64encode(audio_bytes).decode() if audio_bytes else None
 
             emotion = result.metadata.get("emotion", "calm")

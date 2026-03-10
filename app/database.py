@@ -109,6 +109,16 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_structured_memory_user
                 ON structured_memory(user_id, category);
+            CREATE TABLE IF NOT EXISTS interaction_memory (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                topic      TEXT    NOT NULL,
+                summary    TEXT    NOT NULL,
+                frequency  INTEGER DEFAULT 1,
+                last_seen  DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_interaction_user
+                ON interaction_memory(user_id, frequency DESC);
             CREATE TABLE IF NOT EXISTS conversation_context (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id      INTEGER NOT NULL UNIQUE,
@@ -501,4 +511,56 @@ def format_context_for_prompt(user_id: int) -> str:
     if ctx["last_summary"]:
         lines.append(f"  Что обсуждали: {ctx['last_summary']}")
 
+    return "\n".join(lines)
+
+
+# ── Память взаимодействий ─────────────────────────────────────────────────────
+
+def upsert_interaction(user_id: int, topic: str, summary: str) -> None:
+    """Добавляет или обновляет запись о теме разговора."""
+    now = datetime.utcnow().strftime(_TIME_FMT)
+    with _conn() as con:
+        existing = con.execute("""
+            SELECT id, frequency FROM interaction_memory
+            WHERE user_id = ? AND topic = ?
+        """, (user_id, topic)).fetchone()
+
+        if existing:
+            con.execute("""
+                UPDATE interaction_memory
+                SET frequency = frequency + 1, summary = ?, last_seen = ?
+                WHERE id = ?
+            """, (summary, now, existing[0]))
+        else:
+            con.execute("""
+                INSERT INTO interaction_memory (user_id, topic, summary, last_seen)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, topic, summary, now))
+
+
+def get_top_interactions(user_id: int, limit: int = 5) -> list[tuple[str, str, int]]:
+    """Возвращает топ тем по частоте: [(topic, summary, frequency)]."""
+    with _conn() as con:
+        rows = con.execute("""
+            SELECT topic, summary, frequency FROM interaction_memory
+            WHERE user_id = ?
+            ORDER BY frequency DESC, last_seen DESC
+            LIMIT ?
+        """, (user_id, limit)).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
+def format_interaction_memory(user_id: int) -> str:
+    """Форматирует память взаимодействий для системного промпта."""
+    rows = get_top_interactions(user_id, limit=4)
+    if not rows:
+        return ""
+
+    lines = ["🔁 Темы которые Сократ поднимал раньше:"]
+    for topic, summary, freq in rows:
+        times = "несколько раз" if freq >= 3 else "уже обсуждали"
+        lines.append(f"  • {topic} ({times}): {summary}")
+    lines.append(
+        "Если новое сообщение связано с этим — можешь сослаться на прошлый разговор."
+    )
     return "\n".join(lines)

@@ -92,6 +92,7 @@ class Orchestrator:
         user_id: int,
         message: str,
         search_results: str = "",
+        is_voice: bool = False,
     ) -> AgentResult:
         """Полный цикл: роутинг → агент → критик (если нужно)."""
         ctx = AgentContext(
@@ -100,6 +101,7 @@ class Orchestrator:
             history=load_history(user_id, limit=settings.max_history),
             memory_facts=load_memory(user_id),
             search_results=search_results,
+            extra={"is_voice": is_voice},
         )
 
         route: RouteResult = await self._router.route(message)

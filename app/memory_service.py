@@ -157,3 +157,54 @@ class MemoryService:
         """Возвращает всю структурированную память."""
         from app.database import get_structured_memory
         return get_structured_memory(user_id)
+
+
+# ── Interaction Memory extractor ──────────────────────────────────────────────
+
+_INTERACTION_PROMPT = """\
+Проанализируй сообщение и определи тему разговора.
+
+Сообщение: {message}
+
+Верни ТОЛЬКО JSON (без markdown):
+{{
+  "topic": "короткое название темы (3-5 слов, на русском)",
+  "summary": "одно предложение — о чём именно говорили или спрашивали"
+}}
+
+Примеры:
+- "Как настроить Railway Volume?" → {{"topic": "Railway деплой", "summary": "Настройка персистентного хранилища на Railway"}}
+- "Помоги написать async функцию" → {{"topic": "Python async код", "summary": "Написание асинхронных функций на Python"}}
+- Если тема слишком общая или мелкая → верни {{}}"""
+
+
+async def extract_interaction(user_id: int, message: str, llm) -> None:
+    """Фоново извлекает тему и сохраняет в interaction_memory."""
+    if len(message.strip()) < 15:
+        return
+    try:
+        import json as _json
+        from langchain_core.messages import HumanMessage
+        from app.database import upsert_interaction
+
+        prompt   = _INTERACTION_PROMPT.format(message=message[:400])
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        raw = (
+            str(response.content).strip()
+            .replace("```json", "").replace("```", "").strip()
+        )
+        if not raw or raw == "{}":
+            return
+
+        data = _json.loads(raw)
+        topic   = str(data.get("topic", "")).strip()
+        summary = str(data.get("summary", "")).strip()
+
+        if topic and summary:
+            upsert_interaction(user_id, topic, summary)
+            import logging
+            logging.getLogger(__name__).info(
+                "🔁 Interaction: '%s' | user_id=%s", topic, user_id
+            )
+    except Exception:
+        pass  # фоновая задача — падение не критично
