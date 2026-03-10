@@ -1,10 +1,12 @@
 """
-tts_service.py — синтез речи через gTTS + ускорение через ffmpeg x1.25.
+tts_service.py — синтез речи через gTTS + ускорение через ffmpeg.
 
-Чанкинг по предложениям — нет обрыва на полуслове.
-Длинный текст → несколько MP3 → склеиваем в один через ffmpeg.
+Чанкинг по предложениям (≤80 символов = ≤480 байт URL — в пределах лимита gTTS).
+Чанки генерируются ПАРАЛЛЕЛЬНО через ThreadPoolExecutor — нет зависания на одном.
+Склейка через ffmpeg concat.
 """
 import asyncio
+import concurrent.futures
 import io
 import logging
 import re
@@ -15,18 +17,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_LANG       = "ru"
-_SPEED      = 1.25
-_FFMPEG_BIN = shutil.which("ffmpeg")
-
-# Максимум символов в одном gTTS-запросе.
-# ВАЖНО: кириллица = ~5-6 байт на символ в URL encoding.
-# gTTS ограничен ~500 байт → безопасный лимит: 80 символов кириллицы.
-_CHUNK_MAX  = 80
-
-# Для голосовых ответов — дополнительно режем до N слов
-# 40 слов ≈ 200 символов кириллицы = ~2 чанка, гарантированно воспроизводится
-_VOICE_MAX_WORDS = 40
+_LANG            = "ru"
+_SPEED           = 1.7          # скорость речи (atempo ffmpeg)
+_FFMPEG_BIN      = shutil.which("ffmpeg")
+_CHUNK_MAX       = 75           # символов на чанк (≤450 байт URL для кириллицы)
+_VOICE_MAX_WORDS = 40           # слов для голосовых ответов
+_EXECUTOR        = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
 class TTSService:
@@ -35,7 +31,7 @@ class TTSService:
         try:
             from gtts import gTTS  # noqa: F401
             self._available = True
-            note = f"ffmpeg x{_SPEED}" if _FFMPEG_BIN else "без ускорения"
+            note = f"ffmpeg x{_SPEED}" if _FFMPEG_BIN else "без ускорения (нет ffmpeg)"
             logger.info("🔊 TTS инициализирован (gTTS, %s)", note)
         except ImportError:
             self._available = False
@@ -54,57 +50,157 @@ class TTSService:
         if not clean.strip():
             return None
 
-        # Для голосовых запросов — ещё короче
+        # Для голосовых — дополнительно обрезаем по словам
         if is_voice:
             clean = _trim_to_words(clean, _VOICE_MAX_WORDS)
 
         try:
             loop  = asyncio.get_running_loop()
-            audio = await loop.run_in_executor(None, _synthesize_chunked, clean)
-            logger.info("🔊 TTS: %d символов → %d байт", len(clean), len(audio))
+            audio = await loop.run_in_executor(_EXECUTOR, _synthesize_chunked, clean)
+            if audio:
+                logger.info("🔊 TTS: %d симв → %d байт", len(clean), len(audio))
             return audio
         except Exception:
             logger.exception("TTS: ошибка синтеза")
             return None
 
 
-def _trim_to_words(text: str, max_words: int) -> str:
-    """Режет по границе предложения не превышая max_words слов."""
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-    # Берём первые max_words слов и находим последнюю точку
-    trimmed = " ".join(words[:max_words])
-    # Обрезаем по последнему окончанию предложения
-    for sep in (".", "!", "?"):
-        idx = trimmed.rfind(sep)
-        if idx > len(trimmed) // 2:
-            return trimmed[:idx + 1]
-    return trimmed + "."
+# ── Синтез ────────────────────────────────────────────────────────────────────
 
+def _synthesize_chunked(text: str) -> bytes | None:
+    """Разбивает на чанки, генерирует параллельно, склеивает."""
+    chunks = _split_sentences(text)
+    logger.debug("TTS: %d чанков из %d символов", len(chunks), len(text))
+
+    if len(chunks) == 1:
+        mp3 = _gtts_single(chunks[0])
+        return _speed_up(mp3) if (_FFMPEG_BIN and mp3) else mp3
+
+    # Параллельная генерация чанков
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_gtts_single, c) for c in chunks]
+        results = []
+        for i, f in enumerate(futures):
+            try:
+                data = f.result(timeout=15)
+                if data:
+                    results.append(data)
+                else:
+                    logger.warning("TTS: чанк %d вернул пустой результат", i)
+            except Exception as e:
+                logger.warning("TTS: чанк %d упал: %s", i, e)
+
+    if not results:
+        return None
+
+    if len(results) == 1:
+        return _speed_up(results[0]) if _FFMPEG_BIN else results[0]
+
+    # Записываем чанки во временные файлы и склеиваем
+    tmp_files: list[Path] = []
+    try:
+        for i, data in enumerate(results):
+            tmp = Path(tempfile.mktemp(suffix=f"_c{i}.mp3"))
+            tmp.write_bytes(data)
+            tmp_files.append(tmp)
+
+        merged = _concat_mp3(tmp_files)
+        return _speed_up(merged) if (_FFMPEG_BIN and merged) else merged
+    finally:
+        for f in tmp_files:
+            f.unlink(missing_ok=True)
+
+
+def _gtts_single(text: str) -> bytes | None:
+    """Генерирует один MP3 чанк через gTTS."""
+    try:
+        from gtts import gTTS
+        buf = io.BytesIO()
+        gTTS(text=text, lang=_LANG, slow=False).write_to_fp(buf)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning("gTTS ошибка для чанка '%s...': %s", text[:30], e)
+        return None
+
+
+def _concat_mp3(files: list[Path]) -> bytes | None:
+    """Склеивает MP3 файлы через ffmpeg concat demuxer."""
+    if not _FFMPEG_BIN:
+        return b"".join(f.read_bytes() for f in files)
+
+    list_file = Path(tempfile.mktemp(suffix=".txt"))
+    out_file  = Path(tempfile.mktemp(suffix="_merged.mp3"))
+    try:
+        list_file.write_text("\n".join(f"file '{p}'" for p in files))
+        r = subprocess.run(
+            [_FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
+             "-i", str(list_file), "-c", "copy", str(out_file)],
+            capture_output=True, timeout=20,
+        )
+        if r.returncode == 0 and out_file.exists():
+            return out_file.read_bytes()
+        logger.warning("ffmpeg concat код %d: %s", r.returncode, r.stderr[-200:])
+        return b"".join(f.read_bytes() for f in files)
+    except Exception as e:
+        logger.warning("ffmpeg concat ошибка: %s", e)
+        return b"".join(f.read_bytes() for f in files)
+    finally:
+        list_file.unlink(missing_ok=True)
+        out_file.unlink(missing_ok=True)
+
+
+def _speed_up(mp3_bytes: bytes) -> bytes:
+    """Ускоряет MP3 через ffmpeg atempo. x1.7 — один фильтр (макс 2.0)."""
+    tmp_in = tmp_out = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(mp3_bytes)
+            tmp_in = Path(f.name)
+        tmp_out = tmp_in.with_suffix(".fast.mp3")
+
+        r = subprocess.run(
+            [_FFMPEG_BIN, "-y", "-i", str(tmp_in),
+             "-filter:a", f"atempo={_SPEED}", "-vn", str(tmp_out)],
+            capture_output=True, timeout=20,
+        )
+        if r.returncode == 0 and tmp_out.exists():
+            result = tmp_out.read_bytes()
+            logger.debug("🔊 x%.1f: %d → %d байт", _SPEED, len(mp3_bytes), len(result))
+            return result
+        logger.warning("ffmpeg speed код %d", r.returncode)
+        return mp3_bytes
+    except Exception as e:
+        logger.warning("ffmpeg speed ошибка: %s", e)
+        return mp3_bytes
+    finally:
+        if tmp_in  and tmp_in.exists(): tmp_in.unlink(missing_ok=True)
+        if tmp_out and tmp_out.exists(): tmp_out.unlink(missing_ok=True)
+
+
+# ── Утилиты ───────────────────────────────────────────────────────────────────
 
 def _split_sentences(text: str) -> list[str]:
     """
-    Разбивает текст на чанки по предложениям, каждый ≤ _CHUNK_MAX символов.
-    Гарантирует что обрыва на полуслове не будет.
+    Разбивает текст на чанки ≤ _CHUNK_MAX символов по границам предложений.
+    Гарантирует что каждый чанк ≤ 450 байт URL (лимит gTTS для кириллицы).
     """
-    # Разбиваем по концам предложений
-    raw_sentences = re.split(r"(?<=[.!?…])\s+", text)
+    raw = re.split(r'(?<=[.!?…])\s+', text)
     chunks: list[str] = []
     current = ""
 
-    for sentence in raw_sentences:
+    for sentence in raw:
         if not sentence.strip():
             continue
-        # Если одно предложение длиннее лимита — режем по запятым
+        # Длинное предложение — режем по запятым
         if len(sentence) > _CHUNK_MAX:
-            parts = re.split(r"(?<=,)\s+", sentence)
+            parts = re.split(r'(?<=[,;])\s+', sentence)
             for part in parts:
                 if len(current) + len(part) + 1 <= _CHUNK_MAX:
                     current = (current + " " + part).strip()
                 else:
                     if current:
                         chunks.append(current)
+                    # Если даже одна часть длиннее — режем жёстко
                     current = part[:_CHUNK_MAX]
         elif len(current) + len(sentence) + 1 <= _CHUNK_MAX:
             current = (current + " " + sentence).strip()
@@ -119,91 +215,17 @@ def _split_sentences(text: str) -> list[str]:
     return chunks or [text[:_CHUNK_MAX]]
 
 
-def _synthesize_chunked(text: str) -> bytes:
-    """Синтез с чанкингом. Склеивает MP3 через ffmpeg concat."""
-    from gtts import gTTS
-
-    chunks = _split_sentences(text)
-    logger.debug("TTS: %d чанков из %d символов", len(chunks), len(text))
-
-    if len(chunks) == 1:
-        # Один чанк — быстрый путь
-        buf = io.BytesIO()
-        gTTS(text=chunks[0], lang=_LANG, slow=False).write_to_fp(buf)
-        mp3 = buf.getvalue()
-        return _speed_up(mp3) if _FFMPEG_BIN else mp3
-
-    # Несколько чанков — генерируем каждый и склеиваем
-    tmp_files: list[Path] = []
-    try:
-        for i, chunk in enumerate(chunks):
-            buf = io.BytesIO()
-            gTTS(text=chunk, lang=_LANG, slow=False).write_to_fp(buf)
-            tmp = Path(tempfile.mktemp(suffix=f"_chunk{i}.mp3"))
-            tmp.write_bytes(buf.getvalue())
-            tmp_files.append(tmp)
-
-        merged = _concat_mp3(tmp_files)
-        return _speed_up(merged) if _FFMPEG_BIN else merged
-
-    finally:
-        for f in tmp_files:
-            f.unlink(missing_ok=True)
-
-
-def _concat_mp3(files: list[Path]) -> bytes:
-    """Склеивает список MP3 файлов через ffmpeg concat demuxer."""
-    if not _FFMPEG_BIN:
-        # Fallback: простая конкатенация байт (работает для MP3)
-        return b"".join(f.read_bytes() for f in files)
-
-    list_file = Path(tempfile.mktemp(suffix=".txt"))
-    out_file  = Path(tempfile.mktemp(suffix=".mp3"))
-    try:
-        list_file.write_text(
-            "\n".join(f"file '{p}'" for p in files)
-        )
-        result = subprocess.run(
-            [
-                _FFMPEG_BIN, "-y",
-                "-f", "concat", "-safe", "0",
-                "-i", str(list_file),
-                "-c", "copy",
-                str(out_file),
-            ],
-            capture_output=True, timeout=20,
-        )
-        if result.returncode == 0 and out_file.exists():
-            return out_file.read_bytes()
-        logger.warning("ffmpeg concat код %d", result.returncode)
-        return b"".join(f.read_bytes() for f in files)
-    finally:
-        list_file.unlink(missing_ok=True)
-        out_file.unlink(missing_ok=True)
-
-
-def _speed_up(mp3_bytes: bytes) -> bytes:
-    """Ускоряет MP3 через ffmpeg atempo."""
-    tmp_in = tmp_out = None
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            f.write(mp3_bytes)
-            tmp_in = Path(f.name)
-        tmp_out = tmp_in.with_suffix(".out.mp3")
-
-        result = subprocess.run(
-            [_FFMPEG_BIN, "-y", "-i", str(tmp_in),
-             "-filter:a", f"atempo={_SPEED}", "-vn", str(tmp_out)],
-            capture_output=True, timeout=15,
-        )
-        if result.returncode == 0 and tmp_out.exists():
-            return tmp_out.read_bytes()
-        return mp3_bytes
-    except Exception:
-        return mp3_bytes
-    finally:
-        if tmp_in  and tmp_in.exists():  tmp_in.unlink(missing_ok=True)
-        if tmp_out and tmp_out.exists(): tmp_out.unlink(missing_ok=True)
+def _trim_to_words(text: str, max_words: int) -> str:
+    """Обрезает по границе предложения не превышая max_words слов."""
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    trimmed = " ".join(words[:max_words])
+    for sep in (".", "!", "?"):
+        idx = trimmed.rfind(sep)
+        if idx > len(trimmed) // 2:
+            return trimmed[:idx + 1]
+    return trimmed + "."
 
 
 def _clean_text(text: str) -> str:

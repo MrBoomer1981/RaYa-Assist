@@ -138,9 +138,14 @@ AGENTS: dict[str, AgentInfo] = {
     "morning": AgentInfo(
         name="morning",
         title="Утренний дайджест",
-        description="Утренний дайджест: погода, tech-новости, задачи, напоминания.",
+        description=(
+            "Запускается ТОЛЬКО автоматически в 6:45 утра. "
+            "НЕ использовать для ответов на вопросы пользователя. "
+            "НЕ использовать если пользователь спрашивает про погоду, новости или задачи — "
+            "это делает raya агент через поиск."
+        ),
         keywords=(
-            "утренний дайджест", "дайджест", "что сегодня", "погода сегодня",
+            "утренний дайджест", "дайджест на сегодня",
         ),
         parallelizable=False,
         needs_critic=False,
@@ -238,9 +243,9 @@ def get_enabled_agents() -> list[AgentInfo]:
 def get_routable_agents() -> list[AgentInfo]:
     """
     Возвращает агентов которых роутер может выбирать.
-    Исключает critic (вызывается только программно) и raya (fallback).
+    Исключает: critic (только программно), raya (fallback), morning (только автоматически).
     """
-    excluded = {"critic", "raya"}
+    excluded = {"critic", "raya", "morning"}
     return [a for a in AGENTS.values() if a.enabled and a.name not in excluded]
 
 
