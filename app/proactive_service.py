@@ -7,7 +7,7 @@ proactive_service.py — проактивные сообщения от RaYa.
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot
 
