@@ -35,6 +35,9 @@ def _create_agent(name: str):
             case "diary":
                 from app.agents.diary_agent import DiaryAgent
                 return DiaryAgent()
+            case "research":
+                from app.agents.research_agent import ResearchAgent
+                return ResearchAgent()
             case "science":
                 from app.agents.science_agent import ScienceAgent
                 return ScienceAgent()
@@ -112,7 +115,8 @@ class Orchestrator:
             extra=combined_extra,
         )
 
-        route: RouteResult = await self._router.route(message)
+        calibration_hint = extra.get("calibration_hint") if extra else None
+        route: RouteResult = await self._router.route(message, calibration_hint)
         logger.info(
             "🔀 '%s' → агент '%s' (уверенность: %.1f, LLM: %s)",
             message[:60], route.agent_name, route.confidence, route.used_llm,
