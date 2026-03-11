@@ -14,10 +14,13 @@ _REMINDER_CLEAN_RE = re.compile(r"\s*<reminder>.*?</reminder>", re.DOTALL)
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
+_VALID_RECURRENCES = {"daily", "weekly", "weekday", "monthly"}
+
+
 def parse_reminder(raw: str, now_utc: datetime) -> dict | None:
     """
-    Извлекает JSON напоминания из тега <reminder>...</reminder>.
-    Возвращает {"text": str, "remind_at": "YYYY-MM-DD HH:MM:SS"} или None.
+    Извлекает JSON из <reminder>...</reminder>.
+    Возвращает {"text", "remind_at", "recurrence"} или None.
     """
     match = _REMINDER_RE.search(raw)
     if not match:
@@ -30,7 +33,7 @@ def parse_reminder(raw: str, now_utc: datetime) -> dict | None:
             return None
 
         remind_str = str(data["remind_at"]).strip()
-        if len(remind_str) == 16:          # YYYY-MM-DD HH:MM → добавляем секунды
+        if len(remind_str) == 16:
             remind_str += ":00"
         data["remind_at"] = remind_str
 
@@ -39,7 +42,14 @@ def parse_reminder(raw: str, now_utc: datetime) -> dict | None:
             logger.warning("parse_reminder: время в прошлом %s", remind_str)
             return None
 
-        logger.info("⏰ Напоминание: '%s' на %s UTC", data["text"], remind_str)
+        recurrence = data.get("recurrence")
+        if recurrence and recurrence not in _VALID_RECURRENCES:
+            logger.warning("parse_reminder: неизвестный recurrence=%s", recurrence)
+            recurrence = None
+        data["recurrence"] = recurrence or None
+
+        logger.info("⏰ '%s' на %s UTC recurrence=%s",
+                    data["text"], remind_str, data["recurrence"])
         return data
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning("parse_reminder: ошибка парсинга: %s", e)
@@ -66,16 +76,25 @@ def build_reminder_prompt_block(now_utc: datetime) -> str:
 --- НАПОМИНАНИЯ ---
 Текущее время UTC: {now_utc.strftime(_TIME_FMT)}
 
-Если пользователь просит напомнить — включи в ответ:
-<reminder>{{"text": "текст", "remind_at": "YYYY-MM-DD HH:MM:SS"}}</reminder>
+Если пользователь просит напомнить — включи тег:
+<reminder>{{"text": "текст", "remind_at": "YYYY-MM-DD HH:MM:SS", "recurrence": null}}</reminder>
+
+Для ПОВТОРЯЮЩИХСЯ напоминаний используй поле recurrence:
+  "daily"   — каждый день
+  "weekly"  — каждую неделю
+  "weekday" — по будням (пн-пт)
+  "monthly" — раз в месяц
+  null      — одноразовое (по умолчанию)
 
 Примеры:
-- "через 5 минут" → {ex_5min}
-- "через час"     → {ex_1h}
-- "завтра в 9"    → {ex_tomorrow}
+- "через 5 минут"           → remind_at={ex_5min}, recurrence=null
+- "через час"               → remind_at={ex_1h}, recurrence=null
+- "завтра в 9"              → remind_at={ex_tomorrow}, recurrence=null
+- "каждый день в 8 утра"    → remind_at=ближайшее 05:00 UTC, recurrence="daily"
+- "по будням в 9"           → remind_at=ближайший будний 06:00 UTC, recurrence="weekday"
+- "каждый понедельник в 10" → remind_at=следующий пн 07:00 UTC, recurrence="weekly"
 
 Если напоминания нет — НЕ включай тег.
-Слова-триггеры: напомни, напоминание, не забудь, через X минут/часов, завтра в.
 --- КОНЕЦ ---"""
 
 

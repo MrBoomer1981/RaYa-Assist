@@ -6,7 +6,6 @@ web_server.py — FastAPI веб-интерфейс RaYa.
 import base64
 import logging
 import os
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -275,7 +274,6 @@ def create_app(llm_service) -> FastAPI:
     async def status(token: str = Query(default="")):
         _check_token(token)
         from app.agents.registry import get_enabled_agents
-        from app.config import settings
         return {
             "model":        settings.model_name,
             "search":       settings.search_enabled,

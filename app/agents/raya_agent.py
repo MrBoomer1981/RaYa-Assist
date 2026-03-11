@@ -21,6 +21,12 @@ from app.emotional_service import (
     mood_context,
 )
 from app.utils import build_reminder_prompt_block, clean_reminder_tag, parse_reminder
+from app.database import (
+    get_recent_moods, format_interaction_memory,
+    format_memory_for_prompt, save_mood,
+)
+from app.observation_service import build_observation_block
+from app.personality_service import build_personality_block
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +56,6 @@ class RayaAgent(BaseAgent):
         self._run_background(self._track_mood(ctx))
 
         # ── 2. Эмоциональный контекст из истории настроений ──────────────────
-        from app.database import get_recent_moods
         moods    = get_recent_moods(ctx.user_id, limit=7)
         emot_ctx = mood_context(moods)
 
@@ -58,7 +63,6 @@ class RayaAgent(BaseAgent):
         conv_ctx = ContextService.get_prompt_block(ctx.user_id)
 
         # ── 2в. Personality block (mirroring, feedback, depth, emotional) ─────
-        from app.personality_service import build_personality_block
         personality_ctx = build_personality_block(ctx.user_id, ctx.message)
 
         # ── 2г. Internal State ────────────────────────────────────────────────
@@ -69,8 +73,10 @@ class RayaAgent(BaseAgent):
         opinion_ctx = get_opinion_hint(ctx.message)
 
         # ── 2е. Interaction Memory ────────────────────────────────────────────
-        from app.database import format_interaction_memory
         interaction_ctx = format_interaction_memory(ctx.user_id)
+
+        # ── 2ж. Живые наблюдения (повторы, паттерны поведения) ───────────────
+        observation_ctx = build_observation_block(ctx.user_id, ctx.message)
 
         # ── 3. Тип задачи → тон ──────────────────────────────────────────────
         task_type, expected_emotion, tone_hint = detect_task_type(ctx.message)
@@ -112,8 +118,12 @@ class RayaAgent(BaseAgent):
         if interaction_ctx:
             system += f"\n\n{interaction_ctx}"
 
+        # Принятые решения — не противоречим
+        decisions_block = ctx.extra.get("decisions_block", "")
+        if decisions_block:
+            system += f"\n\n{decisions_block}"
+
         # Структурированная память — богатый контекст вместо плоского списка
-        from app.database import format_memory_for_prompt
         structured_ctx = format_memory_for_prompt(ctx.user_id)
         if structured_ctx:
             system += f"\n\n{structured_ctx}"
@@ -168,10 +178,9 @@ class RayaAgent(BaseAgent):
     async def _track_mood(self, ctx: AgentContext) -> None:
         """Определяет настроение пользователя и сохраняет в mood_log фоново."""
         try:
-            from app.database import save_mood
             mood = await detect_mood(ctx.message, self._llm)
             if mood != "нейтрально":
                 save_mood(ctx.user_id, mood, ctx.message[:100])
                 logger.debug("mood: %s | user=%s", mood, ctx.user_id)
         except Exception:
-            pass
+            logger.debug("raya: mood save failed", exc_info=True)

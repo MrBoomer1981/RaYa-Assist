@@ -16,6 +16,7 @@ memory_service.py — сервис структурированной персо
   preferences — стиль общения, привычки
   goals       — цели и планы
   context     — что происходит прямо сейчас
+  decisions   — принятые решения (технические, личные, по проектам)
 """
 import json
 import logging
@@ -38,7 +39,8 @@ _EXTRACTION_PROMPT = """\
   "skills":      {{"ключ": "значение"}},
   "preferences": {{"ключ": "значение"}},
   "goals":       {{"ключ": "значение"}},
-  "context":     {{"ключ": "значение"}}
+  "context":     {{"ключ": "значение"}},
+  "decisions":   {{"ключ": "значение"}}
 }}
 
 Примеры:
@@ -47,6 +49,9 @@ _EXTRACTION_PROMPT = """\
 - "Хочу выучить Rust" → {{"goals": {{"изучить_rust": "Выучить язык Rust"}}}}
 - "Предпочитаю короткие ответы" → {{"preferences": {{"стиль_ответов": "короткие и по делу"}}}}
 - "Сейчас разбираюсь с Railway деплоем" → {{"context": {{"текущая_задача": "деплой на Railway"}}}}
+- "Решил использовать PostgreSQL" → {{"decisions": {{"бд_проекта": "PostgreSQL вместо SQLite"}}}}
+- "Буду деплоить на Railway" → {{"decisions": {{"хостинг": "Railway.app"}}}}
+- "Выбрал llama-3.3-70b для основной модели" → {{"decisions": {{"llm_модель": "llama-3.3-70b-versatile"}}}}
 
 Правила:
 - Ключи — короткие, на русском, без пробелов (используй _)
@@ -143,21 +148,6 @@ class MemoryService:
         except Exception:
             logger.exception("memory: ошибка миграции")
 
-    @staticmethod
-    def build_context(user_id: int) -> str:
-        """
-        Формирует текстовый контекст из структурированной памяти.
-        Используется в системном промпте агентов.
-        """
-        from app.database import format_memory_for_prompt
-        return format_memory_for_prompt(user_id)
-
-    @staticmethod
-    def get_all(user_id: int) -> dict:
-        """Возвращает всю структурированную память."""
-        from app.database import get_structured_memory
-        return get_structured_memory(user_id)
-
 
 # ── Interaction Memory extractor ──────────────────────────────────────────────
 
@@ -183,8 +173,6 @@ async def extract_interaction(user_id: int, message: str, llm) -> None:
     if len(message.strip()) < 15:
         return
     try:
-        import json as _json
-        from langchain_core.messages import HumanMessage
         from app.database import upsert_interaction
 
         prompt   = _INTERACTION_PROMPT.format(message=message[:400])
@@ -196,15 +184,12 @@ async def extract_interaction(user_id: int, message: str, llm) -> None:
         if not raw or raw == "{}":
             return
 
-        data = _json.loads(raw)
+        data = json.loads(raw)
         topic   = str(data.get("topic", "")).strip()
         summary = str(data.get("summary", "")).strip()
 
         if topic and summary:
             upsert_interaction(user_id, topic, summary)
-            import logging
-            logging.getLogger(__name__).info(
-                "🔁 Interaction: '%s' | user_id=%s", topic, user_id
-            )
+            logger.info("🔁 Interaction: '%s' | user_id=%s", topic, user_id)
     except Exception:
-        pass  # фоновая задача — падение не критично
+        pass

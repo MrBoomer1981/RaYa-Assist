@@ -53,6 +53,9 @@ def _create_agent(name: str):
             case "planning":
                 from app.agents.planning_agent import PlanningAgent
                 return PlanningAgent()
+            case "explain":
+                from app.agents.explain_agent import ExplainAgent
+                return ExplainAgent()
             case "critic":
                 return CriticAgent()
             case _:
@@ -93,15 +96,20 @@ class Orchestrator:
         message: str,
         search_results: str = "",
         is_voice: bool = False,
+        extra: dict | None = None,
     ) -> AgentResult:
         """Полный цикл: роутинг → агент → критик (если нужно)."""
+        combined_extra = {"is_voice": is_voice}
+        if extra:
+            combined_extra.update(extra)
+
         ctx = AgentContext(
             user_id=user_id,
             message=message,
             history=load_history(user_id, limit=settings.max_history),
             memory_facts=load_memory(user_id),
             search_results=search_results,
-            extra={"is_voice": is_voice},
+            extra=combined_extra,
         )
 
         route: RouteResult = await self._router.route(message)

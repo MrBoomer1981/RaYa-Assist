@@ -30,7 +30,8 @@ class ProactiveService:
         self._task: asyncio.Task | None = None
 
         self._digest_sent_date: str  = ""
-        self._last_initiative:  datetime | None = None  # когда последний раз писали первой
+        self._last_initiative:  datetime | None = None
+        self._trigger_state:    dict = {}  # персистентное состояние триггеров  # когда последний раз писали первой
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
@@ -90,6 +91,15 @@ class ProactiveService:
                 return
 
         await self._check_silence(now_utc)
+
+        # ── Умные триггеры проактивности ─────────────────────────────────────
+        try:
+            from app.proactive_triggers import check_all_triggers
+            user_id = settings.telegram_user_id
+            llm     = self._llm._llm
+            await check_all_triggers(user_id, self._bot, llm, self._trigger_state)
+        except Exception:
+            logger.exception("Ошибка проактивных триггеров")
 
     async def _check_silence(self, now_utc: datetime) -> None:
         """Проверяет тишину и пишет первой если надо."""

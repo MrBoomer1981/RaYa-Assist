@@ -1,20 +1,28 @@
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from aiogram import Bot
 
-from app.database import get_due_reminders, mark_reminder_done
+from app.database import get_due_reminders, mark_reminder_done, reschedule_reminder
 
 logger = logging.getLogger(__name__)
 
 _CHECK_INTERVAL = 60
 
+_RECURRENCE_RU = {
+    "daily":   "каждый день",
+    "weekly":  "каждую неделю",
+    "weekday": "по будням",
+    "monthly": "каждый месяц",
+}
+
 
 class SchedulerService:
     """
     Фоновый планировщик напоминаний.
-    Каждые 60 секунд проверяет БД и отправляет сообщения в Telegram.
+    Каждые 60 секунд проверяет БД и отправляет сообщения.
+    Повторяющиеся напоминания автоматически пересоздаются.
     """
 
     def __init__(self, bot: Bot) -> None:
@@ -41,25 +49,44 @@ class SchedulerService:
             await asyncio.sleep(_CHECK_INTERVAL)
 
     async def _check_reminders(self) -> None:
-        # Используем naive UTC datetime — без tzinfo
-        # SQLite хранит строки, сравниваем как строки формата YYYY-MM-DD HH:MM:SS
         now = datetime.utcnow()
-        logger.debug("⏰ Проверка напоминаний: %s UTC", now.strftime("%Y-%m-%d %H:%M:%S"))
+        logger.debug("⏰ Проверка: %s UTC", now.strftime("%Y-%m-%d %H:%M:%S"))
 
         due = get_due_reminders(now)
         if not due:
             return
 
-        logger.info("⏰ Найдено напоминаний к отправке: %d", len(due))
+        logger.info("⏰ Напоминаний к отправке: %d", len(due))
 
-        for reminder_id, user_id, text in due:
+        for reminder_id, user_id, text, recurrence in due:
             try:
+                # Формируем текст с пометкой о повторении
+                suffix = ""
+                if recurrence and recurrence in _RECURRENCE_RU:
+                    suffix = f"\n🔁 {_RECURRENCE_RU[recurrence]}"
+
                 await self._bot.send_message(
                     chat_id=user_id,
-                    text=f"⏰ Напоминание, Сократ: {text}",
+                    text=f"⏰ Напоминание, Сократ: {text}{suffix}",
                 )
-                mark_reminder_done(reminder_id)
-                logger.info("✅ Напоминание #%d отправлено user_id=%s", reminder_id, user_id)
+
+                # Повторяющееся — пересоздаём следующее
+                if recurrence:
+                    rescheduled = reschedule_reminder(reminder_id)
+                    if rescheduled:
+                        logger.info(
+                            "🔁 Напоминание #%d пересоздано (%s)",
+                            reminder_id, recurrence,
+                        )
+                    else:
+                        mark_reminder_done(reminder_id)
+                else:
+                    mark_reminder_done(reminder_id)
+
+                logger.info(
+                    "✅ Напоминание #%d отправлено user_id=%s", reminder_id, user_id
+                )
+
             except Exception:
                 logger.exception(
                     "Не удалось отправить напоминание #%d user_id=%s",

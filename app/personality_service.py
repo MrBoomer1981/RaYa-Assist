@@ -10,7 +10,6 @@ personality_service.py — единый сервис осознанности л
 Все механизмы работают фоново, не блокируя ответ.
 Результат добавляется в системный промпт raya_agent.
 """
-import json
 import logging
 import re
 from collections import Counter
@@ -261,7 +260,6 @@ def get_emotional_hint(user_id: int) -> str:
     Если сегодня «стрессовый день» по паттерну — добавляет инструкцию.
     """
     try:
-        from app.database import get_memory_by_category
 
         patterns = get_memory_by_category(user_id, _MOOD_CATEGORY)
         if not patterns:
@@ -284,6 +282,51 @@ def get_emotional_hint(user_id: int) -> str:
 
 # ── Сборка всех подсказок для промпта ────────────────────────────────────────
 
+# ── 5. Наблюдения + реакция на повторение ────────────────────────────────────
+
+_REPEAT_THRESHOLD = 3
+
+
+def get_observation_hint(user_id: int, message: str) -> str:
+    """
+    Два паттерна:
+    - Реакция на повторение: тема встречается 3+ раз
+    - Наблюдение по времени суток
+    """
+    hints = []
+    msg_lower = message.lower()
+
+    # Паттерн повторения — из interaction_memory
+    try:
+        from app.database import get_top_interactions
+        for topic, _, freq in get_top_interactions(user_id, limit=5):
+            if freq >= _REPEAT_THRESHOLD:
+                topic_words = topic.lower().split()
+                if sum(1 for w in topic_words if w in msg_lower) >= 1:
+                    hints.append(
+                        f"Сократ возвращается к теме «{topic}» уже {freq} раз. "
+                        f"Если уместно — спроси что именно его в этом держит."
+                    )
+                    break
+    except Exception:
+        pass
+
+    # Наблюдение: поздняя ночь
+    try:
+        now_hour = (datetime.utcnow().hour + 3) % 24
+        if now_hour >= 22 or now_hour < 2:
+            hints.append(
+                "Сократ пишет поздно ночью — если разговор серьёзный, "
+                "можно мягко это отметить."
+            )
+    except Exception:
+        pass
+
+    return "\n".join(hints)
+
+
+# ── Сборка всех подсказок для промпта ────────────────────────────────────────
+
 def build_personality_block(user_id: int, message: str) -> str:
     """
     Собирает все personality-подсказки в один блок для системного промпта.
@@ -291,14 +334,19 @@ def build_personality_block(user_id: int, message: str) -> str:
     """
     hints = []
 
-    mirror   = get_mirror_hint(message)
-    feedback = get_feedback_hint(user_id)
-    depth    = get_depth_hint(user_id)
-    emotional = get_emotional_hint(user_id)
-
-    for h in [mirror, feedback, depth, emotional]:
-        if h:
-            hints.append(h)
+    for fn in [
+        lambda: get_mirror_hint(message),
+        lambda: get_feedback_hint(user_id),
+        lambda: get_depth_hint(user_id),
+        lambda: get_emotional_hint(user_id),
+        lambda: get_observation_hint(user_id, message),
+    ]:
+        try:
+            h = fn()
+            if h:
+                hints.append(h)
+        except Exception:
+            pass
 
     if not hints:
         return ""

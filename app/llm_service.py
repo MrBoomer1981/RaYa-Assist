@@ -3,7 +3,6 @@ llm_service.py — сервис обработки сообщений.
 Делегирует оркестратору, сохраняет историю, извлекает факты в фоне.
 """
 import asyncio
-import json
 import logging
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
@@ -79,6 +78,10 @@ class LLMService:
         from app.tone_controller import make_tone_controller_factory
         self._tone = make_tone_controller_factory(settings.groq_api_key)
 
+        # Consistency Service — проверка согласованности с решениями
+        from app.consistency_service import ConsistencyService
+        self._consistency = ConsistencyService(self._llm)
+
     # ── Вспомогательные ───────────────────────────────────────────────────────
 
     def _run_background(self, coro: Coroutine[Any, Any, None]) -> None:
@@ -132,11 +135,15 @@ class LLMService:
                 logger.exception("user_id=%s | ошибка поиска", user_id)
                 search_task.cancel()
 
+        # Блок принятых решений — для системного промпта агента
+        decisions_block = self._consistency.get_decisions_block(user_id)
+
         agent_result = await self._get_orchestrator().run(
             user_id=user_id,
             message=user_message,
             search_results=search_results,
             is_voice=is_voice,
+            extra={"decisions_block": decisions_block},
         )
 
         reply    = agent_result.content
@@ -171,6 +178,9 @@ class LLMService:
 
         # Tone Controller — корректируем тон если нужно (быстрая 8b модель)
         reply = await self._tone.process(user_message, reply)
+
+        # Consistency — проверяем согласованность с принятыми решениями
+        reply = await self._consistency.check_and_fix(user_id, reply, user_message)
 
         return ChatResult(
             reply=reply,

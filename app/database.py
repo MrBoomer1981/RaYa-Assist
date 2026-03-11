@@ -56,13 +56,16 @@ def init_db() -> None:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS reminders (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER NOT NULL,
-                text       TEXT    NOT NULL,
-                remind_at  DATETIME NOT NULL,
-                done       INTEGER  NOT NULL DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                text        TEXT    NOT NULL,
+                remind_at   DATETIME NOT NULL,
+                done        INTEGER  NOT NULL DEFAULT 0,
+                recurrence  TEXT     DEFAULT NULL,  -- 'daily','weekly','weekday','monthly' или NULL
+                created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            -- Миграция: добавляем recurrence если таблица уже существует
+            -- (безопасно — ALTER TABLE игнорирует если колонка есть)
             CREATE TABLE IF NOT EXISTS diary (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id    INTEGER NOT NULL,
@@ -197,24 +200,100 @@ def clear_memory(user_id: int) -> None:
 
 # ── Напоминания ───────────────────────────────────────────────────────────────
 
-def save_reminder(user_id: int, text: str, remind_at: datetime) -> int:
+def save_reminder(
+    user_id: int,
+    text: str,
+    remind_at: datetime,
+    recurrence: str | None = None,
+) -> int:
+    """Сохраняет напоминание. recurrence: 'daily','weekly','weekday','monthly' или None."""
     with _conn() as con:
+        # Безопасная миграция — добавляем колонку если ещё нет
+        try:
+            con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+        except Exception:
+            pass  # уже есть
         cur = con.execute(
-            "INSERT INTO reminders (user_id, text, remind_at) VALUES (?, ?, ?)",
-            (user_id, text, remind_at.strftime(_TIME_FMT)),
+            "INSERT INTO reminders (user_id, text, remind_at, recurrence) VALUES (?, ?, ?, ?)",
+            (user_id, text, remind_at.strftime(_TIME_FMT), recurrence),
         )
         return cur.lastrowid or 0
 
 
-def get_due_reminders(now: datetime) -> list[tuple[int, int, str]]:
-    """[(id, user_id, text)] — напоминания время которых пришло."""
+def next_reminder_time(remind_at: datetime, recurrence: str) -> datetime | None:
+    """Вычисляет следующее время для повторяющегося напоминания."""
+    from datetime import timedelta
+    r = recurrence.lower().strip()
+    if r == "daily":
+        return remind_at + timedelta(days=1)
+    if r == "weekly":
+        return remind_at + timedelta(weeks=1)
+    if r == "monthly":
+        # Следующий месяц (тот же день)
+        month = remind_at.month % 12 + 1
+        year  = remind_at.year + (1 if remind_at.month == 12 else 0)
+        try:
+            return remind_at.replace(year=year, month=month)
+        except ValueError:
+            # 31 января → 28/29 февраля
+            import calendar
+            last_day = calendar.monthrange(year, month)[1]
+            return remind_at.replace(year=year, month=month, day=last_day)
+    if r == "weekday":
+        # Следующий будний день
+        next_dt = remind_at + timedelta(days=1)
+        while next_dt.weekday() >= 5:  # 5=сб, 6=вс
+            next_dt += timedelta(days=1)
+        return next_dt
+    return None
+
+
+def reschedule_reminder(reminder_id: int) -> bool:
+    """
+    Для повторяющегося напоминания: помечает текущее done=1,
+    создаёт следующее. Возвращает True если пересоздано.
+    """
     with _conn() as con:
+        row = con.execute(
+            "SELECT user_id, text, remind_at, recurrence FROM reminders WHERE id = ?",
+            (reminder_id,),
+        ).fetchone()
+
+        if not row:
+            return False
+
+        user_id, text, remind_at_str, recurrence = row
+
+        if not recurrence:
+            return False  # одноразовое
+
+        mark_reminder_done(reminder_id)
+
+        remind_at = datetime.strptime(remind_at_str, _TIME_FMT)
+        next_dt   = next_reminder_time(remind_at, recurrence)
+        if not next_dt:
+            return False
+
+        con.execute(
+            "INSERT INTO reminders (user_id, text, remind_at, recurrence) VALUES (?, ?, ?, ?)",
+            (user_id, text, next_dt.strftime(_TIME_FMT), recurrence),
+        )
+        return True
+
+
+def get_due_reminders(now: datetime) -> list[tuple[int, int, str, str | None]]:
+    """[(id, user_id, text, recurrence)] — напоминания время которых пришло."""
+    with _conn() as con:
+        try:
+            con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+        except Exception:
+            pass
         rows = con.execute("""
-            SELECT id, user_id, text FROM reminders
+            SELECT id, user_id, text, recurrence FROM reminders
             WHERE done = 0 AND remind_at <= ?
             ORDER BY remind_at ASC
         """, (now.strftime(_TIME_FMT),)).fetchall()
-    return [(r[0], r[1], r[2]) for r in rows]
+    return [(r[0], r[1], r[2], r[3]) for r in rows]
 
 
 def mark_reminder_done(reminder_id: int) -> None:
@@ -473,7 +552,6 @@ def save_conversation_context(
     last_summary: str = "",
 ) -> None:
     """Сохраняет или обновляет контекст разговора."""
-    import json as _json
     now     = datetime.utcnow().strftime(_TIME_FMT)
     threads = _json.dumps(open_threads or [], ensure_ascii=False)
 

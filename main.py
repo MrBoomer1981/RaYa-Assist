@@ -127,23 +127,36 @@ async def _handle_chat_result(
 
     if result.reminder:
         try:
-            remind_str = result.reminder["remind_at"]
-            remind_at = datetime.strptime(remind_str, "%Y-%m-%d %H:%M:%S")
+            remind_str  = result.reminder["remind_at"]
+            remind_at   = datetime.strptime(remind_str, "%Y-%m-%d %H:%M:%S")
+            recurrence  = result.reminder.get("recurrence")
+
             rid = save_reminder(
                 message.from_user.id,  # type: ignore[union-attr]
                 result.reminder["text"],
                 remind_at,
+                recurrence,
             )
+
+            _RECUR_RU = {
+                "daily":   "каждый день",
+                "weekly":  "каждую неделю",
+                "weekday": "по будням",
+                "monthly": "каждый месяц",
+            }
+            recur_note = f"\n🔁 Повторение: {_RECUR_RU[recurrence]}" if recurrence else ""
+
             logger.info(
-                "⏰ Напоминание #%d сохранено user_id=%s: '%s' в %s UTC",
+                "⏰ Напоминание #%d сохранено user_id=%s: '%s' в %s UTC recurrence=%s",
                 rid,
                 message.from_user.id,  # type: ignore[union-attr]
                 result.reminder["text"],
                 remind_str,
+                recurrence,
             )
             await message.answer(
-                f"⏰ Записал, Сократ. Напомню: {result.reminder['text']}\n"
-                f"Время (UTC): {remind_str} (#{rid})"
+                f"⏰ Записала, Сократ. Напомню: {result.reminder['text']}\n"
+                f"Время (UTC): {remind_str}{recur_note} (#{rid})"
             )
         except Exception:
             logger.exception("Ошибка сохранения напоминания")
