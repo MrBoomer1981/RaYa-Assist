@@ -209,10 +209,23 @@ async def main() -> None:
     async def cmd_memory(message: Message) -> None:
         if not message.from_user:
             return
-        facts = load_memory(message.from_user.id)
+        from app.database import get_memory_by_category
+
+        user_id = message.from_user.id
+        lines   = []
+
+        facts = load_memory(user_id)
         if facts:
-            facts_text = "\n".join(f"• {f}" for f in facts)
-            await message.answer(f"🧠 Вот что я о тебе знаю, Сократ:\n\n{facts_text}")
+            lines.append("🧠 *Что знаю о тебе:*")
+            lines.extend(f"  • {f}" for f in facts[:10])
+
+        decisions = get_memory_by_category(user_id, "decisions")
+        if decisions:
+            lines.append("\n✅ *Принятые решения:*")
+            lines.extend(f"  • {k}: {v}" for k, v in decisions[:8])
+
+        if lines:
+            await message.answer("\n".join(lines))
         else:
             await message.answer("🧠 Пока ничего о тебе не знаю, Сократ.")
 
@@ -228,6 +241,8 @@ async def main() -> None:
         if not message.from_user:
             return
         clear_history(message.from_user.id)
+        # Очищаем сессионный кэш последовательности
+        llm._consistency.clear_session(message.from_user.id)
         await message.answer("🗑️ История очищена. Память сохранена, Сократ.")
 
     @dp.message(Command("reminders"))
@@ -421,12 +436,15 @@ async def main() -> None:
         await bot.send_chat_action(message.chat.id, "typing")
 
         try:
-            # Фраза-мостик если вернулся после паузы
+            # Фраза-мостик если вернулся после паузы — передаём в llm.chat
+            # чтобы RaYa вплела её в ответ, а не отправляла отдельно
             bridge = await llm.get_resume_phrase(message.from_user.id)
-            if bridge:
-                await message.answer(f"↩️ {bridge}")
 
-            result = await llm.chat(message.from_user.id, message.text)
+            result = await llm.chat(
+                message.from_user.id,
+                message.text,
+                resume_bridge=bridge,
+            )
             await _handle_chat_result(message, result, bot)
         except Exception:
             logger.exception("Ошибка user_id=%s", message.from_user.id)

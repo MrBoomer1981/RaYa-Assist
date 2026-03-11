@@ -123,6 +123,12 @@ class RayaAgent(BaseAgent):
         if decisions_block:
             system += f"\n\n{decisions_block}"
 
+        # Фраза-мостик: RaYa вплетает её в начало ответа естественно
+        resume_bridge = ctx.extra.get("resume_bridge", "")
+        if resume_bridge:
+            system += (
+                f"\n\nВАЖНО: Сократ вернулся после паузы. Начни ответ с естественного "                f"упоминания того о чём говорили: '{resume_bridge}' — "                f"вплети это органично, не как отдельный абзац."            )
+
         # Структурированная память — богатый контекст вместо плоского списка
         structured_ctx = format_memory_for_prompt(ctx.user_id)
         if structured_ctx:

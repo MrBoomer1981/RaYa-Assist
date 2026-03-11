@@ -80,7 +80,10 @@ class LLMService:
 
         # Consistency Service — проверка согласованности с решениями
         from app.consistency_service import ConsistencyService
-        self._consistency = ConsistencyService(self._llm)
+        self._consistency  = ConsistencyService(self._llm)
+
+        from app.router_calibration import RouterCalibration
+        self._calibration = RouterCalibration()
 
     # ── Вспомогательные ───────────────────────────────────────────────────────
 
@@ -112,7 +115,7 @@ class LLMService:
 
     # ── Основной метод ────────────────────────────────────────────────────────
 
-    async def chat(self, user_id: int, user_message: str, is_voice: bool = False) -> ChatResult:
+    async def chat(self, user_id: int, user_message: str, is_voice: bool = False, resume_bridge: str | None = None) -> ChatResult:
         """
         Точка входа — делегирует оркестратору.
         Сохраняет в историю, извлекает факты в фоне.
@@ -138,13 +141,26 @@ class LLMService:
         # Блок принятых решений — для системного промпта агента
         decisions_block = self._consistency.get_decisions_block(user_id)
 
+        # Калибровка: проверяем не жалуется ли Сократ на предыдущий ответ
+        self._calibration.check_mismatch(user_id, user_message)
+
+        # Подсказка роутеру на основе накопленных ошибок
+        calibration_hint = self._calibration.get_hint(user_message)
+
         agent_result = await self._get_orchestrator().run(
             user_id=user_id,
             message=user_message,
             search_results=search_results,
             is_voice=is_voice,
-            extra={"decisions_block": decisions_block},
+            extra={
+                "decisions_block":  decisions_block,
+                "resume_bridge":    resume_bridge,
+                "calibration_hint": calibration_hint,
+            },
         )
+
+        # Запоминаем маршрут для следующей проверки
+        self._calibration.record_route(user_id, user_message, agent_result.agent_name)
 
         reply    = agent_result.content
         reminder = (agent_result.metadata or {}).get("reminder")

@@ -56,7 +56,7 @@ class RouterAgent:
             len(self._agents), _ROUTER_MODEL,
         )
 
-    def _build_router_prompt(self, message: str) -> str:
+    def _build_router_prompt(self, message: str, calibration_hint: str | None = None) -> str:
         """Формирует промпт для LLM роутера."""
         agents_desc = "\n".join(
             f'- "{a.name}": {a.description}'
@@ -76,7 +76,7 @@ class RouterAgent:
             "Только JSON, без пояснений."
         )
 
-    async def route(self, message: str) -> RouteResult:
+    async def route(self, message: str, calibration_hint: str | None = None) -> RouteResult:
         """
         Определяет агента для обработки сообщения.
         Двухуровневая логика: ключевые слова → LLM.
@@ -94,7 +94,7 @@ class RouterAgent:
 
         # Уровень 2: LLM классификатор
         try:
-            prompt = self._build_router_prompt(message)
+            prompt = self._build_router_prompt(message, calibration_hint)
             response = await self._llm.ainvoke([HumanMessage(content=prompt)])
             raw = (
                 str(response.content)
