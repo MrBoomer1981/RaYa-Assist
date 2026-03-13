@@ -9,6 +9,8 @@ proactive.py — проактивные сообщения RaYa: дайджес�
 import itertools
 import logging
 from datetime import datetime, timedelta
+
+from app.config import settings
 from app.database import DB_PATH, get_active_tasks, get_top_interactions, load_history, load_memory, save_messages
 from app.database import _conn  # для прямых SQL запросов
 
@@ -131,8 +133,6 @@ async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime 
     Возвращает (отправлено, новое_время_последнего_сообщения).
     """
     try:
-        from app.proactive_service import get_last_message_time
-
         last_msg = get_last_message_time(user_id)
         if last_msg is None:
             return False, last_absence_msg
@@ -254,7 +254,6 @@ async def _gen(llm, prompt: str) -> str | None:
     """Генерирует короткое проактивное сообщение."""
     try:
         from langchain_core.messages import SystemMessage, HumanMessage
-        from app.config import settings
 
         system = settings.system_prompt + (
             "\n\nКРИТИЧНО: Это проактивное сообщение — ты пишешь первой. "
@@ -486,8 +485,6 @@ class ProactiveService:
     async def _check_silence(self, now_utc: datetime) -> None:
         """Проверяет тишину и пишет первой если надо."""
         try:
-            from app.proactive_service import get_last_message_time, generate_initiative_message
-
             user_id   = settings.telegram_user_id
             last_msg  = get_last_message_time(user_id)
 
@@ -640,15 +637,12 @@ class SchedulerService:
         self._sched_task: asyncio.Task | None = None
 
     def start(self) -> None:
-        self._sched_task = asyncio.create_task(self._run_scheduler())
         self._task = asyncio.create_task(self._run())
         logger.info("⏰ Планировщик запущен (интервал: %ds)", _CHECK_INTERVAL)
 
     def stop(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
-        if hasattr(self, '_sched_task') and not self._sched_task.done():
-            self._sched_task.cancel()
             logger.info("⏰ Планировщик остановлен")
 
     async def _run(self) -> None:
