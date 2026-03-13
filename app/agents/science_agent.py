@@ -45,7 +45,7 @@ class ScienceAgent(BaseAgent):
         search_results = ctx.search_results
         if not search_results and self._search:
             try:
-                search_results = await self._search.search(ctx.message)  # type: ignore[attr-defined]
+                search_results = await self._search.search(ctx.message)
                 logger.info("🔬 Science: поиск выполнен для '%s'", ctx.message[:50])
             except Exception:
                 logger.warning("Science: поиск недоступен")

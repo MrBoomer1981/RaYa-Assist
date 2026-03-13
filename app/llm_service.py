@@ -12,11 +12,9 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_groq import ChatGroq
 
 from app.config import settings
-from app.database import load_memory, save_memory, save_messages
+from app.database import load_memory, save_messages
 
 logger = logging.getLogger(__name__)
-
-_MEMORY_EXTRACTION_EVERY_N = 5
 
 _SEARCH_KEYWORDS: tuple[str, ...] = (
     "новост", "сейчас", "сегодня", "вчера", "курс", "цена", "погод",
@@ -66,23 +64,14 @@ class LLMService:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._orchestrator: Optional[Any] = None
 
-        # Структурированная память
-        from app.memory_service import MemoryService
-        self._memory = MemoryService(self._llm)
-
-        # Контекст разговора
-        from app.context_service import ContextService
-        self._context = ContextService(self._llm)
-
-        # Tone Controller
-        from app.tone_controller import make_tone_controller_factory
-        self._tone = make_tone_controller_factory(settings.groq_api_key)
-
-        # Consistency Service — проверка согласованности с решениями
-        from app.consistency_service import ConsistencyService
-        self._consistency  = ConsistencyService(self._llm)
-
-        from app.router_calibration import RouterCalibration
+        from app.llm_pipeline import (
+            MemoryService, ContextService, ConsistencyService,
+            RouterCalibration, make_tone_controller_factory,
+        )
+        self._memory      = MemoryService(self._llm)
+        self._context     = ContextService(self._llm)
+        self._tone        = make_tone_controller_factory(settings.groq_api_key)
+        self._consistency = ConsistencyService(self._llm)
         self._calibration = RouterCalibration()
 
     # ── Вспомогательные ───────────────────────────────────────────────────────
@@ -99,11 +88,6 @@ class LLMService:
         msg_lower = message.lower()
         return any(kw in msg_lower for kw in _SEARCH_KEYWORDS)
 
-    def _should_extract_facts(self, user_id: int) -> bool:
-        count = self._msg_counter.get(user_id, 0) + 1
-        self._msg_counter[user_id] = count
-        return count % _MEMORY_EXTRACTION_EVERY_N == 1
-
     def _get_orchestrator(self):
         """Ленивая инициализация оркестратора."""
         if self._orchestrator is None:
@@ -115,7 +99,13 @@ class LLMService:
 
     # ── Основной метод ────────────────────────────────────────────────────────
 
-    async def chat(self, user_id: int, user_message: str, is_voice: bool = False, resume_bridge: str | None = None) -> ChatResult:
+    async def chat(
+        self,
+        user_id: int,
+        user_message: str,
+        is_voice: bool = False,
+        resume_bridge: str | None = None,
+    ) -> ChatResult:
         """
         Точка входа — делегирует оркестратору.
         Сохраняет в историю, извлекает факты в фоне.
@@ -184,7 +174,7 @@ class LLMService:
             self._run_background(update_emotional_patterns(user_id))
 
         # Interaction memory — каждое сообщение (фоново, лёгкая операция)
-        from app.memory_service import extract_interaction
+        from app.llm_pipeline import extract_interaction
         self._run_background(extract_interaction(user_id, user_message, self._llm))
 
         logger.debug(
@@ -228,7 +218,6 @@ class LLMService:
         doc_name: str = "документ",
     ) -> str:
         """Отвечает на вопрос по содержимому документа."""
-        from app.database import load_memory
 
         memory_facts = load_memory(user_id)
         system = settings.system_prompt

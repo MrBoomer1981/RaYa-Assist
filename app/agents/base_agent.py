@@ -17,6 +17,11 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+def _ms(start: float) -> int:
+    """Миллисекунды с момента start."""
+    return _ms(start)
+
+
 # Максимальное время выполнения одного агента (секунды)
 _DEFAULT_TIMEOUT = 30
 
@@ -49,6 +54,23 @@ class AgentResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None        # текст ошибки если success=False
 
+
+def strip_history(history: list, limit: int = 0) -> list:
+    """
+    Конвертирует историю BaseMessage → [HumanMessage, AIMessage].
+    limit > 0 — берёт последние N сообщений.
+    Используется агентами которым нужна история без системных сообщений.
+    """
+    from langchain_core.messages import HumanMessage, AIMessage
+    items = history[-limit:] if limit > 0 else history
+    result = []
+    for msg in items:
+        cls = msg.__class__.__name__
+        if cls == "HumanMessage":
+            result.append(HumanMessage(content=msg.content))
+        elif cls == "AIMessage":
+            result.append(AIMessage(content=msg.content))
+    return result
 
 class BaseAgent:
     """
@@ -125,7 +147,7 @@ class BaseAgent:
                 self._execute(ctx),
                 timeout=self.timeout,
             )
-            result.elapsed_ms = int((time.monotonic() - start) * 1000)
+            result.elapsed_ms = _ms(start)
             logger.info(
                 "✅ Агент '%s' завершён за %dмс | user_id=%s",
                 self.agent_name, result.elapsed_ms, ctx.user_id,
@@ -133,7 +155,7 @@ class BaseAgent:
             return result
 
         except asyncio.TimeoutError:
-            elapsed = int((time.monotonic() - start) * 1000)
+            elapsed = _ms(start)
             logger.error(
                 "⏱️  Агент '%s' timeout (%dс) | user_id=%s",
                 self.agent_name, self.timeout, ctx.user_id,
@@ -147,7 +169,7 @@ class BaseAgent:
             )
 
         except Exception as e:
-            elapsed = int((time.monotonic() - start) * 1000)
+            elapsed = _ms(start)
             logger.exception(
                 "❌ Агент '%s' ошибка | user_id=%s", self.agent_name, ctx.user_id
             )

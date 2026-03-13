@@ -10,10 +10,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
-from app.context_service import ContextService
-from app.internal_state import update_state, state_to_prompt
-from app.opinions import get_opinion_hint
-from app.emotional_service import (
+from app.database import format_context_for_prompt
+from app.personality_service import update_state, state_to_prompt
+from app.personality_service import get_opinion_hint
+from app.personality_service import (
     detect_mood,
     detect_task_type,
     extract_emotion_tag,
@@ -25,7 +25,7 @@ from app.database import (
     get_recent_moods, format_interaction_memory,
     format_memory_for_prompt, save_mood,
 )
-from app.observation_service import build_observation_block
+from app.personality_service import build_observation_block
 from app.personality_service import build_personality_block
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class RayaAgent(BaseAgent):
         emot_ctx = mood_context(moods)
 
         # ── 2б. Контекст разговора ────────────────────────────────────────────
-        conv_ctx = ContextService.get_prompt_block(ctx.user_id)
+        conv_ctx = format_context_for_prompt(ctx.user_id)
 
         # ── 2в. Personality block (mirroring, feedback, depth, emotional) ─────
         personality_ctx = build_personality_block(ctx.user_id, ctx.message)
@@ -127,7 +127,10 @@ class RayaAgent(BaseAgent):
         resume_bridge = ctx.extra.get("resume_bridge", "")
         if resume_bridge:
             system += (
-                f"\n\nВАЖНО: Сократ вернулся после паузы. Начни ответ с естественного "                f"упоминания того о чём говорили: '{resume_bridge}' — "                f"вплети это органично, не как отдельный абзац."            )
+                f"\n\nВАЖНО: Сократ вернулся после паузы. Начни ответ с естественного "
+                f"упоминания того о чём говорили: '{resume_bridge}' — "
+                f"вплети это органично, не как отдельный абзац."
+            )
 
         # Структурированная память — богатый контекст вместо плоского списка
         structured_ctx = format_memory_for_prompt(ctx.user_id)

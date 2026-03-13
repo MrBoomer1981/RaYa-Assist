@@ -22,6 +22,14 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 @contextmanager
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Идемпотентные ALTER TABLE миграции — запускаются один раз при старте."""
+    existing = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
+    if "recurrence" not in existing:
+        con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+
+
 def _conn() -> Generator[sqlite3.Connection, None, None]:
     """Контекстный менеджер соединения с авто-commit/rollback."""
     con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
@@ -64,8 +72,7 @@ def init_db() -> None:
                 recurrence  TEXT     DEFAULT NULL,  -- 'daily','weekly','weekday','monthly' или NULL
                 created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
-            -- Миграция: добавляем recurrence если таблица уже существует
-            -- (безопасно — ALTER TABLE игнорирует если колонка есть)
+            -- recurrence добавлена в схему — миграция через PRAGMA ниже
             CREATE TABLE IF NOT EXISTS diary (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id    INTEGER NOT NULL,
@@ -178,21 +185,6 @@ def load_memory(user_id: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def save_memory(user_id: int, facts: list[str]) -> None:
-    if not facts:
-        return
-    existing = set(load_memory(user_id))
-    new_facts = [f for f in facts if f not in existing]
-    if not new_facts:
-        return
-    with _conn() as con:
-        con.executemany(
-            "INSERT INTO user_memory (user_id, fact) VALUES (?, ?)",
-            [(user_id, f) for f in new_facts],
-        )
-    logger.debug("user_id=%s | факты сохранены: %d", user_id, len(new_facts))
-
-
 def clear_memory(user_id: int) -> None:
     with _conn() as con:
         con.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
@@ -208,11 +200,6 @@ def save_reminder(
 ) -> int:
     """Сохраняет напоминание. recurrence: 'daily','weekly','weekday','monthly' или None."""
     with _conn() as con:
-        # Безопасная миграция — добавляем колонку если ещё нет
-        try:
-            con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
-        except Exception:
-            pass  # уже есть
         cur = con.execute(
             "INSERT INTO reminders (user_id, text, remind_at, recurrence) VALUES (?, ?, ?, ?)",
             (user_id, text, remind_at.strftime(_TIME_FMT), recurrence),
@@ -284,10 +271,6 @@ def reschedule_reminder(reminder_id: int) -> bool:
 def get_due_reminders(now: datetime) -> list[tuple[int, int, str, str | None]]:
     """[(id, user_id, text, recurrence)] — напоминания время которых пришло."""
     with _conn() as con:
-        try:
-            con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
-        except Exception:
-            pass
         rows = con.execute("""
             SELECT id, user_id, text, recurrence FROM reminders
             WHERE done = 0 AND remind_at <= ?

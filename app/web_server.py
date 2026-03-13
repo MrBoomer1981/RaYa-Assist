@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,9 +19,19 @@ from app.config import settings
 from app.tts_service import TTSService
 from app.voice_service import VoiceService
 from app.database import (
-    clear_history, clear_memory,
-    delete_reminder, get_active_reminders,
-    load_diary_entries, load_history, load_memory,
+    MEMORY_CATEGORIES,
+    clear_history,
+    clear_memory,
+    clear_structured_memory,
+    delete_memory_entry,
+    delete_reminder,
+    get_active_reminders,
+    get_conversation_context,
+    get_structured_memory,
+    load_diary_entries,
+    load_history,
+    load_memory,
+    save_conversation_context,
     save_reminder,
 )
 
@@ -125,7 +135,6 @@ def create_app(llm_service) -> FastAPI:
     async def memory(token: str = Query(default="")):
         _check_token(token)
         user_id = settings.telegram_user_id
-        from app.database import get_structured_memory, MEMORY_CATEGORIES
         structured = get_structured_memory(user_id)
         # Также возвращаем старые факты для совместимости
         legacy = load_memory(user_id)
@@ -139,7 +148,6 @@ def create_app(llm_service) -> FastAPI:
     async def delete_memory(token: str = Query(default="")):
         _check_token(token)
         user_id = settings.telegram_user_id
-        from app.database import clear_structured_memory
         clear_memory(user_id)
         clear_structured_memory(user_id)
         return {"ok": True}
@@ -152,8 +160,7 @@ def create_app(llm_service) -> FastAPI:
         """Удаляет конкретную запись из структурированной памяти."""
         _check_token(token)
         user_id = settings.telegram_user_id
-        from app.database import delete_memory_entry as _del
-        ok = _del(user_id, category, key)
+        ok = delete_memory_entry(user_id, category, key)
         return {"ok": ok}
 
     # ── Напоминания ───────────────────────────────────────────────────────────
@@ -196,7 +203,6 @@ def create_app(llm_service) -> FastAPI:
         """Текущий контекст разговора: тема, цель, незавершённые темы, резюме."""
         _check_token(token)
         user_id = settings.telegram_user_id
-        from app.database import get_conversation_context
         return get_conversation_context(user_id)
 
     @app.delete("/api/context")
@@ -204,7 +210,6 @@ def create_app(llm_service) -> FastAPI:
         """Сбрасывает контекст разговора."""
         _check_token(token)
         user_id = settings.telegram_user_id
-        from app.database import save_conversation_context
         save_conversation_context(user_id)
         return {"ok": True}
 

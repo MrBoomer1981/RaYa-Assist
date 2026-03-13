@@ -191,3 +191,18 @@ def clean_reply(text: str) -> str:
     text = _EXCESS_NEWLINES_RE.sub("\n\n", text)
 
     return text.strip()
+
+# ── Общие утилиты ────────────────────────────────────────────────────────────
+
+# Словарь повторений — используется в handlers и proactive
+RECUR_RU: dict[str, str] = {
+    "daily":   "каждый день",
+    "weekly":  "каждую неделю",
+    "weekday": "по будням",
+    "monthly": "каждый месяц",
+}
+
+
+def strip_json(raw: str) -> str:
+    """Убирает ```json ... ``` обёртку из ответа LLM."""
+    return raw.strip().replace("```json", "").replace("```", "").strip()

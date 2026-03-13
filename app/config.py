@@ -51,12 +51,14 @@ class Settings(BaseSettings):
 
     # Опциональные ключи для расширений
     tavily_api_key: str = ""
-    telegram_user_id: int = 1
 
-
+    # Telegram user_id владельца — нужен для веб-интерфейса
+    # Найти: написать боту /start и посмотреть логи Railway (user_id=XXXXXXXXX)
+    telegram_user_id: int = 0  # ОБЯЗАТЕЛЬНО задать TELEGRAM_USER_ID в Railway Variables
 
     # Параметры модели
     model_name: str = "llama-3.3-70b-versatile"
+    router_model: str = "llama-3.1-8b-instant"  # роутер + tone controller
     temperature: float = 0.7
     max_history: int = 20
 
@@ -67,6 +69,18 @@ class Settings(BaseSettings):
         """Загружаем persona.txt после инициализации настроек."""
         if not self.system_prompt:
             object.__setattr__(self, "system_prompt", _load_persona())
+
+    @field_validator("telegram_user_id")
+    @classmethod
+    def validate_telegram_user_id(cls, v: int) -> int:
+        if v == 0:
+            import warnings
+            warnings.warn(
+                "TELEGRAM_USER_ID не задан — веб-интерфейс будет работать некорректно. "
+                "Добавь переменную в Railway Variables.",
+                stacklevel=2,
+            )
+        return v
 
     @field_validator("temperature")
     @classmethod
