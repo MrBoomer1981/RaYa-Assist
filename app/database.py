@@ -21,8 +21,6 @@ DB_PATH = Path(_os.getenv("DB_PATH", "database.db"))
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
-@contextmanager
-
 def _migrate(con: sqlite3.Connection) -> None:
     """Идемпотентные ALTER TABLE миграции — запускаются один раз при старте."""
     existing = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
@@ -30,6 +28,7 @@ def _migrate(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
 
 
+@contextmanager
 def _conn() -> Generator[sqlite3.Connection, None, None]:
     """Контекстный менеджер соединения с авто-commit/rollback."""
     con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
