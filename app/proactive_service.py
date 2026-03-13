@@ -13,8 +13,8 @@ from app.database import _conn  # для прямых SQL запросов
 
 # ── Временные константы (секунды) ────────────────────────────────────────────
 _1_HOUR   = 3_600
-_6_HOURS  = _6_HOURS
-_12_HOURS = _12_HOURS
+_6_HOURS  = 6 * _1_HOUR
+_12_HOURS = 12 * _1_HOUR
 _24_HOURS = 24 * _1_HOUR
 _48_HOURS = 48 * _1_HOUR
 
