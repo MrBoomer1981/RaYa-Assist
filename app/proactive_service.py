@@ -6,6 +6,7 @@ proactive.py — проактивные сообщения RaYa: дайджес�
   Triggers         — 5 умных триггеров (напоминания, дедлайны, пауза, дневник, активность)
 """
 
+import itertools
 import logging
 from datetime import datetime, timedelta
 from app.database import DB_PATH, get_active_tasks, get_top_interactions, load_history, load_memory, save_messages
@@ -545,7 +546,7 @@ _INITIATIVE_PROMPTS = [
     "Можешь упомянуть что-то из его последних разговоров или задач. 1-2 предложения.",
 ]
 
-_initiative_cycle = _itertools.cycle(_INITIATIVE_PROMPTS)
+_initiative_cycle = itertools.cycle(_INITIATIVE_PROMPTS)
 
 async def generate_initiative_message(user_id: int, llm) -> str:
     """Генерирует инициативное сообщение от RaYa."""
