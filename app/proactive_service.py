@@ -386,6 +386,42 @@ class ProactiveService:
         if hasattr(self, '_sched_task') and not self._sched_task.done():
             self._sched_task.cancel()
 
+    async def _run_scheduler(self) -> None:
+        """Фоновый планировщик напоминаний."""
+        while True:
+            try:
+                await self._tick_scheduler()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("Ошибка планировщика напоминаний")
+            await asyncio.sleep(60)
+
+    async def _tick_scheduler(self) -> None:
+        """Проверяет и отправляет созревшие напоминания."""
+        from app.database import get_due_reminders, mark_reminder_done, reschedule_reminder
+        now = datetime.utcnow()
+        reminders = get_due_reminders(now)
+        _RECUR_LABELS = {
+            "daily": "каждый день", "weekly": "каждую неделю",
+            "weekday": "по будням",  "monthly": "каждый месяц",
+        }
+        for rid, user_id, text, recurrence in reminders:
+            try:
+                suffix = ""
+                if recurrence and recurrence in _RECUR_LABELS:
+                    suffix = f"\n🔁 {_RECUR_LABELS[recurrence]}"
+                    reschedule_reminder(rid)
+                else:
+                    mark_reminder_done(rid)
+                await self._bot.send_message(
+                    chat_id=user_id,
+                    text=f"⏰ Напоминание: {text}{suffix}",
+                )
+                logger.info("⏰ Напоминание отправлено: '%s' | user_id=%s", text[:40], user_id)
+            except Exception:
+                logger.exception("Ошибка отправки напоминания id=%s", rid)
+
     async def _run(self) -> None:
         while True:
             try:
