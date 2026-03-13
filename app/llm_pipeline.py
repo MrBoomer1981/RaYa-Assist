@@ -15,6 +15,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from app.config import settings
+
 # ══════════════════════════════════════════════════════════
 # MEMORY SERVICE
 # ══════════════════════════════════════════════════════════
@@ -761,7 +763,6 @@ def make_tone_controller_factory(groq_api_key: str) -> "ToneController":
 # ROUTER CALIBRATION
 # ══════════════════════════════════════════════════════════
 
-from datetime import datetime
 from app.database import (
     DB_PATH, get_conversation_context,
     get_memory_by_category, get_structured_memory, load_history,
