@@ -27,7 +27,9 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 def VAULT_PATH() -> Path:
-    return Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+    base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+    subdir = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
+    return base / subdir if subdir else base
 WEBDAV_USER = os.getenv("WEBDAV_USER", "raya")
 WEBDAV_PASS = os.getenv("WEBDAV_PASSWORD", "")
 PREFIX      = "/webdav"

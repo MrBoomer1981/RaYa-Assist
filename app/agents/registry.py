@@ -97,9 +97,7 @@ AGENTS: dict[str, AgentInfo] = {
             "не передаются другим агентам."
         ),
         keywords=(
-            "дневник", "запиши", "запись", "сегодня я", "чувствую",
-            "настроени", "рефлексия", "личное", "diary", "journal",
-            "хочу записать", "не забудь что я",
+            "рефлексия", "diary", "journal",
         ),
         parallelizable=False,
         needs_critic=False,
