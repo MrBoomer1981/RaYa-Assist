@@ -121,19 +121,104 @@ def create_note(title: str, content: str, tags: list | None = None) -> str:
     return str(rel_path)
 
 
-def add_tasks(tasks: list, dt: datetime | None = None) -> str:
-    dt        = dt or datetime.utcnow()
-    rel_path  = Path(f"Задачи/{dt.strftime('%Y-%m-%d')}.md")
-    existing  = _read(rel_path)
-    checklist = "\n".join(f"- [ ] {t}" for t in tasks)
-    time_str  = dt.strftime("%H:%M")
+def add_tasks(tasks: list, group: str = "", dt: datetime | None = None) -> str:
+    """
+    Все задачи хранятся в одном файле Задачи/Все задачи.md.
+    Группируются по разделам которые RaYa определяет сама.
+    Каждая задача — отдельная строка чеклиста.
+    """
+    dt       = dt or datetime.utcnow()
+    rel_path = Path("Задачи/Все задачи.md")
+    existing = _read(rel_path)
+    time_str = dt.strftime("%d.%m.%Y %H:%M")
+
+    # Формируем новые строки задач
+    new_items = "\n".join(f"- [ ] {t}" for t in tasks)
+
     if not existing:
-        fm      = _frontmatter(tags=["задачи", dt.strftime("%Y-%m")])
-        content = f"{fm}\n\n# Задачи {dt.strftime('%d.%m.%Y')}\n\n## {time_str} UTC\n\n{checklist}"
+        # Создаём файл с базовой структурой
+        fm = _frontmatter(tags=["задачи"])
+        content = (
+            f"{fm}\n\n"
+            f"# Задачи\n\n"
+            f"> Обновлено: {time_str}\n\n"
+        )
+        if group:
+            content += f"## {group}\n\n{new_items}\n"
+        else:
+            content += f"## Входящие\n\n{new_items}\n"
         _write(rel_path, content)
     else:
-        _write(rel_path, f"## Добавлено в {time_str} UTC\n\n{checklist}", append=True)
-    logger.info("✅ Задачи: %s (%d шт.)", rel_path, len(tasks))
+        # Добавляем в существующий файл
+        if group and f"## {group}" in existing:
+            # Группа уже есть — добавляем задачи в конец группы
+            # Находим позицию после заголовка группы
+            lines = existing.split("\n")
+            result = []
+            in_group = False
+            inserted = False
+            for i, line in enumerate(lines):
+                result.append(line)
+                if line.strip() == f"## {group}":
+                    in_group = True
+                elif in_group and not inserted:
+                    # Ищем конец группы (следующий ## или конец файла)
+                    next_lines = lines[i+1:]
+                    at_end = all(not l.startswith("## ") for l in next_lines if l.strip())
+                    if line.startswith("## ") and line.strip() != f"## {group}":
+                        # Вставляем перед следующей группой
+                        result = result[:-1]
+                        result.extend(new_items.split("\n"))
+                        result.append("")
+                        result.append(line)
+                        inserted = True
+                        in_group = False
+            if not inserted:
+                result.extend(new_items.split("\n"))
+            new_content = "\n".join(result)
+            # Обновляем timestamp
+            import re
+            new_content = re.sub(r'> Обновлено:.*', f'> Обновлено: {time_str}', new_content)
+            _write(rel_path, new_content)
+        elif group:
+            # Новая группа — добавляем секцию
+            addition = f"\n## {group}\n\n{new_items}\n"
+            _write(rel_path, addition, append=True)
+            # Обновляем timestamp
+            import re
+            content = _read(rel_path) or ""
+            content = re.sub(r'> Обновлено:.*', f'> Обновлено: {time_str}', content)
+            _write(rel_path, content)
+        else:
+            # Без группы — добавляем в "Входящие" или создаём
+            if "## Входящие" in existing:
+                addition = new_items
+                lines = existing.split("\n")
+                result = []
+                after_incoming = False
+                inserted = False
+                for line in lines:
+                    result.append(line)
+                    if line.strip() == "## Входящие":
+                        after_incoming = True
+                    elif after_incoming and not inserted and (line.startswith("## ") or not line.strip()):
+                        if line.startswith("## ") and line.strip() != "## Входящие":
+                            result = result[:-1]
+                            result.extend(new_items.split("\n"))
+                            result.append("")
+                            result.append(line)
+                            inserted = True
+                            after_incoming = False
+                if not inserted:
+                    result.extend(new_items.split("\n"))
+                import re
+                new_content = "\n".join(result)
+                new_content = re.sub(r'> Обновлено:.*', f'> Обновлено: {time_str}', new_content)
+                _write(rel_path, new_content)
+            else:
+                _write(rel_path, f"\n## Входящие\n\n{new_items}\n", append=True)
+
+    logger.info("✅ Задачи: %s (%d шт.) группа='%s'", rel_path, len(tasks), group)
     return str(rel_path)
 
 
@@ -174,9 +259,15 @@ def list_files(folder: str = "Заметки") -> list:
 
 def vault_stats() -> dict:
     stats = {}
-    for folder in ("Дневник", "Заметки", "Задачи", "Zettelkasten"):
+    for folder in ("Дневник", "Заметки", "Zettelkasten"):
         root = VAULT_PATH() / folder
         stats[folder] = len(list(root.rglob("*.md"))) if root.exists() else 0
+    # Квадранты Эйзенхауэра
+    for qkey, qdata in QUADRANTS.items():
+        root = VAULT_PATH() / qdata["folder"]
+        stats[f"{qdata['emoji']} {qdata['name']}"] = (
+            len(list(root.rglob("*.md"))) if root.exists() else 0
+        )
     return stats
 
 def cleanup_vault() -> dict:

@@ -24,8 +24,9 @@ from langchain_core.messages import HumanMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.integrations.obsidian import (
-    add_tasks, add_zettel, cleanup_vault, create_note, list_files,
-    read_note, search_vault, vault_available, vault_stats, write_diary,
+    QUADRANTS, add_tasks, add_zettel, cleanup_vault, create_note,
+    get_quadrants_info, list_files, read_note, search_vault,
+    vault_available, vault_stats, write_diary,
 )
 from app.utils import strip_json
 
@@ -98,12 +99,26 @@ JSON (только JSON):
 {{"title":"название","content":"содержимое в markdown","tags":["тег1","тег2"]}}"""
 
 _TASKS_PROMPT = """\
-Извлеки список задач. Каждая задача — отдельный пункт, чётко и кратко.
+Извлеки задачи и определи квадрант матрицы Эйзенхауэра для каждой.
 
 Текст: {text}
 
+Квадранты:
+- q1: срочно И важно (дедлайн сегодня/завтра, критично для работы/здоровья)
+- q2: важно, НЕ срочно (цели, развитие, планирование — нет горящего дедлайна)
+- q3: срочно, НЕ важно (чужие просьбы, встречи без ценности, рутина)
+- q4: НЕ срочно и НЕ важно (соцсети, мелочи, развлечения)
+
+Если задачи разных квадрантов — разбей по группам.
+Если квадрант не ясен — ставь q2.
+
 JSON (только JSON):
-{{"tasks":["задача 1","задача 2","задача 3"]}}"""
+{{
+  "groups": [
+    {{"quadrant": "q1", "tasks": ["задача 1"]}},
+    {{"quadrant": "q2", "tasks": ["задача 2", "задача 3"]}}
+  ]
+}}"""
 
 
 class ObsidianAgent(BaseAgent):
@@ -237,23 +252,40 @@ class ObsidianAgent(BaseAgent):
         prompt = _TASKS_PROMPT.format(text=content[:1000])
         resp   = await self._llm.ainvoke([HumanMessage(content=prompt)])
         raw    = strip_json(str(resp.content))
-        try:
-            tasks = json.loads(raw).get("tasks", [])
-        except Exception:
-            tasks = [t.lstrip("- •").strip() for t in content.splitlines() if t.strip()]
 
-        if not tasks:
+        try:
+            groups = json.loads(raw).get("groups", [])
+        except Exception:
+            # Фоллбек — все задачи в q2
+            tasks  = [t.lstrip("- •").strip() for t in content.splitlines() if t.strip()]
+            groups = [{"quadrant": "q2", "tasks": tasks}] if tasks else []
+
+        if not groups or not any(g.get("tasks") for g in groups):
             return AgentResult(
                 success=False, agent_name=self.agent_name,
                 content="Сократ, не смогла разобрать задачи. Перечисли их подробнее.",
             )
 
-        path      = add_tasks(tasks)
-        tasks_str = "\n".join(f"• {t}" for t in tasks)
+        reply_lines = ["Задачи добавлены в Obsidian по матрице Эйзенхауэра:\n"]
+        paths = []
+
+        for group in groups:
+            quadrant = group.get("quadrant", "q2")
+            tasks    = group.get("tasks", [])
+            if not tasks:
+                continue
+            q_info   = QUADRANTS.get(quadrant, QUADRANTS["q2"])
+            path     = add_tasks(tasks, quadrant=quadrant)
+            paths.append(path)
+            reply_lines.append(f"{q_info['emoji']} **{q_info['name']}**")
+            for t in tasks:
+                reply_lines.append(f"  • {t}")
+            reply_lines.append("")
+
         return AgentResult(
             success=True, agent_name=self.agent_name, needs_critic=False,
-            content=f"Задачи добавлены в Obsidian. ✅\n\n{tasks_str}\n\n`{path}`",
-            metadata={"action": "tasks", "path": path, "count": len(tasks)},
+            content="\n".join(reply_lines),
+            metadata={"action": "tasks", "paths": paths},
         )
 
     # ── Search ─────────────────────────────────────────────────────────────────
@@ -314,12 +346,13 @@ class ObsidianAgent(BaseAgent):
     # ── Stats ──────────────────────────────────────────────────────────────────
 
     async def _stats(self, ctx: AgentContext) -> AgentResult:
-        stats = vault_stats()
-        total = sum(stats.values())
-        icons = {"Дневник": "📔", "Заметки": "📝", "Задачи": "✅", "Zettelkasten": "🧠"}
-        lines = ["📊 Obsidian vault:\n"]
+        stats  = vault_stats()
+        total  = sum(stats.values())
+        icons  = {"Дневник": "📔", "Заметки": "📝", "Zettelkasten": "🧠"}
+        lines  = ["📊 Obsidian vault:\n"]
         for folder, count in stats.items():
-            lines.append(f"{icons.get(folder,'📄')} {folder}: {count} файлов")
+            icon = icons.get(folder, "")
+            lines.append(f"{icon} {folder}: {count} файлов" if icon else f"{folder}: {count} файлов")
         lines.append(f"\nВсего: {total} заметок")
         return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content="\n".join(lines))
