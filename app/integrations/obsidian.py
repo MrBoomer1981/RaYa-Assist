@@ -18,7 +18,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+def VAULT_PATH() -> Path:
+    return Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
 
 
 def _slug(text: str, max_len: int = 50) -> str:
@@ -46,7 +47,7 @@ def _frontmatter(tags: list, extra: dict | None = None) -> str:
 
 
 def _write(rel_path: Path, content: str, append: bool = False) -> Path:
-    full = VAULT_PATH / rel_path
+    full = VAULT_PATH() / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
     if append and full.exists():
         with open(full, "a", encoding="utf-8") as f:
@@ -57,12 +58,12 @@ def _write(rel_path: Path, content: str, append: bool = False) -> Path:
 
 
 def _read(rel_path: Path) -> str | None:
-    full = VAULT_PATH / rel_path
+    full = VAULT_PATH() / rel_path
     return full.read_text(encoding="utf-8") if full.exists() else None
 
 
 def _search(query: str, folder: str = "") -> list:
-    root  = VAULT_PATH / folder if folder else VAULT_PATH
+    root  = VAULT_PATH() / folder if folder else VAULT_PATH
     q     = query.lower()
     found = []
     for f in sorted(root.rglob("*.md")):
@@ -79,14 +80,14 @@ def _search(query: str, folder: str = "") -> list:
                     if line.startswith("# "):
                         title = line[2:].strip()
                         break
-                found.append({"path": str(f.relative_to(VAULT_PATH)), "snippet": snippet, "title": title})
+                found.append({"path": str(f.relative_to(VAULT_PATH())), "snippet": snippet, "title": title})
         except Exception:
             pass
     return found[:10]
 
 
 def vault_available() -> bool:
-    return VAULT_PATH.exists()
+    return VAULT_PATH().exists()
 
 
 def write_diary(text: str, dt: datetime | None = None) -> str:
@@ -162,15 +163,15 @@ def search_vault(query: str, folder: str = "") -> list:
 
 
 def list_files(folder: str = "Заметки") -> list:
-    root = VAULT_PATH / folder
+    root = VAULT_PATH() / folder
     if not root.exists():
         return []
-    return [str(f.relative_to(VAULT_PATH)) for f in sorted(root.rglob("*.md"))]
+    return [str(f.relative_to(VAULT_PATH())) for f in sorted(root.rglob("*.md"))]
 
 
 def vault_stats() -> dict:
     stats = {}
     for folder in ("Дневник", "Заметки", "Задачи", "Zettelkasten"):
-        root = VAULT_PATH / folder
+        root = VAULT_PATH() / folder
         stats[folder] = len(list(root.rglob("*.md"))) if root.exists() else 0
     return stats

@@ -26,7 +26,8 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 
-VAULT_PATH  = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+def VAULT_PATH() -> Path:
+    return Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
 WEBDAV_USER = os.getenv("WEBDAV_USER", "raya")
 WEBDAV_PASS = os.getenv("WEBDAV_PASSWORD", "")
 PREFIX      = "/webdav"
@@ -61,15 +62,15 @@ def _req_to_path(request: Request) -> Path:
     if rel.startswith(PREFIX):
         rel = rel[len(PREFIX):]
     rel = rel.lstrip("/")
-    target = (VAULT_PATH / rel).resolve()
-    vault_resolved = VAULT_PATH.resolve()
+    target = (VAULT_PATH() / rel).resolve()
+    vault_resolved = VAULT_PATH().resolve()
     if not str(target).startswith(str(vault_resolved)):
         raise ValueError("Path traversal")
     return target
 
 
 def _path_to_href(path: Path, request: Request) -> str:
-    rel = path.relative_to(VAULT_PATH)
+    rel = path.relative_to(VAULT_PATH())
     href = PREFIX + "/" + str(rel).replace("\\", "/")
     if path.is_dir() and not href.endswith("/"):
         href += "/"
@@ -134,7 +135,7 @@ async def _dispatch(request: Request) -> Response:
     """Единая точка входа для всех WebDAV запросов."""
 
     # Убеждаемся что vault существует
-    VAULT_PATH.mkdir(parents=True, exist_ok=True)
+    VAULT_PATH().mkdir(parents=True, exist_ok=True)
 
     # Auth
     if not _check_auth(request):
@@ -194,7 +195,7 @@ async def _dispatch(request: Request) -> Response:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = await request.body()
         path.write_bytes(data)
-        logger.debug("📥 WebDAV PUT: %s (%d b)", path.relative_to(VAULT_PATH), len(data))
+        logger.debug("📥 WebDAV PUT: %s (%d b)", path.relative_to(VAULT_PATH()), len(data))
         return Response(status_code=201 if created else 204)
 
     # ── DELETE ────────────────────────────────────────────
@@ -202,7 +203,7 @@ async def _dispatch(request: Request) -> Response:
         if not path.exists():
             return Response(status_code=404)
         shutil.rmtree(path) if path.is_dir() else path.unlink()
-        logger.debug("🗑️ WebDAV DELETE: %s", path.relative_to(VAULT_PATH))
+        logger.debug("🗑️ WebDAV DELETE: %s", path.relative_to(VAULT_PATH()))
         return Response(status_code=204)
 
     # ── MKCOL ─────────────────────────────────────────────
@@ -218,8 +219,8 @@ async def _dispatch(request: Request) -> Response:
         dest_rel    = unquote(urlparse(dest_header).path)
         if dest_rel.startswith(PREFIX):
             dest_rel = dest_rel[len(PREFIX):]
-        dest = (VAULT_PATH / dest_rel.lstrip("/")).resolve()
-        if not str(dest).startswith(str(VAULT_PATH.resolve())):
+        dest = (VAULT_PATH() / dest_rel.lstrip("/")).resolve()
+        if not str(dest).startswith(str(VAULT_PATH().resolve())):
             return Response(status_code=403)
         if not path.exists():
             return Response(status_code=404)
@@ -233,8 +234,8 @@ async def _dispatch(request: Request) -> Response:
         dest_rel    = unquote(urlparse(dest_header).path)
         if dest_rel.startswith(PREFIX):
             dest_rel = dest_rel[len(PREFIX):]
-        dest = (VAULT_PATH / dest_rel.lstrip("/")).resolve()
-        if not str(dest).startswith(str(VAULT_PATH.resolve())):
+        dest = (VAULT_PATH() / dest_rel.lstrip("/")).resolve()
+        if not str(dest).startswith(str(VAULT_PATH().resolve())):
             return Response(status_code=403)
         if not path.exists():
             return Response(status_code=404)
