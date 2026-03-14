@@ -8,7 +8,7 @@ RaYa читает этот реестр чтобы знать:
 
 Добавить нового агента = добавить одну запись в AGENTS.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -254,7 +254,23 @@ AGENTS: dict[str, AgentInfo] = {
         enabled=True,
     ),
 
-    "critic": AgentInfo(
+    "obsidian": AgentInfo(
+        name="obsidian",
+        title="Obsidian Agent",
+        description=(
+            "Работа с Obsidian vault. Записывает дневник, создаёт заметки и "
+            "Zettelkasten карточки, ведёт задачи, ищет по vault."
+        ),
+        keywords=(
+            "obsidian", "vault", "заметк", "дневник", "zettel", "база знаний",
+            "запомни", "запиши в дневник", "задачи:", "задача:", "добавь в знания",
+            "найди в obsidian", "список заметок", "статистика vault",
+        ),
+        needs_critic=False,
+        enabled=True,
+    ),
+
+        "critic": AgentInfo(
         name="critic",
         title="Critic Agent",
         description=(

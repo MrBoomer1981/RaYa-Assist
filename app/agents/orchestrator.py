@@ -59,6 +59,9 @@ def _create_agent(name: str):
             case "explain":
                 from app.agents.explain_agent import ExplainAgent
                 return ExplainAgent()
+            case "obsidian":
+                from app.agents.obsidian_agent import ObsidianAgent
+                return ObsidianAgent()
             case "critic":
                 return CriticAgent()
             case _:

@@ -58,6 +58,7 @@ class Core:
 
         web_server = self._build_web_server(svc.llm)
 
+        webdav_runner = await self._start_webdav()
         try:
             await asyncio.gather(
                 dp.start_polling(svc.bot, drop_pending_updates=True),
@@ -66,6 +67,8 @@ class Core:
         finally:
             svc.proactive.stop()
             await svc.bot.session.close()
+            if webdav_runner:
+                await webdav_runner.cleanup()
             logger.info("🛑 RaYa остановлена")
 
     # ── Инициализация ─────────────────────────────────────────────────────────
@@ -110,6 +113,15 @@ class Core:
             web_app, host="0.0.0.0", port=web_port, log_level="warning"
         )
         return uvicorn.Server(web_config)
+
+    async def _start_webdav(self):
+        """Запускает WebDAV сервер если задан WEBDAV_PASSWORD."""
+        try:
+            from app.webdav_server import start_webdav_server
+            return await start_webdav_server()
+        except Exception:
+            logger.exception("WebDAV: ошибка запуска (не критично)")
+            return None
 
     def _log_startup(self, svc: Services) -> None:
         from app.agents.registry import get_enabled_agents
