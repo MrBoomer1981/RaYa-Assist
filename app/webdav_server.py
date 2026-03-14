@@ -27,9 +27,8 @@ from starlette.responses import Response
 logger = logging.getLogger(__name__)
 
 def VAULT_PATH() -> Path:
-    base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
-    subdir = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
-    return base / subdir if subdir else base
+    # WebDAV отдаёт базовую папку — Remotely Save сам заходит в RaYa-Vault
+    return Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
 WEBDAV_USER = os.getenv("WEBDAV_USER", "raya")
 WEBDAV_PASS = os.getenv("WEBDAV_PASSWORD", "")
 PREFIX      = "/webdav"
