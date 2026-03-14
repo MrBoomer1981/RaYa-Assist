@@ -14,17 +14,14 @@ from dataclasses import dataclass
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
-from app.agents.registry import (
-    AgentInfo,
-    get_routable_agents,
-    quick_match,
-)
+from app.utils import strip_json
+from app.agents.registry import get_routable_agents, quick_match
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 # Лёгкая быстрая модель для роутера — не тратим тяжёлую модель на классификацию
-_ROUTER_MODEL = "llama-3.1-8b-instant"
+_ROUTER_MODEL = settings.router_model
 
 
 @dataclass(frozen=True)
@@ -70,7 +67,10 @@ class RouterAgent:
             "ЖЁСТКИЕ ПРАВИЛА:\n"
             "- агент 'morning' НИКОГДА не выбирать в ответ на сообщение пользователя\n"
             "- вопросы про погоду, новости, курсы → агент 'raya'\n"
-            "- агент 'morning' запускается только автоматически, не вручную\n\n"
+            "- агент 'morning' запускается только автоматически, не вручную\n"
+            "- если пользователь хочет СОХРАНИТЬ или ЗАПОМНИТЬ что-то (заметку, идею, задачу, дневниковую запись) → агент 'obsidian'\n"
+            "- агент 'todo' только для управления внутренним списком задач бота, НЕ для сохранения в Obsidian\n"
+            "- фразы 'нужно купить', 'нужно сделать', 'не забыть', 'запомни', 'сохрани' → агент 'obsidian'\n\n"
             "Верни ТОЛЬКО JSON:\n"
             '{"agent": "<имя>", "confidence": <0.0-1.0>, "reason": "<одно предложение>"}\n\n'
             "Только JSON, без пояснений."
@@ -96,13 +96,7 @@ class RouterAgent:
         try:
             prompt = self._build_router_prompt(message, calibration_hint)
             response = await self._llm.ainvoke([HumanMessage(content=prompt)])
-            raw = (
-                str(response.content)
-                .strip()
-                .replace("```json", "")
-                .replace("```", "")
-                .strip()
-            )
+            raw = strip_json(str(response.content))
             data = json.loads(raw)
 
             agent_name = str(data.get("agent", "raya"))
