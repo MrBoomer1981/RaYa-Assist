@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from app.utils import strip_json
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
