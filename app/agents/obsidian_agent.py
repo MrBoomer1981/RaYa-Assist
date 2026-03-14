@@ -24,7 +24,7 @@ from langchain_core.messages import HumanMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.integrations.obsidian import (
-    add_tasks, add_zettel, create_note, list_files,
+    add_tasks, add_zettel, cleanup_vault, create_note, list_files,
     read_note, search_vault, vault_available, vault_stats, write_diary,
 )
 from app.utils import strip_json
@@ -68,6 +68,7 @@ _CLASSIFY_PROMPT = """\
 - read      — открыть конкретную заметку или дневник
 - list      — список файлов, задач, заметок
 - stats     — статистика vault
+- cleanup   — удалить лишние/ненужные файлы из vault, почистить хранилище
 - none      — это просто разговор, в vault сохранять не нужно
 
 Правила:
@@ -167,6 +168,7 @@ class ObsidianAgent(BaseAgent):
             if action == "read":    return await self._read(content, ctx)
             if action == "list":    return await self._list(ctx)
             if action == "stats":   return await self._stats(ctx)
+            if action == "cleanup": return await self._cleanup(ctx)
             return await self._handle_none(ctx)
         except Exception as e:
             logger.exception("ObsidianAgent: ошибка action=%s", action)
@@ -323,6 +325,27 @@ class ObsidianAgent(BaseAgent):
             content="\n".join(lines))
 
     # ── None / Help ────────────────────────────────────────────────────────────
+
+    async def _cleanup(self, ctx: AgentContext) -> AgentResult:
+        """Удаляет лишние файлы из vault."""
+        result = cleanup_vault()
+        if not result["ok"]:
+            return AgentResult(
+                success=False, agent_name=self.agent_name,
+                content=f"Сократ, не удалось почистить vault: {result.get('error')}",
+            )
+        deleted = result["deleted"]
+        if not deleted:
+            return AgentResult(
+                success=True, agent_name=self.agent_name, needs_critic=False,
+                content="Сократ, в vault всё чисто — лишних файлов нет. 👍",
+            )
+        deleted_str = "\n".join(f"• {name}" for name in deleted)
+        return AgentResult(
+            success=True, agent_name=self.agent_name, needs_critic=False,
+            content=f"Почистила vault, Сократ. 🗑️ Удалено {len(deleted)} файлов:\n\n{deleted_str}",
+            metadata={"action": "cleanup", "deleted": deleted},
+        )
 
     async def _handle_none(self, ctx: AgentContext) -> AgentResult:
         """Просто отвечаем как обычный ассистент — vault не трогаем."""

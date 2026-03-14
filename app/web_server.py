@@ -299,5 +299,33 @@ def create_app(llm_service) -> FastAPI:
     except Exception:
         logger.warning("⚠️ WebDAV не смонтирован")
 
+
+    # ── Очистка vault от лишних файлов ───────────────────────────────────────
+
+    @app.delete("/api/vault/cleanup")
+    async def vault_cleanup(token: str = Query(default="")):
+        """Удаляет все файлы из vault кроме папок созданных RaYa."""
+        _check_token(token)
+        import os, shutil
+        vault_base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+        subdir     = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
+        vault      = vault_base / subdir if subdir else vault_base
+
+        if not vault.exists():
+            return {"ok": False, "error": "vault не найден"}
+
+        raya_folders = {"Дневник", "Заметки", "Задачи", "Zettelkasten", ".obsidian"}
+        deleted = []
+
+        for item in list(vault.iterdir()):
+            if item.name not in raya_folders:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+                deleted.append(item.name)
+
+        return {"ok": True, "deleted": deleted, "count": len(deleted)}
+
     logger.info("🌐 Веб-сервер создан")
     return app

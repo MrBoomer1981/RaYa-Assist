@@ -178,3 +178,27 @@ def vault_stats() -> dict:
         root = VAULT_PATH() / folder
         stats[folder] = len(list(root.rglob("*.md"))) if root.exists() else 0
     return stats
+
+def cleanup_vault() -> dict:
+    """Удаляет все файлы из vault кроме папок RaYa."""
+    import shutil
+    vault = VAULT_PATH()
+    if not vault.exists():
+        return {"ok": False, "deleted": [], "error": "vault не найден"}
+
+    raya_folders = {"Дневник", "Заметки", "Задачи", "Zettelkasten", ".obsidian"}
+    deleted = []
+
+    for item in sorted(vault.iterdir()):
+        if item.name not in raya_folders:
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+                deleted.append(item.name)
+                logger.info("🗑️ Vault cleanup: удалён '%s'", item.name)
+            except Exception as e:
+                logger.warning("Vault cleanup: не удалось удалить '%s': %s", item.name, e)
+
+    return {"ok": True, "deleted": deleted}
