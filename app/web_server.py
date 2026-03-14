@@ -105,7 +105,7 @@ def create_app(llm_service) -> FastAPI:
                 "agent_name": result.agent_name,
                 "reminder":   result.reminder,
                 "image_url":  image_url,
-                "emotion":    result.metadata.get("emotion", "calm"),
+                "emotion":    (result.metadata or {}).get("emotion", "calm"),
             }
         except Exception as e:
             logger.exception("Ошибка чата")
@@ -253,7 +253,7 @@ def create_app(llm_service) -> FastAPI:
             audio_bytes = await _tts.synthesize(result.reply, is_voice=True) if _tts.enabled else None
             audio_b64   = base64.b64encode(audio_bytes).decode() if audio_bytes else None
 
-            emotion = result.metadata.get("emotion", "calm")
+            emotion = (result.metadata or {}).get("emotion", "calm")
             return {
                 "text":        text,
                 "reply":       result.reply,
@@ -285,6 +285,19 @@ def create_app(llm_service) -> FastAPI:
             "agents":       [a.name for a in get_enabled_agents()],
             "utc_time":     datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
+
+    # ── WebDAV (Obsidian Remotely Save) ───────────────────────────────────────
+    # Монтируем на тот же порт что и веб-интерфейс — Railway даёт только 1 порт
+
+    try:
+        from app.webdav_server import _dispatch
+        app.add_route("/webdav",          _dispatch, methods=["GET","PUT","DELETE","PROPFIND","MKCOL","MOVE","COPY","PROPPATCH","OPTIONS","HEAD"])
+        app.add_route("/webdav/",         _dispatch, methods=["GET","PUT","DELETE","PROPFIND","MKCOL","MOVE","COPY","PROPPATCH","OPTIONS","HEAD"])
+        app.add_route("/webdav/{path:path}", _dispatch, methods=["GET","PUT","DELETE","PROPFIND","MKCOL","MOVE","COPY","PROPPATCH","OPTIONS","HEAD"])
+        logger.info("📁 WebDAV смонтирован на /webdav (основной порт)")
+    except Exception:
+        logger.warning("⚠️ WebDAV не смонтирован")
 
     logger.info("🌐 Веб-сервер создан")
     return app

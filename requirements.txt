@@ -13,4 +13,3 @@ uvicorn[standard]
 python-multipart
 
 gtts
-aiohttp
