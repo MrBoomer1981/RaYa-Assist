@@ -19,7 +19,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 def VAULT_PATH() -> Path:
-    return Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+    base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+    # Remotely Save синхронизирует в подпапку RaYa-Vault
+    vault_subdir = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
+    return base / vault_subdir if vault_subdir else base
 
 
 def _slug(text: str, max_len: int = 50) -> str:
@@ -63,7 +66,7 @@ def _read(rel_path: Path) -> str | None:
 
 
 def _search(query: str, folder: str = "") -> list:
-    root  = VAULT_PATH() / folder if folder else VAULT_PATH
+    root  = VAULT_PATH() / folder if folder else VAULT_PATH()
     q     = query.lower()
     found = []
     for f in sorted(root.rglob("*.md")):
