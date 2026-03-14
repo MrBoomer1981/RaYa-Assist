@@ -8,6 +8,8 @@ proactive.py — проактивные сообщения RaYa: дайджес�
 
 import itertools
 import logging
+from langchain_core.messages import HumanMessage, SystemMessage
+import sqlite3
 from datetime import datetime, timedelta
 
 from app.config import settings
@@ -39,8 +41,6 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
     Возвращает True если сообщение отправлено.
     """
     try:
-        import sqlite3
-
         now = datetime.utcnow()
         window_start = now + timedelta(minutes=25)
         window_end   = now + timedelta(minutes=35)
@@ -253,8 +253,6 @@ async def check_activity_suggestion(
 async def _gen(llm, prompt: str) -> str | None:
     """Генерирует короткое проактивное сообщение."""
     try:
-        from langchain_core.messages import SystemMessage, HumanMessage
-
         system = settings.system_prompt + (
             "\n\nКРИТИЧНО: Это проактивное сообщение — ты пишешь первой. "
             "Максимум 1-2 предложения. Никаких списков. Живо и по-человечески. "
@@ -584,8 +582,6 @@ _initiative_cycle = itertools.cycle(_INITIATIVE_PROMPTS)
 async def generate_initiative_message(user_id: int, llm) -> str:
     """Генерирует инициативное сообщение от RaYa."""
     try:
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         facts  = load_memory(user_id)
         tasks  = get_active_tasks(user_id)
 

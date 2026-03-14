@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def _ms(start: float) -> int:
     """Миллисекунды с момента start."""
-    return _ms(start)
+    return int((time.monotonic() - start) * 1000)
 
 
 # Максимальное время выполнения одного агента (секунды)

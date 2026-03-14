@@ -6,12 +6,13 @@ handlers.py — все Telegram хендлеры и команды.
 """
 import logging
 import tempfile
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, Message
 
 from app.config import settings
 from app.database import (
@@ -70,7 +71,6 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
     if result.agent_name and "image" in result.agent_name:
         image_bytes = (result.metadata or {}).get("image_bytes")
         if image_bytes:
-            from aiogram.types import BufferedInputFile
             await message.answer_photo(
                 photo=BufferedInputFile(image_bytes, filename="image.jpg"),
                 caption=result.reply[:1024] if result.reply else None,

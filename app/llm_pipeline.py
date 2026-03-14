@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
+from langchain_core.messages import HumanMessage
+from langchain_groq import ChatGroq
 
 # ══════════════════════════════════════════════════════════
 # MEMORY SERVICE
@@ -84,8 +86,6 @@ class MemoryService:
             return
 
         try:
-            from langchain_core.messages import HumanMessage
-
             prompt   = _EXTRACTION_PROMPT.format(message=message[:500])
             response = await self._llm.ainvoke([HumanMessage(content=prompt)])
             raw = strip_json(str(response.content))
@@ -750,7 +750,7 @@ class ToneController:
 def make_tone_controller_factory(groq_api_key: str) -> "ToneController":
     """Создаёт ToneController с ленивой инициализацией LLM."""
     def _factory():
-        from langchain_groq import ChatGroq
+
         return ChatGroq(
             api_key=groq_api_key,
             model=_CONTROLLER_MODEL,

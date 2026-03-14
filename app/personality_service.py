@@ -10,6 +10,8 @@ personality_service.py — полная личность RaYa: состояни�
 
 
 import logging
+from langchain_core.messages import HumanMessage
+import sqlite3
 import re
 from datetime import datetime
 from app.database import (
@@ -497,8 +499,6 @@ async def update_feedback(user_id: int, llm) -> None:
     Смотрит: что вызывает продолжение диалога, короткие или длинные ответы лучше.
     """
     try:
-        from langchain_core.messages import HumanMessage
-
         history = load_history(user_id, limit=10)
         if len(history) < _MIN_MESSAGES_FOR_FEEDBACK:
             return
@@ -792,7 +792,6 @@ async def detect_mood(message: str, llm) -> str:
     if len(message.strip()) < 5:
         return "нейтрально"
     try:
-        from langchain_core.messages import HumanMessage
         response = await llm.ainvoke(
             [HumanMessage(content=_DETECT_PROMPT.format(message=message[:300]))]
         )

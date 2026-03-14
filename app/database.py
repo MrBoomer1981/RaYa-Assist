@@ -4,6 +4,7 @@ WAL-режим, connection-per-call через контекстный менед
 """
 import logging
 import sqlite3
+import calendar
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
