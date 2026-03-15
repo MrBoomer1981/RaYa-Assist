@@ -288,7 +288,7 @@ class ObsidianAgent(BaseAgent):
                     save_task(ctx.user_id, t, priority, "")
                 except Exception:
                     logger.warning("obsidian: не удалось сохранить задачу в БД: %s", t)
-            reply_lines.append(f"{q_info['emoji']} **{q_info['name']}**")
+            reply_lines.append(f"{q_info['emoji']} **{q_info['title']}**")
             for t in tasks:
                 reply_lines.append(f"  • {t}")
             reply_lines.append("")
