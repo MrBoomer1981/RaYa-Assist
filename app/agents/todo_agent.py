@@ -1,8 +1,13 @@
 """
-todo_agent.py — агент управления задачами.
+todo_agent.py — управление задачами.
 
-Сохраняет задачи в БД (для напоминаний) И в Obsidian (матрица Эйзенхауэра).
-Удаление по имени задачи — не требует знать ID.
+Obsidian — единственный источник правды.
+4 файла: Q1.md, Q2.md, Q3.md, Q4.md
+
+Добавление → определяет квадрант → пишет в нужный файл.
+Просмотр   → читает все 4 файла → собирает в одно сообщение.
+Выполнение → меняет [ ] на [x] в файле.
+Удаление   → удаляет строку из файла.
 """
 import json
 import logging
@@ -12,56 +17,41 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import delete_task, get_active_tasks, mark_task_done, save_task
+from app.integrations.obsidian import (
+    QUADRANTS, add_tasks, delete_task_obsidian,
+    format_all_tasks, get_all_tasks,
+    mark_task_done_obsidian, vault_available,
+)
+from app.utils import strip_json
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM = """\
-Ты RaYa — личный ассистент Сократа. Помогаешь управлять задачами.
+Ты RaYa — личный ассистент Сократа. Управляешь задачами через Obsidian.
 
-Умеешь:
-- Добавлять задачи с приоритетом и дедлайном
-- Показывать список текущих задач
-- Отмечать задачи выполненными
-- Удалять задачи по названию или номеру
+Задачи хранятся в 4 файлах по матрице Эйзенхауэра:
+🔴 Q1 — Срочно и важно (дедлайн сегодня/завтра, критично)
+🟡 Q2 — Важно, не срочно (цели, развитие, планирование)
+🟠 Q3 — Срочно, не важно (мелкие просьбы, рутина)
+⚪ Q4 — Не срочно, не важно (когда-нибудь)
 
-Приоритеты:
-- Высокий (1) 🔴 — срочно и важно (Q1)
-- Средний (2) 🟡 — важно, не срочно (Q2, дефолт)
-- Низкий (3) 🟢 — не срочно, не важно (Q4)
+Что умеешь:
+- Добавлять задачи → определяй квадрант автоматически
+- Показывать список → собирай все задачи в одно сообщение
+- Отмечать выполненными → по тексту задачи
+- Удалять → по тексту задачи
 
-Когда добавляешь задачу — верни JSON тег:
-<task>{"text": "...", "priority": 1-3, "due_date": "YYYY-MM-DD или пусто"}</task>
+Когда добавляешь — верни JSON:
+<tasks>{"groups": [{"quadrant": "q1", "tasks": ["задача"]}, {"quadrant": "q2", "tasks": ["задача2"]}]}</tasks>
 
-Когда отмечаешь выполненной — верни:
-<done>ID_задачи</done>
+Когда отмечаешь выполненной:
+<done>точный текст задачи</done>
 
-Когда удаляешь — верни:
-<delete>ID_задачи</delete>
+Когда удаляешь:
+<delete>точный текст задачи</delete>
 
-Если пользователь называет задачу по тексту (не по ID) — найди её в списке и используй ID.
-Если просто показать список — просто отвечай текстом.
-Обращайся только "Сократ". Тон дружелюбный, без лишних слов.\
+Обращайся только "Сократ". Отвечай кратко.\
 """
-
-_PRIORITY_EMOJI = {1: "🔴", 2: "🟡", 3: "🟢"}
-
-# Маппинг приоритет → квадрант Эйзенхауэра
-_PRIORITY_TO_QUADRANT = {1: "q1", 2: "q2", 3: "q4"}
-
-# Промпт для LLM чтобы определить квадрант по тексту задачи
-_EISENHOWER_PROMPT = """\
-Определи квадрант матрицы Эйзенхауэра для каждой задачи.
-
-Задачи: {tasks}
-
-Квадранты:
-- q1: срочно И важно (дедлайн сегодня/завтра, критично)
-- q2: важно, не срочно (развитие, планирование)
-- q3: срочно, не важно (чужие просьбы, рутина)
-- q4: не срочно и не важно (мелочи, развлечения)
-
-JSON (только JSON):
-{{"groups": [{{"quadrant": "q1", "tasks": ["задача"]}}, {{"quadrant": "q2", "tasks": ["задача2"]}}]}}"""
 
 
 class TodoAgent(BaseAgent):
@@ -72,17 +62,11 @@ class TodoAgent(BaseAgent):
         return _SYSTEM
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
-        # Загружаем текущие задачи
-        tasks = get_active_tasks(ctx.user_id)
-        if tasks:
-            lines = [
-                f"[#{t[0]}] {_PRIORITY_EMOJI.get(t[2], '🟡')} {t[1]}"
-                + (f" (до {t[3]})" if t[3] else "")
-                for t in tasks
-            ]
-            tasks_context = "\n\nТекущие задачи:\n" + "\n".join(lines)
+        # Читаем задачи из Obsidian если доступен, иначе из БД
+        if vault_available():
+            tasks_context = self._build_obsidian_context()
         else:
-            tasks_context = "\n\nТекущих задач нет."
+            tasks_context = self._build_db_context(ctx.user_id)
 
         messages = [
             SystemMessage(content=_SYSTEM),
@@ -93,49 +77,52 @@ class TodoAgent(BaseAgent):
         response = await self._llm.ainvoke(messages)
         raw      = str(response.content)
         metadata = {}
-        added_tasks = []
 
-        # ── Добавить задачу ────────────────────────────────────────────────────
-        for match in re.finditer(r"<task>(.*?)</task>", raw, re.DOTALL):
-            try:
-                data    = json.loads(match.group(1).strip())
-                text    = data.get("text", "").strip()
-                priority = int(data.get("priority", 2))
-                due_date = data.get("due_date", "")
-                if not text:
-                    continue
-                task_id = save_task(ctx.user_id, text, priority, due_date)
-                metadata.setdefault("tasks_added", []).append(task_id)
-                added_tasks.append({"text": text, "priority": priority})
-                logger.info("✅ Задача #%d добавлена | user_id=%s", task_id, ctx.user_id)
-            except Exception as e:
-                logger.warning("todo: ошибка парсинга task: %s", e)
-
-        # ── Также пишем в Obsidian с матрицей Эйзенхауэра ─────────────────────
-        if added_tasks:
-            await self._sync_to_obsidian(added_tasks)
+        # ── Добавить задачи ────────────────────────────────────────────────────
+        tasks_match = re.search(r"<tasks>(.*?)</tasks>", raw, re.DOTALL)
+        if tasks_match:
+            await self._add_tasks(tasks_match.group(1).strip(), ctx.user_id, metadata)
 
         # ── Отметить выполненной ───────────────────────────────────────────────
-        for match in re.finditer(r"<done>(\d+)</done>", raw):
-            task_id = int(match.group(1))
-            ok = mark_task_done(task_id, ctx.user_id)
-            if ok:
-                metadata["task_done"] = task_id
-                logger.info("✅ Задача #%d выполнена | user_id=%s", task_id, ctx.user_id)
+        for match in re.finditer(r"<done>(.*?)</done>", raw, re.DOTALL):
+            text = match.group(1).strip()
+            if vault_available():
+                mark_task_done_obsidian(text)
+            else:
+                # Ищем в БД по тексту
+                tasks = get_active_tasks(ctx.user_id)
+                for t in tasks:
+                    if text.lower() in t[1].lower():
+                        mark_task_done(t[0], ctx.user_id)
+                        break
+            logger.info("✅ Задача выполнена: '%s'", text[:50])
 
         # ── Удалить ────────────────────────────────────────────────────────────
-        for match in re.finditer(r"<delete>(\d+)</delete>", raw):
-            task_id = int(match.group(1))
-            ok = delete_task(task_id, ctx.user_id)
-            if ok:
-                metadata["task_deleted"] = task_id
-                logger.info("🗑️ Задача #%d удалена | user_id=%s", task_id, ctx.user_id)
+        for match in re.finditer(r"<delete>(.*?)</delete>", raw, re.DOTALL):
+            text = match.group(1).strip()
+            if vault_available():
+                delete_task_obsidian(text)
+            else:
+                tasks = get_active_tasks(ctx.user_id)
+                for t in tasks:
+                    if text.lower() in t[1].lower():
+                        delete_task(t[0], ctx.user_id)
+                        break
+            logger.info("🗑️ Задача удалена: '%s'", text[:50])
 
         # Убираем теги из ответа
-        reply = re.sub(
-            r"\s*<(task|done|delete)>.*?</(task|done|delete)>",
-            "", raw, flags=re.DOTALL
-        ).strip()
+        reply = re.sub(r"\s*<(tasks|done|delete)>.*?</(tasks|done|delete)>",
+                       "", raw, flags=re.DOTALL).strip()
+
+        # Если просили показать задачи — отдаём форматированный список
+        msg_lower = ctx.message.lower()
+        if any(kw in msg_lower for kw in ("покажи задачи", "мои задачи", "список задач",
+                                           "какие задачи", "что надо сделать")):
+            if vault_available():
+                return AgentResult(
+                    success=True, content=format_all_tasks(),
+                    agent_name=self.agent_name, needs_critic=False,
+                )
 
         return AgentResult(
             success=True, content=reply,
@@ -143,42 +130,63 @@ class TodoAgent(BaseAgent):
             metadata=metadata,
         )
 
-    async def _sync_to_obsidian(self, tasks: list[dict]) -> None:
-        """Синхронизирует задачи в Obsidian с разбивкой по квадрантам."""
+    def _build_obsidian_context(self) -> str:
+        """Контекст из Obsidian для LLM."""
         try:
-            from app.integrations.obsidian import QUADRANTS, add_tasks, vault_available
-            from app.utils import strip_json
-
-            if not vault_available():
-                return
-
-            # Определяем квадранты через LLM
-            task_texts = [t["text"] for t in tasks]
-            prompt     = _EISENHOWER_PROMPT.format(tasks="\n".join(f"- {t}" for t in task_texts))
-            resp       = await self._llm.ainvoke([HumanMessage(content=prompt)])
-            raw        = strip_json(str(resp.content))
-
-            try:
-                groups = json.loads(raw).get("groups", [])
-            except Exception:
-                # Фоллбек — по приоритету
-                groups = []
-                for t in tasks:
-                    q = _PRIORITY_TO_QUADRANT.get(t.get("priority", 2), "q2")
-                    existing = next((g for g in groups if g["quadrant"] == q), None)
-                    if existing:
-                        existing["tasks"].append(t["text"])
-                    else:
-                        groups.append({"quadrant": q, "tasks": [t["text"]]})
-
-            for group in groups:
-                quadrant = group.get("quadrant", "q2")
-                gtasks   = group.get("tasks", [])
-                if gtasks:
-                    add_tasks(gtasks, quadrant=quadrant)
-                    q_info = QUADRANTS.get(quadrant, QUADRANTS["q2"])
-                    logger.info(
-                        "📁 Obsidian %s: %d задач", q_info["name"], len(gtasks)
-                    )
+            all_tasks = get_all_tasks()
+            lines = ["\n\nТекущие задачи в Obsidian:"]
+            has_tasks = False
+            for q_key in ("q1", "q2", "q3", "q4"):
+                data   = all_tasks[q_key]
+                active = [t for t in data["tasks"] if not t["done"]]
+                if active:
+                    lines.append(f"{data['emoji']} {data['title']}:")
+                    for t in active:
+                        lines.append(f"  - {t['text']}")
+                    has_tasks = True
+            return "\n".join(lines) if has_tasks else "\n\nЗадач нет."
         except Exception:
-            logger.warning("todo: не удалось синхронизировать с Obsidian", exc_info=True)
+            return "\n\nЗадач нет."
+
+    def _build_db_context(self, user_id: int) -> str:
+        """Фоллбек — контекст из БД."""
+        tasks = get_active_tasks(user_id)
+        if not tasks:
+            return "\n\nТекущих задач нет."
+        emoji = {1: "🔴", 2: "🟡", 3: "🟢"}
+        lines = ["\n\nТекущие задачи:"] + [
+            f"  - {emoji.get(t[2],'🟡')} {t[1]}" + (f" (до {t[3]})" if t[3] else "")
+            for t in tasks
+        ]
+        return "\n".join(lines)
+
+    async def _add_tasks(self, raw_json: str, user_id: int, metadata: dict) -> None:
+        """Добавляет задачи в Obsidian и БД."""
+        try:
+            data   = json.loads(strip_json(raw_json))
+            groups = data.get("groups", [])
+        except Exception:
+            logger.warning("todo: не смог распарсить tasks JSON: %s", raw_json[:100])
+            return
+
+        _Q_TO_PRIORITY = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
+
+        for group in groups:
+            quadrant = group.get("quadrant", "q2")
+            tasks    = [t.strip() for t in group.get("tasks", []) if t.strip()]
+            if not tasks:
+                continue
+
+            # Obsidian
+            if vault_available():
+                add_tasks(tasks, quadrant=quadrant)
+
+            # БД (для напоминаний)
+            priority = _Q_TO_PRIORITY.get(quadrant, 2)
+            for text in tasks:
+                try:
+                    task_id = save_task(user_id, text, priority, "")
+                    metadata.setdefault("tasks_added", []).append(task_id)
+                    logger.info("✅ [%s] Задача #%d: '%s'", quadrant.upper(), task_id, text[:50])
+                except Exception as e:
+                    logger.warning("todo: ошибка сохранения в БД: %s", e)

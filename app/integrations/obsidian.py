@@ -1,29 +1,44 @@
 """
-obsidian.py — работа с Obsidian vault через файловую систему.
+obsidian.py — работа с Obsidian vault.
 
-Vault живёт на Railway Volume (/data/obsidian_vault/).
-Remotely Save в Obsidian синхронизирует его через WebDAV.
-
-Структура:
-  /Дневник/YYYY-MM/YYYY-MM-DD.md
-  /Заметки/YYYY-MM-DD HH-MM Заголовок.md
-  /Задачи/YYYY-MM-DD.md
-  /Zettelkasten/YYYYMMDDHHMMSS.md
+Структура vault:
+  Задачи/Q1.md  — 🔴 Срочно и важно
+  Задачи/Q2.md  — 🟡 Важно, не срочно
+  Задачи/Q3.md  — 🟠 Срочно, не важно
+  Задачи/Q4.md  — ⚪ Не срочно, не важно
+  Дневник/YYYY-MM/YYYY-MM-DD.md
+  Заметки/YYYY-MM-DD HH-MM Название.md
+  Zettelkasten/YYYYMMDDHHMMSS.md
 """
 import logging
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-def VAULT_PATH() -> Path:
-    base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
-    # Remotely Save синхронизирует в подпапку RaYa-Vault
-    vault_subdir = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
-    return base / vault_subdir if vault_subdir else base
+# ── Квадранты Эйзенхауэра ─────────────────────────────────────────────────────
+QUADRANTS = {
+    "q1": {"file": "Задачи/Q1.md", "title": "🔴 Q1 — Срочно и важно",    "emoji": "🔴"},
+    "q2": {"file": "Задачи/Q2.md", "title": "🟡 Q2 — Важно, не срочно",  "emoji": "🟡"},
+    "q3": {"file": "Задачи/Q3.md", "title": "🟠 Q3 — Срочно, не важно",  "emoji": "🟠"},
+    "q4": {"file": "Задачи/Q4.md", "title": "⚪ Q4 — Не срочно, не важно","emoji": "⚪"},
+}
 
+
+def VAULT_PATH() -> Path:
+    base    = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+    subdir  = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
+    return base / subdir if subdir else base
+
+
+def vault_available() -> bool:
+    return VAULT_PATH().exists()
+
+
+# ── Утилиты ───────────────────────────────────────────────────────────────────
 
 def _slug(text: str, max_len: int = 50) -> str:
     text = re.sub(r'[\\/*?:"<>|]', "", text).strip()
@@ -36,12 +51,7 @@ def _zettel_id() -> str:
 
 def _frontmatter(tags: list, extra: dict | None = None) -> str:
     tag_lines = "\n".join(f"  - {t}" for t in tags)
-    lines = [
-        "---",
-        f"created: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
-        "tags:",
-        tag_lines,
-    ]
+    lines = ["---", f"created: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC", "tags:", tag_lines]
     if extra:
         for k, v in extra.items():
             lines.append(f"{k}: {v}")
@@ -49,14 +59,10 @@ def _frontmatter(tags: list, extra: dict | None = None) -> str:
     return "\n".join(lines)
 
 
-def _write(rel_path: Path, content: str, append: bool = False) -> Path:
+def _write(rel_path: Path, content: str) -> Path:
     full = VAULT_PATH() / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
-    if append and full.exists():
-        with open(full, "a", encoding="utf-8") as f:
-            f.write("\n\n---\n\n" + content)
-    else:
-        full.write_text(content, encoding="utf-8")
+    full.write_text(content, encoding="utf-8")
     return full
 
 
@@ -65,7 +71,179 @@ def _read(rel_path: Path) -> str | None:
     return full.read_text(encoding="utf-8") if full.exists() else None
 
 
-def _search(query: str, folder: str = "") -> list:
+# ══════════════════════════════════════════════════════════
+# ЗАДАЧИ — матрица Эйзенхауэра
+# Каждый квадрант = отдельный .md файл
+# Формат строки: - [ ] текст задачи
+# ══════════════════════════════════════════════════════════
+
+def _ensure_quadrant_file(q_key: str) -> None:
+    """Создаёт файл квадранта если не существует."""
+    q     = QUADRANTS[q_key]
+    path  = Path(q["file"])
+    if not _read(path):
+        content = f"# {q['title']}\n\n"
+        _write(path, content)
+        logger.info("📁 Создан файл квадранта: %s", q["file"])
+
+
+def add_tasks(tasks: list, quadrant: str = "q2") -> str:
+    """Добавляет задачи в файл квадранта."""
+    if quadrant not in QUADRANTS:
+        quadrant = "q2"
+    _ensure_quadrant_file(quadrant)
+
+    q        = QUADRANTS[quadrant]
+    rel_path = Path(q["file"])
+    existing = _read(rel_path) or f"# {q['title']}\n\n"
+
+    # Добавляем новые задачи как чеклист
+    new_lines = "\n".join(f"- [ ] {t}" for t in tasks)
+    updated   = existing.rstrip() + "\n" + new_lines + "\n"
+    _write(rel_path, updated)
+
+    logger.info("✅ [%s] добавлено %d задач", quadrant.upper(), len(tasks))
+    return q["file"]
+
+
+def get_all_tasks() -> dict:
+    """
+    Читает все задачи из всех квадрантов.
+    Возвращает {q_key: {"title": ..., "tasks": [{"text": ..., "done": bool}]}}
+    """
+    result = {}
+    for q_key, q in QUADRANTS.items():
+        content = _read(Path(q["file"])) or ""
+        tasks   = []
+        for line in content.splitlines():
+            m = re.match(r"^- \[([ xX])\] (.+)$", line)
+            if m:
+                tasks.append({
+                    "text": m.group(2).strip(),
+                    "done": m.group(1).lower() == "x",
+                })
+        result[q_key] = {"title": q["title"], "emoji": q["emoji"], "tasks": tasks}
+    return result
+
+
+def mark_task_done_obsidian(task_text: str) -> bool:
+    """Отмечает задачу выполненной во всех квадрантах по тексту."""
+    found = False
+    for q_key, q in QUADRANTS.items():
+        rel   = Path(q["file"])
+        content = _read(rel)
+        if not content:
+            continue
+        new_content = re.sub(
+            r"^(- \[) \] (" + re.escape(task_text) + r".*)$",
+            r"\1x] \2",
+            content, flags=re.MULTILINE
+        )
+        if new_content != content:
+            _write(rel, new_content)
+            found = True
+            logger.info("✅ Задача выполнена в %s: '%s'", q["file"], task_text[:40])
+    return found
+
+
+def delete_task_obsidian(task_text: str) -> bool:
+    """Удаляет задачу из всех квадрантов по тексту."""
+    found = False
+    for q_key, q in QUADRANTS.items():
+        rel     = Path(q["file"])
+        content = _read(rel)
+        if not content:
+            continue
+        new_content = re.sub(
+            r"^- \[[ xX]\] " + re.escape(task_text) + r".*\n?",
+            "", content, flags=re.MULTILINE
+        )
+        if new_content != content:
+            _write(rel, new_content)
+            found = True
+            logger.info("🗑️ Задача удалена из %s: '%s'", q["file"], task_text[:40])
+    return found
+
+
+def format_all_tasks() -> str:
+    """Форматирует все задачи для отправки в Telegram."""
+    all_tasks = get_all_tasks()
+    lines     = []
+    total     = 0
+
+    for q_key in ("q1", "q2", "q3", "q4"):
+        data      = all_tasks[q_key]
+        active    = [t for t in data["tasks"] if not t["done"]]
+        if not active:
+            continue
+        lines.append(f"{data['emoji']} **{data['title']}**")
+        for t in active:
+            lines.append(f"  • {t['text']}")
+        lines.append("")
+        total += len(active)
+
+    if not lines:
+        return "Сократ, задач нет. Всё чисто 👍"
+
+    return f"📋 Задачи ({total} активных):\n\n" + "\n".join(lines).strip()
+
+
+# ══════════════════════════════════════════════════════════
+# ДНЕВНИК
+# ══════════════════════════════════════════════════════════
+
+def write_diary(text: str, dt: datetime | None = None) -> str:
+    dt       = dt or datetime.utcnow()
+    rel_path = Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
+    existing = _read(rel_path)
+    time_str = dt.strftime("%H:%M")
+
+    if not existing:
+        fm      = _frontmatter(["дневник", dt.strftime("%Y-%m")], {"date": dt.strftime("%Y-%m-%d")})
+        content = f"{fm}\n\n# {dt.strftime('%d %B %Y')}\n\n**{time_str} UTC**\n\n{text}\n"
+    else:
+        content = existing.rstrip() + f"\n\n**{time_str} UTC**\n\n{text}\n"
+
+    _write(rel_path, content)
+    logger.info("📔 Дневник: %s", rel_path)
+    return str(rel_path)
+
+
+# ══════════════════════════════════════════════════════════
+# ЗАМЕТКИ
+# ══════════════════════════════════════════════════════════
+
+def create_note(title: str, content: str, tags: list | None = None) -> str:
+    dt       = datetime.utcnow()
+    tags     = tags or ["заметка"]
+    rel_path = Path(f"Заметки/{dt.strftime('%Y-%m-%d %H-%M')} {_slug(title)}.md")
+    fm       = _frontmatter(["заметка"] + tags)
+    _write(rel_path, f"{fm}\n\n# {title}\n\n{content}\n")
+    logger.info("📝 Заметка: %s", rel_path)
+    return str(rel_path)
+
+
+# ══════════════════════════════════════════════════════════
+# ZETTELKASTEN
+# ══════════════════════════════════════════════════════════
+
+def add_zettel(title: str, content: str, tags: list | None = None, links: list | None = None) -> str:
+    zid      = _zettel_id()
+    tags     = tags or []
+    links    = links or []
+    rel_path = Path(f"Zettelkasten/{zid}.md")
+    fm       = _frontmatter(["zettel"] + tags, {"id": zid, "title": f'"{title}"'})
+    links_str = ("\n\n## Связи\n" + "\n".join(f"- [[{l}]]" for l in links)) if links else ""
+    _write(rel_path, f"{fm}\n\n# {title}\n\n{content}{links_str}\n")
+    logger.info("🧠 Zettel: %s — '%s'", zid, title[:40])
+    return str(rel_path)
+
+
+# ══════════════════════════════════════════════════════════
+# ПОИСК И СТАТИСТИКА
+# ══════════════════════════════════════════════════════════
+
+def search_vault(query: str, folder: str = "") -> list:
     root  = VAULT_PATH() / folder if folder else VAULT_PATH()
     q     = query.lower()
     found = []
@@ -73,12 +251,11 @@ def _search(query: str, folder: str = "") -> list:
         try:
             text = f.read_text(encoding="utf-8")
             if q in text.lower():
-                snippet = ""
+                snippet, title = "", f.stem
                 for line in text.splitlines():
                     if q in line.lower() and line.strip() and not line.startswith("---"):
                         snippet = line.strip()[:200]
                         break
-                title = f.stem
                 for line in text.splitlines():
                     if line.startswith("# "):
                         title = line[2:].strip()
@@ -89,151 +266,6 @@ def _search(query: str, folder: str = "") -> list:
     return found[:10]
 
 
-def vault_available() -> bool:
-    return VAULT_PATH().exists()
-
-
-def write_diary(text: str, dt: datetime | None = None) -> str:
-    dt       = dt or datetime.utcnow()
-    rel_path = Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
-    existing = _read(rel_path)
-    time_str = dt.strftime("%H:%M")
-    if not existing:
-        fm      = _frontmatter(
-            tags=["дневник", dt.strftime("%Y"), dt.strftime("%Y-%m")],
-            extra={"date": dt.strftime("%Y-%m-%d")},
-        )
-        content = f"{fm}\n\n# {dt.strftime('%d %B %Y')}\n\n**{time_str} UTC**\n\n{text}"
-        _write(rel_path, content)
-    else:
-        _write(rel_path, f"**{time_str} UTC**\n\n{text}", append=True)
-    logger.info("📔 Дневник: %s", rel_path)
-    return str(rel_path)
-
-
-def create_note(title: str, content: str, tags: list | None = None) -> str:
-    dt       = datetime.utcnow()
-    tags     = tags or ["заметка"]
-    rel_path = Path(f"Заметки/{dt.strftime('%Y-%m-%d %H-%M')} {_slug(title)}.md")
-    fm       = _frontmatter(tags=["заметка"] + tags)
-    _write(rel_path, f"{fm}\n\n# {title}\n\n{content}")
-    logger.info("📝 Заметка: %s", rel_path)
-    return str(rel_path)
-
-
-def add_tasks(tasks: list, group: str = "", dt: datetime | None = None) -> str:
-    """
-    Все задачи хранятся в одном файле Задачи/Все задачи.md.
-    Группируются по разделам которые RaYa определяет сама.
-    Каждая задача — отдельная строка чеклиста.
-    """
-    dt       = dt or datetime.utcnow()
-    rel_path = Path("Задачи/Все задачи.md")
-    existing = _read(rel_path)
-    time_str = dt.strftime("%d.%m.%Y %H:%M")
-
-    # Формируем новые строки задач
-    new_items = "\n".join(f"- [ ] {t}" for t in tasks)
-
-    if not existing:
-        # Создаём файл с базовой структурой
-        fm = _frontmatter(tags=["задачи"])
-        content = (
-            f"{fm}\n\n"
-            f"# Задачи\n\n"
-            f"> Обновлено: {time_str}\n\n"
-        )
-        if group:
-            content += f"## {group}\n\n{new_items}\n"
-        else:
-            content += f"## Входящие\n\n{new_items}\n"
-        _write(rel_path, content)
-    else:
-        # Добавляем в существующий файл
-        if group and f"## {group}" in existing:
-            # Группа уже есть — добавляем задачи в конец группы
-            # Находим позицию после заголовка группы
-            lines = existing.split("\n")
-            result = []
-            in_group = False
-            inserted = False
-            for i, line in enumerate(lines):
-                result.append(line)
-                if line.strip() == f"## {group}":
-                    in_group = True
-                elif in_group and not inserted:
-                    # Ищем конец группы (следующий ## или конец файла)
-                    next_lines = lines[i+1:]
-                    at_end = all(not l.startswith("## ") for l in next_lines if l.strip())
-                    if line.startswith("## ") and line.strip() != f"## {group}":
-                        # Вставляем перед следующей группой
-                        result = result[:-1]
-                        result.extend(new_items.split("\n"))
-                        result.append("")
-                        result.append(line)
-                        inserted = True
-                        in_group = False
-            if not inserted:
-                result.extend(new_items.split("\n"))
-            new_content = "\n".join(result)
-            # Обновляем timestamp
-            import re
-            new_content = re.sub(r'> Обновлено:.*', f'> Обновлено: {time_str}', new_content)
-            _write(rel_path, new_content)
-        elif group:
-            # Новая группа — добавляем секцию
-            addition = f"\n## {group}\n\n{new_items}\n"
-            _write(rel_path, addition, append=True)
-            # Обновляем timestamp
-            import re
-            content = _read(rel_path) or ""
-            content = re.sub(r'> Обновлено:.*', f'> Обновлено: {time_str}', content)
-            _write(rel_path, content)
-        else:
-            # Без группы — добавляем в "Входящие" или создаём
-            if "## Входящие" in existing:
-                addition = new_items
-                lines = existing.split("\n")
-                result = []
-                after_incoming = False
-                inserted = False
-                for line in lines:
-                    result.append(line)
-                    if line.strip() == "## Входящие":
-                        after_incoming = True
-                    elif after_incoming and not inserted and (line.startswith("## ") or not line.strip()):
-                        if line.startswith("## ") and line.strip() != "## Входящие":
-                            result = result[:-1]
-                            result.extend(new_items.split("\n"))
-                            result.append("")
-                            result.append(line)
-                            inserted = True
-                            after_incoming = False
-                if not inserted:
-                    result.extend(new_items.split("\n"))
-                import re
-                new_content = "\n".join(result)
-                new_content = re.sub(r'> Обновлено:.*', f'> Обновлено: {time_str}', new_content)
-                _write(rel_path, new_content)
-            else:
-                _write(rel_path, f"\n## Входящие\n\n{new_items}\n", append=True)
-
-    logger.info("✅ Задачи: %s (%d шт.) группа='%s'", rel_path, len(tasks), group)
-    return str(rel_path)
-
-
-def add_zettel(title: str, content: str, tags: list | None = None, links: list | None = None) -> str:
-    zid      = _zettel_id()
-    tags     = tags or []
-    links    = links or []
-    rel_path = Path(f"Zettelkasten/{zid}.md")
-    fm       = _frontmatter(tags=["zettel"] + tags, extra={"id": zid, "title": f'"{title}"'})
-    links_str = ("\n\n## Связи\n" + "\n".join(f"- [[{l}]]" for l in links)) if links else ""
-    _write(rel_path, f"{fm}\n\n# {title}\n\n{content}{links_str}")
-    logger.info("🧠 Zettel: %s — '%s'", zid, title[:40])
-    return str(rel_path)
-
-
 def read_note(query: str) -> str | None:
     for folder in ("Заметки", "Zettelkasten", "Дневник", "Задачи", ""):
         p = Path(folder) / query if folder else Path(query)
@@ -242,12 +274,8 @@ def read_note(query: str) -> str | None:
         content = _read(p)
         if content:
             return content
-    results = _search(query)
+    results = search_vault(query)
     return _read(Path(results[0]["path"])) if results else None
-
-
-def search_vault(query: str, folder: str = "") -> list:
-    return _search(query, folder)
 
 
 def list_files(folder: str = "Заметки") -> list:
@@ -262,34 +290,27 @@ def vault_stats() -> dict:
     for folder in ("Дневник", "Заметки", "Zettelkasten"):
         root = VAULT_PATH() / folder
         stats[folder] = len(list(root.rglob("*.md"))) if root.exists() else 0
-    # Квадранты Эйзенхауэра
-    for qkey, qdata in QUADRANTS.items():
-        root = VAULT_PATH() / qdata["folder"]
-        stats[f"{qdata['emoji']} {qdata['name']}"] = (
-            len(list(root.rglob("*.md"))) if root.exists() else 0
-        )
+    # Задачи — считаем активные строки по квадрантам
+    all_tasks = get_all_tasks()
+    for q_key, data in all_tasks.items():
+        active = sum(1 for t in data["tasks"] if not t["done"])
+        stats[f"{data['emoji']} {data['title']}"] = active
     return stats
+
 
 def cleanup_vault() -> dict:
     """Удаляет все файлы из vault кроме папок RaYa."""
-    import shutil
     vault = VAULT_PATH()
     if not vault.exists():
         return {"ok": False, "deleted": [], "error": "vault не найден"}
-
     raya_folders = {"Дневник", "Заметки", "Задачи", "Zettelkasten", ".obsidian"}
     deleted = []
-
     for item in sorted(vault.iterdir()):
         if item.name not in raya_folders:
             try:
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
+                shutil.rmtree(item) if item.is_dir() else item.unlink()
                 deleted.append(item.name)
-                logger.info("🗑️ Vault cleanup: удалён '%s'", item.name)
+                logger.info("🗑️ Vault cleanup: '%s'", item.name)
             except Exception as e:
                 logger.warning("Vault cleanup: не удалось удалить '%s': %s", item.name, e)
-
     return {"ok": True, "deleted": deleted}

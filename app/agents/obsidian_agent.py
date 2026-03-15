@@ -24,9 +24,11 @@ from langchain_core.messages import HumanMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import save_task
+from app.utils import strip_json as _strip_json
 from app.integrations.obsidian import (
     QUADRANTS, add_tasks, add_zettel, cleanup_vault, create_note,
-    get_quadrants_info, list_files, read_note, search_vault,
+    delete_task_obsidian, format_all_tasks, list_files,
+    mark_task_done_obsidian, read_note, search_vault,
     vault_available, vault_stats, write_diary,
 )
 from app.utils import strip_json
