@@ -327,5 +327,33 @@ def create_app(llm_service) -> FastAPI:
 
         return {"ok": True, "deleted": deleted, "count": len(deleted)}
 
+
+    @app.delete("/api/vault/file")
+    async def vault_delete_file(path: str = Query(default=""), token: str = Query(default="")):
+        """Удаляет конкретный файл из vault по relative path."""
+        _check_token(token)
+        import os, shutil
+        vault_base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
+        subdir     = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
+        vault      = vault_base / subdir if subdir else vault_base
+
+        if not path:
+            raise HTTPException(status_code=400, detail="path обязателен")
+
+        target = (vault / path).resolve()
+        # Защита от path traversal
+        if not str(target).startswith(str(vault.resolve())):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Файл не найден")
+
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+
+        return {"ok": True, "deleted": path}
+
     logger.info("🌐 Веб-сервер создан")
     return app

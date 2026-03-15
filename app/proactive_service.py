@@ -81,42 +81,47 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
 
 async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
     """
-    Если у задачи дедлайн сегодня или завтра — напоминает.
-    sent_today — множество task_id уже отправленных сегодня (защита от повтора).
+    Читает задачи Q1 из Obsidian (срочно и важно) и напоминает о них.
+    Фоллбек на БД если Obsidian недоступен.
+    sent_today — тексты уже отправленных сегодня (защита от повтора).
     """
     try:
+        from app.integrations.obsidian import get_all_tasks, vault_available
 
-        today    = _now_msk().date()
-        tomorrow = today + timedelta(days=1)
+        urgent_tasks = []
 
-        with sqlite3.connect(str(DB_PATH)) as con:
-            rows = con.execute("""
-                SELECT id, text, due_date FROM tasks
-                WHERE user_id = ? AND done = 0
-                  AND due_date IN (?, ?)
-                ORDER BY due_date ASC
-                LIMIT 3
-            """, (user_id, str(today), str(tomorrow))).fetchall()
+        if vault_available():
+            # Читаем Q1 из Obsidian
+            all_tasks = get_all_tasks()
+            q1 = all_tasks.get("q1", {})
+            urgent_tasks = [
+                t["text"] for t in q1.get("tasks", [])
+                if not t["done"] and t["text"] not in sent_today
+            ]
+        else:
+            # Фоллбек — БД с приоритетом 1
+            today    = _now_msk().date()
+            tomorrow = today + timedelta(days=1)
+            with sqlite3.connect(str(DB_PATH)) as con:
+                rows = con.execute("""
+                    SELECT id, text FROM tasks
+                    WHERE user_id = ? AND done = 0 AND priority = 1
+                    ORDER BY created_at ASC LIMIT 3
+                """, (user_id,)).fetchall()
+            urgent_tasks = [r[1] for r in rows if r[0] not in sent_today]
 
-        if not rows:
+        if not urgent_tasks:
             return False
 
-        # Фильтруем уже отправленные
-        new_rows = [r for r in rows if r[0] not in sent_today]
-        if not new_rows:
-            return False
-
-        tid, text, due_date = new_rows[0]
-        when = "сегодня" if str(due_date) == str(today) else "завтра"
-
-        msg = await _gen(llm, (
-            f"У Сократа дедлайн {when}: «{text}». "
-            f"Напомни об этом коротко — одно предложение, без занудства."
+        text = urgent_tasks[0]
+        msg  = await _gen(llm, (
+            f"У Сократа срочная важная задача: «{text}». "
+            f"Напомни коротко — одно предложение, без занудства."
         ))
         if msg:
             await bot.send_message(chat_id=user_id, text=msg)
-            sent_today.add(tid)
-            logger.info("📋 Task deadline: '%s' (%s)", text[:40], when)
+            sent_today.add(text)
+            logger.info("📋 Task deadline: '%s'", text[:40])
             return True
 
     except Exception:
@@ -583,13 +588,26 @@ async def generate_initiative_message(user_id: int, llm) -> str:
     """Генерирует инициативное сообщение от RaYa."""
     try:
         facts  = load_memory(user_id)
-        tasks  = get_active_tasks(user_id)
 
         context = ""
         if facts:
             context += f"Что RaYa знает о Сократе: {'; '.join(facts[:3])}\n"
-        if tasks:
-            context += f"Его активные задачи: {', '.join(t[1] for t in tasks[:2])}\n"
+        # Читаем задачи из Obsidian если доступен
+        try:
+            from app.integrations.obsidian import get_all_tasks, vault_available
+            if vault_available():
+                all_tasks = get_all_tasks()
+                active = []
+                for q_data in all_tasks.values():
+                    active.extend([t["text"] for t in q_data["tasks"] if not t["done"]])
+                if active:
+                    context += f"Его активные задачи: {', '.join(active[:3])}\n"
+            else:
+                tasks = get_active_tasks(user_id)
+                if tasks:
+                    context += f"Его активные задачи: {', '.join(t[1] for t in tasks[:3])}\n"
+        except Exception:
+            pass
 
         prompt = next(_initiative_cycle)
 

@@ -53,6 +53,8 @@ class Core:
 
         self._log_startup(svc)
         svc.proactive.start()
+        # Синхронизируем БД задач с Obsidian при старте
+        asyncio.create_task(self._sync_tasks(svc))
 
         dp = self._build_dispatcher(svc)
 
@@ -113,6 +115,16 @@ class Core:
             web_app, host="0.0.0.0", port=web_port, log_level="warning"
         )
         return uvicorn.Server(web_config)
+
+    async def _sync_tasks(self, svc) -> None:
+        """Синхронизирует задачи БД с Obsidian vault."""
+        try:
+            from app.integrations.obsidian import sync_tasks_to_db, vault_available
+            if vault_available():
+                result = sync_tasks_to_db(settings.telegram_user_id)
+                logger.info("🔄 Задачи синхронизированы: %s", result)
+        except Exception:
+            logger.warning("Sync tasks: ошибка при старте", exc_info=True)
 
     async def _start_webdav(self):
         """Запускает WebDAV сервер если задан WEBDAV_PASSWORD."""

@@ -88,7 +88,7 @@ def _ensure_quadrant_file(q_key: str) -> None:
 
 
 def add_tasks(tasks: list, quadrant: str = "q2") -> str:
-    """Добавляет задачи в файл квадранта."""
+    """Добавляет задачи в файл квадранта. Пропускает дубли."""
     if quadrant not in QUADRANTS:
         quadrant = "q2"
     _ensure_quadrant_file(quadrant)
@@ -97,12 +97,25 @@ def add_tasks(tasks: list, quadrant: str = "q2") -> str:
     rel_path = Path(q["file"])
     existing = _read(rel_path) or f"# {q['title']}\n\n"
 
-    # Добавляем новые задачи как чеклист
-    new_lines = "\n".join(f"- [ ] {t}" for t in tasks)
+    # Собираем существующие тексты задач для проверки дублей
+    existing_texts = set()
+    for line in existing.splitlines():
+        m = re.match(r"^- \[[ xX]\] (.+)$", line)
+        if m:
+            existing_texts.add(m.group(1).strip().lower())
+
+    # Добавляем только новые задачи
+    new_tasks = [t for t in tasks if t.strip().lower() not in existing_texts]
+    if not new_tasks:
+        logger.info("⏭️ [%s] все задачи уже есть, пропускаем", quadrant.upper())
+        return q["file"]
+
+    new_lines = "\n".join(f"- [ ] {t}" for t in new_tasks)
     updated   = existing.rstrip() + "\n" + new_lines + "\n"
     _write(rel_path, updated)
 
-    logger.info("✅ [%s] добавлено %d задач", quadrant.upper(), len(tasks))
+    logger.info("✅ [%s] добавлено %d задач (пропущено дублей: %d)",
+                quadrant.upper(), len(new_tasks), len(tasks) - len(new_tasks))
     return q["file"]
 
 
@@ -314,3 +327,53 @@ def cleanup_vault() -> dict:
             except Exception as e:
                 logger.warning("Vault cleanup: не удалось удалить '%s': %s", item.name, e)
     return {"ok": True, "deleted": deleted}
+
+def sync_tasks_to_db(user_id: int) -> dict:
+    """
+    Синхронизирует задачи из Obsidian в БД.
+    Удаляет из БД задачи которых нет в Obsidian.
+    Добавляет в БД новые задачи из Obsidian.
+    """
+    if not vault_available():
+        return {"ok": False, "reason": "vault недоступен"}
+
+    try:
+        from app.database import get_active_tasks, save_task, delete_task
+
+        # Получаем все активные задачи из Obsidian
+        all_tasks   = get_all_tasks()
+        obs_texts   = set()
+        _Q_TO_PRIO  = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
+
+        for q_key, data in all_tasks.items():
+            for t in data["tasks"]:
+                if not t["done"]:
+                    obs_texts.add(t["text"].lower())
+
+        # Получаем задачи из БД
+        db_tasks  = get_active_tasks(user_id)
+        db_texts  = {t[1].lower(): t[0] for t in db_tasks}
+
+        deleted = 0
+        added   = 0
+
+        # Удаляем из БД то чего нет в Obsidian
+        for text_lower, task_id in db_texts.items():
+            if text_lower not in obs_texts:
+                delete_task(task_id, user_id)
+                deleted += 1
+
+        # Добавляем в БД то что есть в Obsidian но нет в БД
+        for q_key, data in all_tasks.items():
+            priority = _Q_TO_PRIO.get(q_key, 2)
+            for t in data["tasks"]:
+                if not t["done"] and t["text"].lower() not in db_texts:
+                    save_task(user_id, t["text"], priority, "")
+                    added += 1
+
+        logger.info("🔄 Sync tasks: удалено %d, добавлено %d из БД", deleted, added)
+        return {"ok": True, "deleted": deleted, "added": added}
+
+    except Exception as e:
+        logger.exception("sync_tasks_to_db: ошибка")
+        return {"ok": False, "reason": str(e)}
