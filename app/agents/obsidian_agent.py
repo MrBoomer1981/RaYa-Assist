@@ -23,6 +23,7 @@ import re
 from langchain_core.messages import HumanMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
+from app.database import save_task
 from app.integrations.obsidian import (
     QUADRANTS, add_tasks, add_zettel, cleanup_vault, create_note,
     get_quadrants_info, list_files, read_note, search_vault,
@@ -269,6 +270,7 @@ class ObsidianAgent(BaseAgent):
         reply_lines = ["Задачи добавлены в Obsidian по матрице Эйзенхауэра:\n"]
         paths = []
 
+        _QUADRANT_TO_PRIORITY = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
         for group in groups:
             quadrant = group.get("quadrant", "q2")
             tasks    = group.get("tasks", [])
@@ -277,6 +279,13 @@ class ObsidianAgent(BaseAgent):
             q_info   = QUADRANTS.get(quadrant, QUADRANTS["q2"])
             path     = add_tasks(tasks, quadrant=quadrant)
             paths.append(path)
+            # Также сохраняем в БД для напоминаний
+            priority = _QUADRANT_TO_PRIORITY.get(quadrant, 2)
+            for t in tasks:
+                try:
+                    save_task(ctx.user_id, t, priority, "")
+                except Exception:
+                    logger.warning("obsidian: не удалось сохранить задачу в БД: %s", t)
             reply_lines.append(f"{q_info['emoji']} **{q_info['name']}**")
             for t in tasks:
                 reply_lines.append(f"  • {t}")

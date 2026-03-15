@@ -6,6 +6,7 @@ import logging
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import load_diary_entries, save_diary_entry
+from app.integrations.obsidian import vault_available, write_diary as obsidian_write_diary
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,13 @@ class DiaryAgent(BaseAgent):
         if not is_question:
             entry_id = save_diary_entry(ctx.user_id, ctx.message)
             logger.info("📔 Запись #%d сохранена | user_id=%s", entry_id, ctx.user_id)
+            # Также пишем в Obsidian vault
+            try:
+                if vault_available():
+                    obsidian_write_diary(ctx.message)
+                    logger.info("📔 Дневник → Obsidian | user_id=%s", ctx.user_id)
+            except Exception:
+                logger.warning("diary: не удалось записать в Obsidian", exc_info=True)
 
         return AgentResult(
             success=True,
