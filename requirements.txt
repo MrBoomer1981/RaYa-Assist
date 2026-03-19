@@ -13,3 +13,5 @@ uvicorn[standard]
 python-multipart
 
 gtts
+numpy
+httpx

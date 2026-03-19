@@ -406,5 +406,64 @@ def create_app(llm_service) -> FastAPI:
         plan = get_week_plan() if vault_available() else "vault недоступен"
         return {"plan": plan}
 
+
+    @app.get("/api/search")
+    async def vault_search(q: str = "", token: str = Query(default="")):
+        """Семантический поиск по vault."""
+        _check_token(token)
+        if not q:
+            return {"results": []}
+        try:
+            from app.semantic_search import semantic_search
+            results = await semantic_search(q, top_k=8)
+            if not results:
+                from app.integrations.obsidian import search_vault
+                raw = search_vault(q)
+                results = [{"path": r["path"], "title": r["title"],
+                            "snippet": r["snippet"], "score": None} for r in raw]
+            return {"results": results}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/search/index")
+    async def rebuild_index(token: str = Query(default="")):
+        """Пересобрать поисковый индекс."""
+        _check_token(token)
+        try:
+            from app.semantic_search import build_index
+            index = await build_index(force=True)
+            return {"ok": True, "indexed": len(index)}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+    @app.post("/api/tasks/move")
+    async def move_task_api(body: dict, token: str = Query(default="")):
+        """Переместить задачу в другой квадрант."""
+        _check_token(token)
+        text = body.get("text", "").strip()
+        target = body.get("target_quadrant", "q2")
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import move_task, vault_available
+        ok = move_task(text, target) if vault_available() else False
+        return {"ok": ok}
+
+    @app.get("/api/vault/note")
+    async def get_vault_note(path: str = "", token: str = Query(default="")):
+        """Читает конкретную заметку из vault."""
+        _check_token(token)
+        if not path:
+            raise HTTPException(status_code=400, detail="path обязателен")
+        import re as _re
+        from app.integrations.obsidian import read_note, vault_available
+        if not vault_available():
+            return {"content": None}
+        content = read_note(path)
+        if content:
+            # Убираем frontmatter
+            content = _re.sub(r"^---.*?---\n+", "", content, flags=_re.DOTALL).strip()
+        return {"content": content}
+
     logger.info("🌐 Веб-сервер создан")
     return app

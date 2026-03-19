@@ -320,13 +320,25 @@ class ObsidianAgent(BaseAgent):
     # ── Поиск ──────────────────────────────────────────────────────────────────
 
     async def _search(self, content: str) -> AgentResult:
-        results = search_vault(content)
+        # Сначала семантический поиск, fallback на fulltext
+        sem_results = []
+        try:
+            from app.semantic_search import semantic_search
+            sem_results = await semantic_search(content, top_k=5)
+        except Exception:
+            logger.debug("semantic search unavailable, fallback to fulltext")
+
+        results = sem_results if sem_results else search_vault(content)
+
         if not results:
             return AgentResult(success=True, agent_name=self.agent_name,
                 content=f"Сократ, по запросу «{content}» ничего не нашла в vault.")
-        lines = [f"Нашла {len(results)} совпадений по «{content}»:\n"]
+
+        search_type = "семантически" if sem_results else "по тексту"
+        lines = [f"Нашла {len(results)} совпадений {search_type} по «{content}»:\n"]
         for r in results[:5]:
-            lines.append(f"📄 `{r['path']}`\n_{r['snippet'][:120]}_\n")
+            score_str = f" [{r['score']:.0%}]" if "score" in r else ""
+            lines.append(f"📄 `{r['path']}`{score_str}\n_{r.get('snippet','')[:120]}_\n")
         return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content="\n".join(lines))
 
