@@ -636,6 +636,121 @@ def format_tasks_by_quadrant(quadrant: str) -> str:
         lines.append(f"  ✅ выполнено: {len(done)}")
     return "\n".join(lines)
 
+def batch_add_tasks(task_groups: list[dict]) -> dict:
+    """
+    Добавляет несколько групп задач за один вызов.
+    task_groups: [{"quadrant": "q1", "tasks": ["задача1", "задача2"]}, ...]
+    Возвращает {"added": int, "skipped": int}
+    """
+    added = skipped = 0
+    for group in task_groups:
+        q     = group.get("quadrant", "q2")
+        tasks = [t.strip() for t in group.get("tasks", []) if t.strip()]
+        if not tasks:
+            continue
+        q_data   = QUADRANTS.get(q, QUADRANTS["q2"])
+        rel_path = Path(q_data["file"])
+        _ensure_quadrant_file(q)
+        existing_content = _read(rel_path) or f"# {q_data['title']}\n\n"
+        existing_texts   = set()
+        for line in existing_content.splitlines():
+            m = re.match(r"^- \[[ xX]\] (.+)$", line)
+            if m:
+                existing_texts.add(m.group(1).strip().lower())
+        new_tasks = [t for t in tasks if t.lower() not in existing_texts]
+        skipped  += len(tasks) - len(new_tasks)
+        if new_tasks:
+            lines = "\n".join(f"- [ ] {t}" for t in new_tasks)
+            _write(rel_path, existing_content.rstrip() + "\n" + lines + "\n")
+            added += len(new_tasks)
+    logger.info("batch_add_tasks: +%d added, %d skipped", added, skipped)
+    return {"added": added, "skipped": skipped}
+
+
+def get_week_plan() -> str:
+    """
+    Возвращает задачи сгруппированные для планирования недели:
+    - Q1 + Q2 как приоритеты недели
+    - задачи с дедлайном
+    """
+    all_tasks  = get_all_tasks()
+    overdue    = get_overdue_tasks(days_threshold=6)  # вся неделя
+    lines      = ["📅 Задачи на неделю:\n"]
+
+    # Критичные — Q1
+    q1_tasks = [t["text"] for t in all_tasks["q1"]["tasks"] if not t["done"]]
+    if q1_tasks:
+        lines.append("🔴 Срочно и важно:")
+        for t in q1_tasks:
+            lines.append(f"  • {t}")
+        lines.append("")
+
+    # С дедлайном на неделю
+    if overdue:
+        lines.append("⏰ Дедлайны:")
+        for t in overdue:
+            flag = " 🔴" if t["overdue"] else ""
+            lines.append(f"  • {t['text']}{flag}")
+        lines.append("")
+
+    # Важные без срока — Q2
+    q2_tasks = [t["text"] for t in all_tasks["q2"]["tasks"] if not t["done"]]
+    if q2_tasks:
+        lines.append("🟡 Важно (нет срока):")
+        for t in q2_tasks[:5]:  # топ-5
+            lines.append(f"  • {t}")
+        if len(q2_tasks) > 5:
+            lines.append(f"  ...и ещё {len(q2_tasks)-5}")
+
+    return "\n".join(lines) if len(lines) > 1 else "Задач на неделю нет."
+
+
+def get_diary_context(days: int = 3) -> str:
+    """
+    Читает последние N дней дневника для контекста.
+    Возвращает краткую выжимку (не весь текст).
+    """
+    from datetime import timedelta
+    now    = datetime.utcnow()
+    result = []
+    for i in range(days):
+        dt       = now - timedelta(days=i)
+        rel_path = Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
+        content  = _read(rel_path)
+        if not content:
+            continue
+        # Убираем frontmatter
+        content = re.sub(r"^---.*?---\n+", "", content, flags=re.DOTALL)
+        # Берём первые 300 символов как контекст
+        preview = content.strip()[:300]
+        if preview:
+            result.append(f"[{dt.strftime('%d.%m')}] {preview}")
+    return "\n".join(result) if result else ""
+
+
+def mark_multiple_done(texts: list[str]) -> dict:
+    """
+    Отмечает несколько задач выполненными за один вызов.
+    Возвращает {"done": [...], "not_found": [...]}
+    """
+    done       = []
+    not_found  = []
+    for text in texts:
+        ok = mark_task_done_obsidian(text)
+        (done if ok else not_found).append(text)
+    logger.info("mark_multiple_done: %d done, %d not found", len(done), len(not_found))
+    return {"done": done, "not_found": not_found}
+
+
+def get_task_count() -> dict:
+    """Быстрый подсчёт задач по квадрантам без форматирования."""
+    all_tasks = get_all_tasks()
+    return {
+        q_key: sum(1 for t in data["tasks"] if not t["done"])
+        for q_key, data in all_tasks.items()
+    }
+
+
 def sync_tasks_to_db(user_id: int) -> dict:
     if not vault_available():
         return {"ok": False, "reason": "vault недоступен"}

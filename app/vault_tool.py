@@ -40,6 +40,9 @@ VAULT_TOOL = {
                     "cleanup",        # удалить лишние файлы
                     "move_task",      # переместить задачу в другой квадрант
                     "overdue_tasks",  # показать задачи с дедлайном сегодня/просроченные
+                    "week_plan",      # план задач на неделю
+                    "batch_done",     # отметить несколько задач выполненными
+                    "diary_context",  # показать контекст дневника
                 ],
                 "description": "Операция"
             },
@@ -94,10 +97,12 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
     try:
         from app.integrations.obsidian import (
             QUADRANTS, add_task_with_deadline, add_tasks, add_zettel,
-            cleanup_vault, clear_done_tasks, create_note, create_plan,
-            delete_task_obsidian, format_all_tasks, get_overdue_tasks,
-            list_files, list_zettel_titles, mark_task_done_obsidian,
-            move_task, read_note, search_vault, update_zettel, vault_available,
+            batch_add_tasks, cleanup_vault, clear_done_tasks, create_note,
+            create_plan, delete_task_obsidian, format_all_tasks,
+            get_diary_context, get_overdue_tasks, get_week_plan,
+            list_files, list_zettel_titles, mark_multiple_done,
+            mark_task_done_obsidian, move_task, read_note,
+            search_vault, update_zettel, vault_available,
             vault_stats, write_diary, zettel_similarity,
         )
         from app.database import delete_task, get_active_tasks, mark_task_done, save_task
@@ -281,6 +286,30 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
                 flag = " 🔴 ПРОСРОЧЕНО" if t["overdue"] else ""
                 lines.append(f"  • {t['text']}{flag}")
             return "\n".join(lines)
+
+        # ── week_plan ─────────────────────────────────────────────────────────
+        elif op == "week_plan":
+            return get_week_plan()
+
+        # ── batch_done ────────────────────────────────────────────────────────
+        elif op == "batch_done":
+            if not text:
+                return "ошибка: список задач пустой"
+            # text = задачи через ; или новую строку
+            import re as _re
+            tasks = [t.strip() for t in _re.split(r"[;\n]", text) if t.strip()]
+            result = mark_multiple_done(tasks)
+            parts = []
+            if result["done"]:
+                parts.append(f"выполнено {len(result['done'])}: " + ", ".join(f"«{t}»" for t in result["done"]))
+            if result["not_found"]:
+                parts.append(f"не найдено: " + ", ".join(f"«{t}»" for t in result["not_found"]))
+            return "; ".join(parts) if parts else "задачи не найдены"
+
+        # ── diary_context ─────────────────────────────────────────────────────
+        elif op == "diary_context":
+            ctx_text = get_diary_context(days=3)
+            return ctx_text if ctx_text else "дневник пустой за последние 3 дня"
 
         # ── cleanup ───────────────────────────────────────────────────────────
         elif op == "cleanup":

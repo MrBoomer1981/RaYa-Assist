@@ -26,71 +26,6 @@ _MSK_OFFSET = 3
 
 # ── 1. PatternObserver ────────────────────────────────────────────────────────
 
-def get_pattern_observation(user_id: int) -> str:
-    """
-    Анализирует паттерны: время активности, частые темы.
-    Возвращает наблюдение для промпта или пустую строку.
-    Срабатывает редко — примерно каждые 12 сообщений.
-    """
-    try:
-        import sqlite3
-
-        with sqlite3.connect(str(DB_PATH)) as con:
-            rows = con.execute("""
-                SELECT created_at FROM history
-                WHERE user_id = ? AND role = 'human'
-                ORDER BY created_at DESC LIMIT 30
-            """, (user_id,)).fetchall()
-
-        if len(rows) < 8:
-            return ""
-
-        # Считаем часы активности по МСК
-        hours = []
-        for (ts,) in rows:
-            try:
-                dt = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
-                msk_hour = (dt.hour + _MSK_OFFSET) % 24
-                hours.append(msk_hour)
-            except Exception:
-                continue
-
-        if not hours:
-            return ""
-
-        # Находим пик активности
-        late_night = sum(1 for h in hours if 22 <= h or h < 3)
-        morning    = sum(1 for h in hours if 6 <= h < 10)
-        evening    = sum(1 for h in hours if 19 <= h < 22)
-
-        observations = []
-
-        if late_night >= len(hours) * 0.4:
-            observations.append(
-                "Сократ часто пишет поздно ночью — возможно сейчас тоже не спит."
-            )
-        elif morning >= len(hours) * 0.4:
-            observations.append(
-                "Сократ обычно активен по утрам — сейчас продуктивное время для него."
-            )
-        elif evening >= len(hours) * 0.4:
-            observations.append(
-                "Сократ чаще всего пишет вечером — это его время для размышлений."
-            )
-
-        if not observations:
-            return ""
-
-        return (
-            "👁 Наблюдение о паттерне:\n"
-            + "\n".join(f"  {o}" for o in observations)
-            + "\n  Если уместно — упомяни это одной фразой, не делай из этого тему."
-        )
-
-    except Exception:
-        logger.debug("pattern_observation: ошибка", exc_info=True)
-        return ""
-
 
 # ── 2. RepeatDetector ─────────────────────────────────────────────────────────
 
@@ -111,64 +46,6 @@ def _simple_similarity(a: str, b: str) -> float:
         return 0.0
     return len(wa & wb) / max(len(wa), len(wb))
 
-
-def get_repeat_observation(user_id: int, current_message: str) -> str:
-    """
-    Проверяет похож ли текущий вопрос на уже задававшиеся.
-    Возвращает инструкцию для промпта или пустую строку.
-    """
-    try:
-
-        with sqlite3.connect(str(DB_PATH)) as con:
-            rows = con.execute("""
-                SELECT content, created_at FROM history
-                WHERE user_id = ? AND role = 'human'
-                ORDER BY created_at DESC LIMIT ?
-            """, (user_id, _HISTORY_DEPTH)).fetchall()
-
-        if len(rows) < 3:
-            return ""
-
-        # Пропускаем самое последнее (это и есть текущее)
-        past_messages = rows[1:]
-
-        best_score = 0.0
-        best_match = ""
-        best_date  = ""
-
-        for content, ts in past_messages:
-            score = _simple_similarity(current_message, content)
-            if score > best_score:
-                best_score = score
-                best_match = content
-                best_date  = ts
-
-        if best_score < _SIMILARITY_THRESHOLD:
-            return ""
-
-        # Форматируем дату
-        try:
-            dt       = datetime.strptime(best_date[:19], "%Y-%m-%d %H:%M:%S")
-            days_ago = (datetime.utcnow() - dt).days
-            if days_ago == 0:
-                when = "сегодня"
-            elif days_ago == 1:
-                when = "вчера"
-            else:
-                when = f"{days_ago} дней назад"
-        except Exception:
-            when = "раньше"
-
-        return (
-            f"🔁 Похожий вопрос уже был ({when}): «{best_match[:80]}»\n"
-            f"  Можешь сослаться на прошлый разговор — это покажет что ты помнишь.\n"
-            f"  Например: «Ты уже спрашивал об этом {when}...» — и добавь "
-            f"что изменилось или продолжи с того места."
-        )
-
-    except Exception:
-        logger.debug("repeat_observation: ошибка", exc_info=True)
-        return ""
 
 
 # ── Сборщик для промпта ───────────────────────────────────────────────────────
@@ -335,11 +212,6 @@ class RaYaState:
 _states: dict[int, RaYaState] = {}
 
 
-def get_state(user_id: int) -> RaYaState:
-    if user_id not in _states:
-        _states[user_id] = RaYaState()
-    return _states[user_id]
-
 
 def update_state(user_id: int, message: str, search_results: str = "") -> RaYaState:
     """
@@ -455,34 +327,6 @@ logger = logging.getLogger(__name__)
 
 # ── 1. Mood Mirroring ─────────────────────────────────────────────────────────
 
-def get_mirror_hint(message: str) -> str:
-    """
-    Анализирует энергетику сообщения и возвращает инструкцию для промпта.
-    Быстро, без LLM — по эвристикам.
-    """
-    text  = message.strip()
-    words = text.split()
-    chars = len(text)
-
-    # Энергетика по длине и пунктуации
-    if chars < 25 or len(words) <= 4:
-        return "Сократ пишет кратко — отвечай так же лаконично, не растекайся."
-
-    exclamations = text.count("!")
-    questions    = text.count("?")
-    caps_ratio   = sum(1 for c in text if c.isupper()) / max(len(text), 1)
-
-    if exclamations >= 2 or caps_ratio > 0.15:
-        return "Сократ пишет энергично — поддержи его тон, будь живой и активной."
-
-    if questions >= 2:
-        return "Сократ задаёт много вопросов — будь конкретной, отвечай по существу."
-
-    if chars > 300:
-        return "Сократ написал развёрнуто — можешь ответить подробнее, он в разговорном режиме."
-
-    return ""  # нейтральная энергетика — без подсказок
-
 
 # ── 2. Personality Feedback Loop ─────────────────────────────────────────────
 
@@ -538,25 +382,6 @@ async def update_feedback(user_id: int, llm) -> None:
         logger.exception("personality: ошибка feedback loop")
 
 
-def get_feedback_hint(user_id: int) -> str:
-    """Возвращает инструкцию на основе накопленного feedback."""
-    try:
-        feedback = get_memory_by_category(user_id, _FEEDBACK_CATEGORY)
-        if not feedback:
-            return ""
-
-        parts = []
-        if "длина_ответов" in feedback:
-            pref = feedback["длина_ответов"]
-            if "короткие" in pref:
-                parts.append("По наблюдениям: Сократ лучше реагирует на короткие ответы.")
-            elif "развёрнутые" in pref:
-                parts.append("По наблюдениям: Сократ вовлекается сильнее когда отвечаешь подробно.")
-
-        return " ".join(parts)
-    except Exception:
-        return ""
-
 
 # ── 3. Thematic Depth ─────────────────────────────────────────────────────────
 
@@ -575,53 +400,6 @@ _TOPIC_PATTERNS = {
     "продуктивность": ["задачи", "планирование", "дедлайн", "фокус", "прокрастинация"],
 }
 
-
-def get_depth_hint(user_id: int) -> str:
-    """
-    Если тема встречается часто в истории — предлагает углубиться.
-    Возвращает инструкцию для промпта или пустую строку.
-    """
-    try:
-
-        history = load_history(user_id, limit=20)
-        if len(history) < _TOPIC_THRESHOLD:
-            return ""
-
-        all_text = " ".join(m.content.lower() for m in history
-                            if m.__class__.__name__ == "HumanMessage")
-
-        # Считаем попадания по темам
-        topic_counts: Counter = Counter()
-        for topic, keywords in _TOPIC_PATTERNS.items():
-            hits = sum(all_text.count(kw) for kw in keywords)
-            if hits > 0:
-                topic_counts[topic] = hits
-
-        if not topic_counts:
-            return ""
-
-        top_topic, count = topic_counts.most_common(1)[0]
-        if count < _TOPIC_THRESHOLD:
-            return ""
-
-        topic_labels = {
-            "python":         "Python/async разработку",
-            "rust":           "Rust",
-            "telegram":       "Telegram ботов",
-            "railway":        "Railway деплой",
-            "база_данных":    "базы данных",
-            "ai_ml":          "LLM и AI разработку",
-            "архитектура":    "архитектуру кода",
-            "продуктивность": "продуктивность и планирование",
-        }
-
-        label = topic_labels.get(top_topic, top_topic)
-        return (
-            f"Сократ часто возвращается к теме: {label}. "
-            f"Если уместно — задай более глубокий вопрос или предложи следующий шаг."
-        )
-    except Exception:
-        return ""
 
 
 # ── 4. Emotional Memory ───────────────────────────────────────────────────────
@@ -684,30 +462,6 @@ async def update_emotional_patterns(user_id: int) -> None:
         logger.exception("personality: ошибка emotional patterns")
 
 
-def get_emotional_hint(user_id: int) -> str:
-    """
-    Если сегодня «стрессовый день» по паттерну — добавляет инструкцию.
-    """
-    try:
-
-        patterns = get_memory_by_category(user_id, _MOOD_CATEGORY)
-        if not patterns:
-            return ""
-
-        stress = patterns.get("стресс_паттерн", "")
-        if not stress:
-            return ""
-
-        today = _DAY_NAMES[datetime.utcnow().weekday()]
-        if today in stress:
-            return (
-                f"По наблюдениям, {today} — обычно напряжённый день для Сократа. "
-                f"Будь чуть мягче и внимательнее чем обычно."
-            )
-        return ""
-    except Exception:
-        return ""
-
 
 # ── Сборка всех подсказок для промпта ────────────────────────────────────────
 
@@ -715,42 +469,6 @@ def get_emotional_hint(user_id: int) -> str:
 
 _REPEAT_THRESHOLD = 3
 
-
-def get_observation_hint(user_id: int, message: str) -> str:
-    """
-    Два паттерна:
-    - Реакция на повторение: тема встречается 3+ раз
-    - Наблюдение по времени суток
-    """
-    hints = []
-    msg_lower = message.lower()
-
-    # Паттерн повторения — из interaction_memory
-    try:
-        for topic, _, freq in get_top_interactions(user_id, limit=5):
-            if freq >= _REPEAT_THRESHOLD:
-                topic_words = topic.lower().split()
-                if sum(1 for w in topic_words if w in msg_lower) >= 1:
-                    hints.append(
-                        f"Сократ возвращается к теме «{topic}» уже {freq} раз. "
-                        f"Если уместно — спроси что именно его в этом держит."
-                    )
-                    break
-    except Exception:
-        logger.debug("observation: repeat check error", exc_info=True)
-
-    # Наблюдение: поздняя ночь
-    try:
-        now_hour = (datetime.utcnow().hour + 3) % 24
-        if now_hour >= 22 or now_hour < 2:
-            hints.append(
-                "Сократ пишет поздно ночью — если разговор серьёзный, "
-                "можно мягко это отметить."
-            )
-    except Exception:
-        logger.debug("observation: night check error", exc_info=True)
-
-    return "\n".join(hints)
 
 
 # ── Сборка всех подсказок для промпта ────────────────────────────────────────
