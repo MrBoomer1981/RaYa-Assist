@@ -1,34 +1,24 @@
 """
-obsidian_agent.py — агент для работы с Obsidian vault.
+obsidian_agent.py — агент Obsidian vault.
 
-RaYa сама определяет что куда записывать — через LLM классификатор.
-Никаких команд запоминать не нужно. Просто говори естественно:
-
-  "сегодня был отличный день, встретился со старым другом"
-  → дневник
-
-  "прокрастинация — это страх неудачи, а не лень"
-  → zettelkasten
-
-  "нужно купить молоко, позвонить врачу и сдать отчёт"
-  → задачи
-
-  "расскажи мне о стоицизме" / "что я писал о продуктивности"
-  → поиск/чтение
+Правила:
+- Поиск → автоматически в Zettelkasten (если уверена)
+- Похожие zettel → дополняет существующую, не создаёт дубль
+- Дневник → отдельный файл на каждый день, НЕ в графе знаний
+- Планы → Краткосрочные / Долгосрочные (пользователь говорит куда)
+- Задачи → матрица Эйзенхауэра (Q1-Q4)
 """
 import json
 import logging
-import re
 
 from langchain_core.messages import HumanMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
-from app.database import save_task
-from app.utils import strip_json as _strip_json
 from app.integrations.obsidian import (
     QUADRANTS, add_tasks, add_zettel, cleanup_vault, create_note,
-    delete_task_obsidian, format_all_tasks, list_files,
-    mark_task_done_obsidian, read_note, search_vault,
+    create_plan, delete_task_obsidian, format_all_tasks,
+    list_files, list_zettel_titles, mark_task_done_obsidian,
+    read_note, search_vault, update_zettel,
     vault_available, vault_stats, write_diary,
 )
 from app.utils import strip_json
@@ -36,181 +26,199 @@ from app.utils import strip_json
 logger = logging.getLogger(__name__)
 
 _SYSTEM = """\
-Ты RaYa — личный ИИ-ассистент Сократа, отвечающая за его Obsidian vault.
-
-Ты сама решаешь куда что сохранять — Сократу не нужно запоминать команды.
-Просто читай его сообщение и действуй правильно.
-
-Дневник — личные переживания, события дня, настроение, рефлексия.
-Заметка — информация, идеи, планы которые нужно сохранить структурно.
-Zettelkasten — одна чёткая мысль, концепция, факт который можно переиспользовать.
-Задачи — список дел, что нужно сделать.
-
-При записи в дневник — сохраняй голос Сократа, не перефразируй.
-При создании Zettel — одна идея, чётко, с тегами.
-Всегда подтверждай что именно сохранено. Обращайся только "Сократ".\
-"""
-
-# ══════════════════════════════════════════════════════════
-# LLM КЛАССИФИКАТОР
-# ══════════════════════════════════════════════════════════
-
-_CLASSIFY_PROMPT = """\
-Определи что Сократ хочет сделать с Obsidian vault.
-
-Сообщение: «{message}»
-
-Контекст разговора (последние сообщения):
-{history}
-
-Варианты действий:
-- diary     — личная запись, событие дня, переживание, настроение, рефлексия
-- note      — заметка, информация, идея которую нужно структурировать
-- zettel    — одна чёткая концепция/мысль для базы знаний
-- tasks     — список задач, дел, что нужно сделать
-- search    — найти что-то в vault, вспомнить что писал
-- read      — открыть конкретную заметку или дневник
-- list      — список файлов, задач, заметок
-- stats     — статистика vault
-- cleanup   — удалить лишние/ненужные файлы из vault, почистить хранилище
-- none      — это просто разговор, в vault сохранять не нужно
+Ты RaYa — ведёшь Obsidian vault Сократа.
 
 Правила:
-- Если человек рассказывает о своём дне, чувствах, событиях → diary
-- Если человек формулирует идею или концепцию → zettel
-- Если перечисляет что нужно сделать → tasks
-- Если просто разговаривает без намерения сохранить → none
-- Если явно просит найти/показать → search или read
+- Дневник — личные переживания, события дня. Один файл на день. НЕ в базе знаний.
+- Zettelkasten — одна атомарная идея/концепция/факт. С тегами и [[ссылками]].
+  Если похожая карточка уже есть — дополни её, не создавай дубль.
+- Заметки — структурированная информация которую не нужно атомизировать.
+- Планы — краткосрочные (≤2 нед) или долгосрочные. Сократ говорит куда.
+- Задачи — матрица Эйзенхауэра (Q1-Q4).
 
-Ответь ТОЛЬКО JSON (без markdown):
-{{"action":"diary|note|zettel|tasks|search|read|list|stats|none","content":"очищенный текст для сохранения (без служебных фраз вроде запомни/сохрани)","confidence":0.0-1.0,"reason":"одна строка почему"}}"""
+При поиске через интернет — сохраняй найденное в Zettelkasten автоматически.
+Обращайся только "Сократ".\
+"""
 
-_ZETTEL_PROMPT = """\
-Создай атомарную Zettelkasten карточку. Одна идея — максимально чётко.
+# ── Классификатор ─────────────────────────────────────────────────────────────
+
+_CLASSIFY_PROMPT = """\
+Определи действие для Obsidian vault.
+
+Сообщение: «{message}»
+История: {history}
+
+Действия:
+- diary    — личная запись, день, настроение, события
+- zettel   — идея, концепция, факт для базы знаний
+- note     — структурированная заметка
+- plan     — план (краткосрочный ≤2 нед / долгосрочный)
+- tasks    — список дел
+- search   — найти в vault
+- read     — открыть конкретный файл
+- list     — перечислить файлы
+- stats    — статистика
+- cleanup  — почистить лишние файлы
+- none     — просто разговор, ничего не сохранять
+
+JSON (только JSON):
+{{"action":"...","content":"очищенный текст","confidence":0.0-1.0,"plan_horizon":"short|long|unknown","reason":"..."}}"""
+
+# ── Zettel — определение нового vs дополнение ────────────────────────────────
+
+_ZETTEL_DEDUP_PROMPT = """\
+Есть новая идея: «{new_idea}»
+
+Существующие карточки в базе знаний:
+{existing}
+
+Это новая самостоятельная идея или дополнение к одной из существующих?
+
+JSON (только JSON):
+{{"decision":"new|update","existing_id":"ID карточки или пусто","reason":"одна строка"}}"""
+
+_ZETTEL_CREATE_PROMPT = """\
+Создай атомарную Zettelkasten карточку. Одна идея — чётко и ёмко.
 
 Текст: {text}
 
 JSON (только JSON):
 {{"title":"название 5-8 слов","content":"суть в 2-4 предложениях","tags":["тег1","тег2","тег3"],"links":[]}}"""
 
-_NOTE_PROMPT = """\
-Создай структурированную заметку в markdown.
-
-Текст: {text}
-
-JSON (только JSON):
-{{"title":"название","content":"содержимое в markdown","tags":["тег1","тег2"]}}"""
-
 _TASKS_PROMPT = """\
-Извлеки задачи и определи квадрант матрицы Эйзенхауэра для каждой.
+Извлеки задачи и определи квадрант Эйзенхауэра.
 
 Текст: {text}
 
-Квадранты:
-- q1: срочно И важно (дедлайн сегодня/завтра, критично для работы/здоровья)
-- q2: важно, НЕ срочно (цели, развитие, планирование — нет горящего дедлайна)
-- q3: срочно, НЕ важно (чужие просьбы, встречи без ценности, рутина)
-- q4: НЕ срочно и НЕ важно (соцсети, мелочи, развлечения)
-
-Если задачи разных квадрантов — разбей по группам.
-Если квадрант не ясен — ставь q2.
+q1: срочно+важно | q2: важно,не срочно | q3: срочно,не важно | q4: остальное
 
 JSON (только JSON):
-{{
-  "groups": [
-    {{"quadrant": "q1", "tasks": ["задача 1"]}},
-    {{"quadrant": "q2", "tasks": ["задача 2", "задача 3"]}}
-  ]
-}}"""
+{{"groups":[{{"quadrant":"q1","tasks":["..."]}}]}}"""
+
+_PLAN_PROMPT = """\
+Создай структурированный план в markdown.
+
+Тема: {text}
+Горизонт: {horizon}
+
+JSON (только JSON):
+{{"title":"название плана","content":"план в markdown со шагами и дедлайнами"}}"""
 
 
 class ObsidianAgent(BaseAgent):
     agent_name = "obsidian"
-    timeout    = 45
+    timeout    = 50
 
     def _system_prompt(self) -> str:
         return _SYSTEM
 
+    # ── Классификация ──────────────────────────────────────────────────────────
+
     async def _classify(self, ctx: AgentContext) -> dict:
-        """LLM определяет action + очищенный content одним вызовом."""
-        # Берём последние 3 сообщения как контекст
         history_lines = []
         for msg in (ctx.history or [])[-6:]:
             role = "Сократ" if msg.__class__.__name__ == "HumanMessage" else "RaYa"
-            history_lines.append(f"{role}: {msg.content[:100]}")
-        history_str = "\n".join(history_lines) if history_lines else "нет"
+            history_lines.append(f"{role}: {msg.content[:80]}")
 
         prompt = _CLASSIFY_PROMPT.format(
             message=ctx.message[:800],
-            history=history_str,
+            history="\n".join(history_lines) or "нет",
         )
         resp = await self._llm.ainvoke([HumanMessage(content=prompt)])
         raw  = strip_json(str(resp.content))
-
         try:
             data = json.loads(raw)
-            logger.info(
-                "📓 Obsidian classify: action='%s' conf=%.2f reason='%s'",
-                data.get("action"), data.get("confidence", 0), data.get("reason", "")[:60],
-            )
+            logger.info("📓 classify: action='%s' conf=%.2f — %s",
+                        data.get("action"), data.get("confidence", 0),
+                        data.get("reason", "")[:60])
             return data
         except Exception:
-            logger.warning("Obsidian: не смог распарсить classify JSON: %s", raw[:100])
+            logger.warning("classify parse fail: %s", raw[:80])
             return {"action": "none", "content": ctx.message, "confidence": 0.0}
+
+    # ── Главный execute ────────────────────────────────────────────────────────
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
         if not vault_available():
-            return AgentResult(
-                success=False, agent_name=self.agent_name,
-                content=(
-                    "Сократ, Obsidian vault недоступен. "
-                    "Нужно задать OBSIDIAN_VAULT_PATH в Railway Variables."
-                ),
-            )
+            return AgentResult(success=False, agent_name=self.agent_name,
+                content="Сократ, Obsidian vault недоступен. Проверь OBSIDIAN_VAULT_PATH.")
 
         classified = await self._classify(ctx)
         action     = classified.get("action", "none")
         content    = classified.get("content", ctx.message).strip()
         confidence = classified.get("confidence", 0.0)
 
-        # Если уверенность низкая — переспрашиваем только если совсем непонятно
         if action == "none" or confidence < 0.4:
             return await self._handle_none(ctx)
 
         try:
-            if action == "diary":   return await self._diary(content, ctx)
-            if action == "zettel":  return await self._zettel(content, ctx)
-            if action == "note":    return await self._note(content, ctx)
+            if action == "diary":   return await self._diary(content)
+            if action == "zettel":  return await self._zettel(content)
+            if action == "note":    return await self._note(content)
+            if action == "plan":
+                horizon = classified.get("plan_horizon", "unknown")
+                return await self._plan(content, horizon, ctx)
             if action == "tasks":   return await self._tasks(content, ctx)
-            if action == "search":  return await self._search(content, ctx)
-            if action == "read":    return await self._read(content, ctx)
+            if action == "search":  return await self._search(content)
+            if action == "read":    return await self._read(content)
             if action == "list":    return await self._list(ctx)
-            if action == "stats":   return await self._stats(ctx)
-            if action == "cleanup": return await self._cleanup(ctx)
+            if action == "stats":   return await self._stats()
+            if action == "cleanup": return await self._cleanup()
             return await self._handle_none(ctx)
         except Exception as e:
-            logger.exception("ObsidianAgent: ошибка action=%s", action)
-            return AgentResult(
-                success=False, agent_name=self.agent_name,
-                content=f"Сократ, ошибка при работе с vault: {e}",
-            )
+            logger.exception("ObsidianAgent error action=%s", action)
+            return AgentResult(success=False, agent_name=self.agent_name,
+                content=f"Сократ, ошибка vault: {e}")
 
-    # ── Diary ──────────────────────────────────────────────────────────────────
+    # ── Дневник ────────────────────────────────────────────────────────────────
 
-    async def _diary(self, content: str, ctx: AgentContext) -> AgentResult:
+    async def _diary(self, content: str) -> AgentResult:
         path = write_diary(content)
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content=f"Записала в дневник. 📔\n`{path}`",
-            metadata={"action": "diary", "path": path},
-        )
+            metadata={"action": "diary", "path": path})
 
-    # ── Zettelkasten ───────────────────────────────────────────────────────────
+    # ── Zettelkasten — умный dedup ─────────────────────────────────────────────
 
-    async def _zettel(self, content: str, ctx: AgentContext) -> AgentResult:
-        prompt = _ZETTEL_PROMPT.format(text=content[:1500])
-        resp   = await self._llm.ainvoke([HumanMessage(content=prompt)])
-        raw    = strip_json(str(resp.content))
+    async def _zettel(self, content: str) -> AgentResult:
+        # Шаг 1: проверяем есть ли похожая карточка
+        existing = list_zettel_titles()
+        decision = "new"
+        existing_id = ""
+
+        if existing:
+            # Берём последние 20 для контекста
+            existing_str = "\n".join(
+                f"- {e['id']}: {e['title']} [{', '.join(e['tags'][:3])}]"
+                for e in existing[-20:]
+            )
+            dedup_prompt = _ZETTEL_DEDUP_PROMPT.format(
+                new_idea=content[:500],
+                existing=existing_str,
+            )
+            resp = await self._llm.ainvoke([HumanMessage(content=dedup_prompt)])
+            raw  = strip_json(str(resp.content))
+            try:
+                dedup = json.loads(raw)
+                decision    = dedup.get("decision", "new")
+                existing_id = dedup.get("existing_id", "").strip()
+                logger.info("🧠 Zettel dedup: %s (id=%s)", decision, existing_id)
+            except Exception:
+                pass
+
+        # Шаг 2: создаём или дополняем
+        if decision == "update" and existing_id:
+            path = update_zettel(existing_id, content)
+            if path:
+                return AgentResult(success=True, agent_name=self.agent_name,
+                    needs_critic=False,
+                    content=f"Дополнила существующую карточку. 🔄\n`{path}`",
+                    metadata={"action": "zettel_update", "path": path})
+
+        # Новая карточка
+        create_prompt = _ZETTEL_CREATE_PROMPT.format(text=content[:1500])
+        resp  = await self._llm.ainvoke([HumanMessage(content=create_prompt)])
+        raw   = strip_json(str(resp.content))
         try:
             data  = json.loads(raw)
             title = data.get("title", content[:60])
@@ -222,18 +230,18 @@ class ObsidianAgent(BaseAgent):
 
         path     = add_zettel(title, body, tags, links)
         tags_str = " ".join(f"#{t}" for t in tags)
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content=f"Добавила в базу знаний. 🧠\n**{title}**\n`{path}`\n_{tags_str}_",
-            metadata={"action": "zettel", "path": path, "tags": tags},
-        )
+            metadata={"action": "zettel", "path": path, "tags": tags})
 
-    # ── Note ───────────────────────────────────────────────────────────────────
+    # ── Заметка ────────────────────────────────────────────────────────────────
 
-    async def _note(self, content: str, ctx: AgentContext) -> AgentResult:
-        prompt = _NOTE_PROMPT.format(text=content[:2000])
-        resp   = await self._llm.ainvoke([HumanMessage(content=prompt)])
-        raw    = strip_json(str(resp.content))
+    async def _note(self, content: str) -> AgentResult:
+        resp  = await self._llm.ainvoke([HumanMessage(content=
+            f"Создай структурированную заметку в markdown.\n\nТекст: {content[:2000]}\n\n"
+            f'JSON: {{"title":"название","content":"markdown","tags":["тег1","тег2"]}}'
+        )])
+        raw = strip_json(str(resp.content))
         try:
             data  = json.loads(raw)
             title = data.get("title", content[:50])
@@ -241,112 +249,112 @@ class ObsidianAgent(BaseAgent):
             tags  = data.get("tags", [])
         except Exception:
             title, body, tags = content[:50], content, []
-
         path = create_note(title, body, tags)
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content=f"Заметка создана. 📝\n**{title}**\n`{path}`",
-            metadata={"action": "note", "path": path},
-        )
+            metadata={"action": "note", "path": path})
 
-    # ── Tasks ──────────────────────────────────────────────────────────────────
+    # ── Планы ──────────────────────────────────────────────────────────────────
 
-    async def _tasks(self, content: str, ctx: AgentContext) -> AgentResult:
-        prompt = _TASKS_PROMPT.format(text=content[:1000])
+    async def _plan(self, content: str, horizon: str, ctx: AgentContext) -> AgentResult:
+        # Если горизонт не определён — спрашиваем
+        if horizon == "unknown":
+            return AgentResult(success=True, agent_name=self.agent_name,
+                content="Сократ, куда сохранить план — в краткосрочные (≤2 недели) или долгосрочные?")
+
+        prompt = _PLAN_PROMPT.format(text=content[:2000], horizon=horizon)
         resp   = await self._llm.ainvoke([HumanMessage(content=prompt)])
         raw    = strip_json(str(resp.content))
+        try:
+            data  = json.loads(raw)
+            title = data.get("title", content[:50])
+            body  = data.get("content", content)
+        except Exception:
+            title, body = content[:50], content
 
+        path       = create_plan(title, body, horizon)
+        folder_rus = "Краткосрочные" if horizon == "short" else "Долгосрочные"
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
+            content=f"План сохранён в {folder_rus}. 📅\n**{title}**\n`{path}`",
+            metadata={"action": "plan", "path": path, "horizon": horizon})
+
+    # ── Задачи ─────────────────────────────────────────────────────────────────
+
+    async def _tasks(self, content: str, ctx: AgentContext) -> AgentResult:
+        resp   = await self._llm.ainvoke([HumanMessage(content=
+            _TASKS_PROMPT.format(text=content[:1000]))])
+        raw    = strip_json(str(resp.content))
         try:
             groups = json.loads(raw).get("groups", [])
         except Exception:
-            # Фоллбек — все задачи в q2
             tasks  = [t.lstrip("- •").strip() for t in content.splitlines() if t.strip()]
             groups = [{"quadrant": "q2", "tasks": tasks}] if tasks else []
 
         if not groups or not any(g.get("tasks") for g in groups):
-            return AgentResult(
-                success=False, agent_name=self.agent_name,
-                content="Сократ, не смогла разобрать задачи. Перечисли их подробнее.",
-            )
+            return AgentResult(success=False, agent_name=self.agent_name,
+                content="Сократ, не смогла разобрать задачи.")
 
-        reply_lines = ["Задачи добавлены в Obsidian по матрице Эйзенхауэра:\n"]
-        paths = []
-
-        _QUADRANT_TO_PRIORITY = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
+        _Q_TO_PRIO  = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
+        reply_lines = ["Задачи добавлены по матрице Эйзенхауэра:\n"]
         for group in groups:
-            quadrant = group.get("quadrant", "q2")
-            tasks    = group.get("tasks", [])
+            q     = group.get("quadrant", "q2")
+            tasks = group.get("tasks", [])
             if not tasks:
                 continue
-            q_info   = QUADRANTS.get(quadrant, QUADRANTS["q2"])
-            path     = add_tasks(tasks, quadrant=quadrant)
-            paths.append(path)
-            # Также сохраняем в БД для напоминаний
-            priority = _QUADRANT_TO_PRIORITY.get(quadrant, 2)
+            q_info = QUADRANTS.get(q, QUADRANTS["q2"])
+            add_tasks(tasks, quadrant=q)
+            prio = _Q_TO_PRIO.get(q, 2)
             for t in tasks:
                 try:
-                    save_task(ctx.user_id, t, priority, "")
+                    save_task(ctx.user_id, t, prio, "")
                 except Exception:
-                    logger.warning("obsidian: не удалось сохранить задачу в БД: %s", t)
+                    pass
             reply_lines.append(f"{q_info['emoji']} **{q_info['title']}**")
             for t in tasks:
                 reply_lines.append(f"  • {t}")
             reply_lines.append("")
 
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
-            content="\n".join(reply_lines),
-            metadata={"action": "tasks", "paths": paths},
-        )
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
+            content="\n".join(reply_lines))
 
-    # ── Search ─────────────────────────────────────────────────────────────────
+    # ── Поиск ──────────────────────────────────────────────────────────────────
 
-    async def _search(self, content: str, ctx: AgentContext) -> AgentResult:
+    async def _search(self, content: str) -> AgentResult:
         results = search_vault(content)
         if not results:
-            return AgentResult(
-                success=True, agent_name=self.agent_name,
-                content=f"Сократ, по запросу «{content}» ничего не нашла в vault.",
-            )
+            return AgentResult(success=True, agent_name=self.agent_name,
+                content=f"Сократ, по запросу «{content}» ничего не нашла в vault.")
         lines = [f"Нашла {len(results)} совпадений по «{content}»:\n"]
         for r in results[:5]:
             lines.append(f"📄 `{r['path']}`\n_{r['snippet'][:120]}_\n")
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
-            content="\n".join(lines),
-            metadata={"action": "search", "count": len(results)},
-        )
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
+            content="\n".join(lines))
 
-    # ── Read ───────────────────────────────────────────────────────────────────
+    # ── Читать ─────────────────────────────────────────────────────────────────
 
-    async def _read(self, content: str, ctx: AgentContext) -> AgentResult:
+    async def _read(self, content: str) -> AgentResult:
         text = read_note(content)
         if not text:
-            return AgentResult(
-                success=True, agent_name=self.agent_name,
-                content=f"Сократ, заметку «{content}» не нашла.",
-            )
+            return AgentResult(success=True, agent_name=self.agent_name,
+                content=f"Сократ, «{content}» не нашла.")
         preview = text[:2000] + ("\n\n_... (обрезано)_" if len(text) > 2000 else "")
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
-            content=preview,
-        )
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
+            content=preview)
 
-    # ── List ───────────────────────────────────────────────────────────────────
+    # ── Список ─────────────────────────────────────────────────────────────────
 
     async def _list(self, ctx: AgentContext) -> AgentResult:
         m = ctx.message.lower()
-        if "задач" in m:       folder, label = "Задачи", "задачи"
-        elif "zettel" in m:    folder, label = "Zettelkasten", "Zettelkasten"
-        elif "дневник" in m:   folder, label = "Дневник", "дневник"
-        else:                  folder, label = "Заметки", "заметки"
-
+        if "задач" in m:        folder, label = "Задачи",       "задачи"
+        elif "zettel" in m:     folder, label = "Zettelkasten",  "Zettelkasten"
+        elif "дневник" in m:    folder, label = "Дневник",       "дневник"
+        elif "план" in m:       folder, label = "Планы",         "планы"
+        else:                   folder, label = "Заметки",       "заметки"
         files = list_files(folder)
         if not files:
             return AgentResult(success=True, agent_name=self.agent_name,
-                content=f"Сократ, в разделе «{label}» пока пусто.")
-
-        lines = [f"📁 {label} ({len(files)} шт.):\n"]
+                content=f"Сократ, в «{label}» пока пусто.")
+        lines = [f"📁 {label} ({len(files)}):\n"]
         for f in files[:20]:
             lines.append(f"• {f.split('/')[-1].replace('.md','')}")
         if len(files) > 20:
@@ -354,48 +362,36 @@ class ObsidianAgent(BaseAgent):
         return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content="\n".join(lines))
 
-    # ── Stats ──────────────────────────────────────────────────────────────────
+    # ── Статистика ─────────────────────────────────────────────────────────────
 
-    async def _stats(self, ctx: AgentContext) -> AgentResult:
-        stats  = vault_stats()
-        total  = sum(stats.values())
-        icons  = {"Дневник": "📔", "Заметки": "📝", "Zettelkasten": "🧠"}
-        lines  = ["📊 Obsidian vault:\n"]
+    async def _stats(self) -> AgentResult:
+        stats = vault_stats()
+        total = sum(stats.values())
+        icons = {"Дневник":"📔","Заметки":"📝","Zettelkasten":"🧠","Планы":"📅"}
+        lines = ["📊 Obsidian vault:\n"]
         for folder, count in stats.items():
             icon = icons.get(folder, "")
-            lines.append(f"{icon} {folder}: {count} файлов" if icon else f"{folder}: {count} файлов")
-        lines.append(f"\nВсего: {total} заметок")
+            lines.append(f"{icon} {folder}: {count}".strip())
+        lines.append(f"\nВсего: {total}")
         return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content="\n".join(lines))
 
-    # ── None / Help ────────────────────────────────────────────────────────────
+    # ── Очистка ────────────────────────────────────────────────────────────────
 
-    async def _cleanup(self, ctx: AgentContext) -> AgentResult:
-        """Удаляет лишние файлы из vault."""
-        result = cleanup_vault()
-        if not result["ok"]:
-            return AgentResult(
-                success=False, agent_name=self.agent_name,
-                content=f"Сократ, не удалось почистить vault: {result.get('error')}",
-            )
-        deleted = result["deleted"]
+    async def _cleanup(self) -> AgentResult:
+        result  = cleanup_vault()
+        deleted = result.get("deleted", [])
         if not deleted:
-            return AgentResult(
-                success=True, agent_name=self.agent_name, needs_critic=False,
-                content="Сократ, в vault всё чисто — лишних файлов нет. 👍",
-            )
-        deleted_str = "\n".join(f"• {name}" for name in deleted)
-        return AgentResult(
-            success=True, agent_name=self.agent_name, needs_critic=False,
-            content=f"Почистила vault, Сократ. 🗑️ Удалено {len(deleted)} файлов:\n\n{deleted_str}",
-            metadata={"action": "cleanup", "deleted": deleted},
-        )
+            return AgentResult(success=True, agent_name=self.agent_name,
+                content="Сократ, vault чист — лишних файлов нет. 👍")
+        return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
+            content=f"Почистила vault. 🗑️ Удалено {len(deleted)}:\n" +
+                    "\n".join(f"• {n}" for n in deleted))
+
+    # ── Fallback ───────────────────────────────────────────────────────────────
 
     async def _handle_none(self, ctx: AgentContext) -> AgentResult:
-        """Просто отвечаем как обычный ассистент — vault не трогаем."""
         messages = self._build_messages(ctx)
         resp     = await self._llm.ainvoke(messages)
-        return AgentResult(
-            success=True, agent_name=self.agent_name,
-            content=str(resp.content),
-        )
+        return AgentResult(success=True, agent_name=self.agent_name,
+            content=str(resp.content))

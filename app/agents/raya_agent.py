@@ -160,9 +160,32 @@ class RayaAgent(BaseAgent):
             HumanMessage(content=content),
         ]
 
-        # ── 7. Вызов модели ───────────────────────────────────────────────────
-        response = await self._llm.ainvoke(messages)
-        raw      = str(response.content)
+        # ── 7. Agentic loop с vault-инструментом ─────────────────────────────
+        llm_with_tools = self._llm.bind_tools([VAULT_TOOL])
+        response    = await llm_with_tools.ainvoke(messages)
+        raw         = str(response.content) if response.content else ""
+        tool_calls  = getattr(response, "tool_calls", []) or []
+        vault_results = []
+
+        # Обрабатываем tool_calls (параллельно если их несколько)
+        if tool_calls:
+            from langchain_core.messages import ToolMessage as _TM
+            results = await process_tool_calls(tool_calls, ctx.user_id)
+            vault_results = [r["result"] for r in results]
+
+            # Строим ToolMessages для каждого вызова
+            tool_messages = [
+                _TM(content=r["result"], tool_call_id=r["tool_call_id"])
+                for r in results
+            ]
+
+            # Финальный ответ модели с результатами инструментов
+            final_msgs = messages + [response] + tool_messages
+            final      = await self._llm.ainvoke(final_msgs)
+            raw        = str(final.content)
+
+            for r in results:
+                logger.info("🔧 vault: %s", r["result"][:80])
 
         # ── 8. Извлекаем emotion tag и чистим ответ ──────────────────────────
         emotion, raw_clean = extract_emotion_tag(raw)
@@ -181,6 +204,7 @@ class RayaAgent(BaseAgent):
                 "reminder":  reminder,
                 "emotion":   emotion,
                 "task_type": task_type,
+                "vault_ops": vault_results,
             },
         )
 

@@ -355,5 +355,12 @@ def create_app(llm_service) -> FastAPI:
 
         return {"ok": True, "deleted": path}
 
+    @app.get("/api/features")
+    async def features(token: str = Query(default="")):
+        """Статус feature flags."""
+        _check_token(token)
+        from app.feature_flags import status as ff_status
+        return ff_status()
+
     logger.info("🌐 Веб-сервер создан")
     return app

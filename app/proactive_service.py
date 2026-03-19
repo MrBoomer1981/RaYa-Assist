@@ -8,6 +8,11 @@ proactive.py — проактивные сообщения RaYa: дайджес�
 
 import itertools
 import logging
+from app.feature_flags import (
+    FEATURE_MORNING_DIGEST, FEATURE_PROACTIVE_ACTIVITY,
+    FEATURE_PROACTIVE_IDEA_FOLLOWUP, FEATURE_PROACTIVE_SILENCE,
+    FEATURE_REMINDER_WARNING, FEATURE_TASK_DEADLINES,
+)
 from langchain_core.messages import HumanMessage, SystemMessage
 import sqlite3
 from datetime import datetime, timedelta
@@ -298,13 +303,13 @@ async def check_all_triggers(
 
     sent = False
 
-    # 1. Reminder warning — каждый тик
-    if not sent:
+    # 1. Reminder warning
+    if not sent and FEATURE_REMINDER_WARNING:
         sent = await check_reminder_warning(user_id, bot, llm)
 
-    # 2. Task deadlines — раз в час
+    # 2. Task deadlines
     last_task_check = state.get("last_task_check")
-    if not sent and (not last_task_check or
+    if not sent and FEATURE_TASK_DEADLINES and (not last_task_check or
             (datetime.utcnow() - last_task_check).total_seconds() > _1_HOUR):
         sent_task_ids = state.setdefault("sent_task_ids", set())
         if await check_task_deadlines(user_id, bot, llm, sent_task_ids):
@@ -323,17 +328,17 @@ async def check_all_triggers(
             state["last_absence_msg"] = new_ts
             sent = True
 
-    # 4. Idea follow-up — раз в 3 дня (проверяем раз в 12ч)
+    # 4. Idea follow-up
     last_idea_check = state.get("last_idea_check")
-    if not sent and (not last_idea_check or
+    if not sent and FEATURE_PROACTIVE_IDEA_FOLLOWUP and (not last_idea_check or
             (datetime.utcnow() - last_idea_check).total_seconds() > _12_HOURS):
         sent_diary_ids = state.setdefault("sent_diary_ids", set())
         if await check_idea_followup(user_id, bot, llm, sent_diary_ids):
             sent = True
         state["last_idea_check"] = datetime.utcnow()
 
-    # 5. Activity suggestion — раз в 24ч
-    if not sent:
+    # 5. Activity suggestion
+    if not sent and FEATURE_PROACTIVE_ACTIVITY:
         ok, new_ts = await check_activity_suggestion(
             user_id, bot, llm, state.get("last_suggestion")
         )
@@ -487,6 +492,8 @@ class ProactiveService:
 
     async def _check_silence(self, now_utc: datetime) -> None:
         """Проверяет тишину и пишет первой если надо."""
+        if not FEATURE_PROACTIVE_SILENCE:
+            return
         try:
             user_id   = settings.telegram_user_id
             last_msg  = get_last_message_time(user_id)

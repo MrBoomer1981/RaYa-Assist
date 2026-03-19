@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import delete_task, get_active_tasks, mark_task_done, save_task
 from app.integrations.obsidian import (
-    QUADRANTS, add_tasks, delete_task_obsidian,
+    add_tasks, delete_task_obsidian,
     format_all_tasks, get_all_tasks,
     mark_task_done_obsidian, vault_available,
 )

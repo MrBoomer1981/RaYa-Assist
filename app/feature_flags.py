@@ -1,0 +1,53 @@
+"""
+feature_flags.py — управление функциями RaYa.
+
+Позволяет включать/выключать функции без удаления кода.
+Устанавливается через Railway Variables или .env
+
+Переменные (все по умолчанию = "1" если не указано):
+  FEATURE_IMAGE_AGENT=0      — генерация изображений
+  FEATURE_IDEAS_AGENT=0      — генератор идей
+  FEATURE_PROACTIVE_IDEA=0   — idea follow-up триггер
+  FEATURE_PROACTIVE_ACTIVITY=0 — activity suggestion триггер
+  FEATURE_PERSONA_VERBOSE=1  — расширенные поведенческие паттерны
+  FEATURE_EMOTIONAL_SYSTEM=1 — emotional state, mood tracking
+"""
+import os
+
+
+def _flag(name: str, default: bool = True) -> bool:
+    val = os.getenv(name, "1" if default else "0").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+# ── Агенты ────────────────────────────────────────────────────────────────────
+FEATURE_IMAGE_AGENT   = _flag("FEATURE_IMAGE_AGENT",   default=False)
+FEATURE_IDEAS_AGENT   = _flag("FEATURE_IDEAS_AGENT",   default=False)
+
+# ── Проактивные триггеры ──────────────────────────────────────────────────────
+FEATURE_PROACTIVE_IDEA_FOLLOWUP   = _flag("FEATURE_PROACTIVE_IDEA",     default=False)
+FEATURE_PROACTIVE_ACTIVITY        = _flag("FEATURE_PROACTIVE_ACTIVITY", default=False)
+FEATURE_PROACTIVE_SILENCE         = _flag("FEATURE_PROACTIVE_SILENCE",  default=True)
+FEATURE_MORNING_DIGEST            = _flag("FEATURE_MORNING_DIGEST",     default=True)
+FEATURE_TASK_DEADLINES            = _flag("FEATURE_TASK_DEADLINES",     default=True)
+FEATURE_REMINDER_WARNING          = _flag("FEATURE_REMINDER_WARNING",   default=True)
+
+# ── Личность ──────────────────────────────────────────────────────────────────
+FEATURE_PERSONA_VERBOSE   = _flag("FEATURE_PERSONA_VERBOSE",   default=True)
+FEATURE_EMOTIONAL_SYSTEM  = _flag("FEATURE_EMOTIONAL_SYSTEM",  default=True)
+
+
+def status() -> dict:
+    """Возвращает текущий статус всех флагов."""
+    return {
+        "image_agent":          FEATURE_IMAGE_AGENT,
+        "ideas_agent":          FEATURE_IDEAS_AGENT,
+        "proactive_idea":       FEATURE_PROACTIVE_IDEA_FOLLOWUP,
+        "proactive_activity":   FEATURE_PROACTIVE_ACTIVITY,
+        "proactive_silence":    FEATURE_PROACTIVE_SILENCE,
+        "morning_digest":       FEATURE_MORNING_DIGEST,
+        "task_deadlines":       FEATURE_TASK_DEADLINES,
+        "reminder_warning":     FEATURE_REMINDER_WARNING,
+        "persona_verbose":      FEATURE_PERSONA_VERBOSE,
+        "emotional_system":     FEATURE_EMOTIONAL_SYSTEM,
+    }

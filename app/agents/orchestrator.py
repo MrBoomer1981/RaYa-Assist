@@ -32,18 +32,9 @@ def _create_agent(name: str):
             case "image":
                 from app.agents.image_agent import ImageAgent
                 return ImageAgent()
-            case "diary":
-                from app.agents.diary_agent import DiaryAgent
-                return DiaryAgent()
             case "research":
                 from app.agents.research_agent import ResearchAgent
                 return ResearchAgent()
-            case "science":
-                from app.agents.science_agent import ScienceAgent
-                return ScienceAgent()
-            case "todo":
-                from app.agents.todo_agent import TodoAgent
-                return TodoAgent()
             case "morning":
                 from app.agents.morning_agent import MorningAgent
                 return MorningAgent()
@@ -53,15 +44,9 @@ def _create_agent(name: str):
             case "ideas":
                 from app.agents.ideas_agent import IdeasAgent
                 return IdeasAgent()
-            case "planning":
-                from app.agents.planning_agent import PlanningAgent
-                return PlanningAgent()
             case "explain":
                 from app.agents.explain_agent import ExplainAgent
                 return ExplainAgent()
-            case "obsidian":
-                from app.agents.obsidian_agent import ObsidianAgent
-                return ObsidianAgent()
             case "critic":
                 return CriticAgent()
             case _:
