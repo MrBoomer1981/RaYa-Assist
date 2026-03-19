@@ -376,27 +376,31 @@ def _ensure_quadrant_file(q_key: str) -> None:
 
 def add_tasks(tasks: list, quadrant: str = "q2") -> str:
     """Добавляет задачи с защитой от дублей."""
-    if quadrant not in QUADRANTS:
-        quadrant = "q2"
-    _ensure_quadrant_file(quadrant)
-    q        = QUADRANTS[quadrant]
-    rel_path = Path(q["file"])
-    existing = _read(rel_path) or f"# {q['title']}\n\n"
+    try:
+        if quadrant not in QUADRANTS:
+            quadrant = "q2"
+        _ensure_quadrant_file(quadrant)
+        q        = QUADRANTS[quadrant]
+        rel_path = Path(q["file"])
+        existing = _read(rel_path) or f"# {q['title']}\n\n"
 
-    existing_texts = set()
-    for line in existing.splitlines():
-        m = re.match(r"^- \[[ xX]\] (.+)$", line)
-        if m:
-            existing_texts.add(m.group(1).strip().lower())
+        existing_texts = set()
+        for line in existing.splitlines():
+            m = re.match(r"^- \[[ xX]\] (.+)$", line)
+            if m:
+                existing_texts.add(m.group(1).strip().lower())
 
-    new_tasks = [t for t in tasks if t.strip().lower() not in existing_texts]
-    if not new_tasks:
+        new_tasks = [t for t in tasks if t.strip().lower() not in existing_texts]
+        if not new_tasks:
+            return q["file"]
+
+        new_lines = "\n".join(f"- [ ] {t}" for t in new_tasks)
+        _write(rel_path, existing.rstrip() + "\n" + new_lines + "\n")
+        logger.info("✅ [%s] +%d задач", quadrant.upper(), len(new_tasks))
         return q["file"]
-
-    new_lines = "\n".join(f"- [ ] {t}" for t in new_tasks)
-    _write(rel_path, existing.rstrip() + "\n" + new_lines + "\n")
-    logger.info("✅ [%s] +%d задач", quadrant.upper(), len(new_tasks))
-    return q["file"]
+    except Exception as e:
+        logger.exception("add_tasks: ошибка quadrant=%s", quadrant)
+        return ""
 
 
 def get_all_tasks() -> dict:

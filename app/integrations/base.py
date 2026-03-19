@@ -11,8 +11,6 @@ base.py — базовый интерфейс для всех интеграци
   - handle_event(event) — реакция на входящее событие (webhook, MQTT и т.д.)
 
 Пример подключения в core.py:
-    from app.integrations.weather import WeatherIntegration
-    self._integrations = [WeatherIntegration()]
     for intg in self._integrations:
         await intg.setup()
 """
