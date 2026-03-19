@@ -362,5 +362,49 @@ def create_app(llm_service) -> FastAPI:
         from app.feature_flags import status as ff_status
         return ff_status()
 
+
+    # ── Задачи (Obsidian) ─────────────────────────────────────────────────────
+
+    @app.get("/api/tasks")
+    async def get_tasks(token: str = Query(default="")):
+        """Все задачи из Obsidian по квадрантам."""
+        _check_token(token)
+        try:
+            from app.integrations.obsidian import get_all_tasks, vault_available
+            if not vault_available():
+                return {"q1":{"tasks":[]},"q2":{"tasks":[]},"q3":{"tasks":[]},"q4":{"tasks":[]}}
+            return get_all_tasks()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/tasks/done")
+    async def task_done(body: dict, token: str = Query(default="")):
+        """Отметить задачу выполненной."""
+        _check_token(token)
+        text = body.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import mark_task_done_obsidian, vault_available
+        if vault_available():
+            ok = mark_task_done_obsidian(text)
+            return {"ok": ok}
+        return {"ok": False}
+
+    @app.post("/api/tasks/clear_done")
+    async def clear_done(token: str = Query(default="")):
+        """Удалить все выполненные задачи."""
+        _check_token(token)
+        from app.integrations.obsidian import clear_done_tasks, vault_available
+        count = clear_done_tasks() if vault_available() else 0
+        return {"count": count}
+
+    @app.get("/api/tasks/week")
+    async def week_plan(token: str = Query(default="")):
+        """План задач на неделю."""
+        _check_token(token)
+        from app.integrations.obsidian import get_week_plan, vault_available
+        plan = get_week_plan() if vault_available() else "vault недоступен"
+        return {"plan": plan}
+
     logger.info("🌐 Веб-сервер создан")
     return app
