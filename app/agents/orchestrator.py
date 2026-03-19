@@ -44,6 +44,12 @@ def _create_agent(name: str):
             case "ideas":
                 from app.agents.ideas_agent import IdeasAgent
                 return IdeasAgent()
+            case "todo":
+                from app.agents.todo_agent import TodoAgent
+                return TodoAgent()
+            case "obsidian":
+                from app.agents.obsidian_agent import ObsidianAgent
+                return ObsidianAgent()
             case "explain":
                 from app.agents.explain_agent import ExplainAgent
                 return ExplainAgent()

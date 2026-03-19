@@ -1,17 +1,9 @@
 """
-vault_tool.py — инструмент Obsidian vault для Anthropic tool use.
-
-Оптимизации:
-- Поддержка нескольких tool_calls за один ответ (параллельно)
-- Правильный agentic loop: tool_calls → ToolMessage → финальный ответ
-- Quadrant определяется моделью через описание, не хардкодом
-- Lazy import obsidian — не грузим если vault недоступен
+vault_tool.py — универсальный инструмент Obsidian vault для tool use.
 """
 import logging
 
 logger = logging.getLogger(__name__)
-
-# ── Schema ────────────────────────────────────────────────────────────────────
 
 VAULT_TOOL = {
     "name": "vault",
@@ -21,7 +13,9 @@ VAULT_TOOL = {
         "• записать в дневник (личное, события дня)\n"
         "• добавить идею/концепцию в базу знаний (zettel)\n"
         "• создать заметку или план\n"
-        "• найти что-то в vault\n"
+        "• найти что-то в vault / прочитать заметку\n"
+        "• показать список задач или файлов\n"
+        "• очистить выполненные задачи\n"
         "НЕ вызывай для обычного разговора, вопросов, объяснений."
     ),
     "input_schema": {
@@ -30,35 +24,42 @@ VAULT_TOOL = {
             "op": {
                 "type": "string",
                 "enum": [
-                    "add_task",    # добавить задачу
-                    "done_task",   # отметить выполненной (по тексту)
-                    "delete_task", # удалить задачу (по тексту)
-                    "list_tasks",  # показать все задачи
-                    "write_diary", # запись в дневник
-                    "add_zettel",  # в базу знаний (атомарная идея)
-                    "create_note", # структурированная заметка
-                    "create_plan", # план
-                    "search",      # поиск по vault
-                    "cleanup",     # удалить лишние файлы
+                    "add_task",       # добавить задачу
+                    "done_task",      # отметить выполненной (fuzzy match)
+                    "delete_task",    # удалить задачу (fuzzy match)
+                    "list_tasks",     # показать все активные задачи
+                    "clear_done",     # удалить все выполненные задачи
+                    "write_diary",    # запись в дневник
+                    "add_zettel",     # в базу знаний (атомарная идея)
+                    "create_note",    # структурированная заметка
+                    "create_plan",    # план
+                    "read_note",      # прочитать заметку по названию/запросу
+                    "search",         # поиск по vault (fulltext + по тегам #тег)
+                    "list_files",     # список файлов в папке
+                    "stats",          # статистика vault
+                    "cleanup",        # удалить лишние файлы
+                    "move_task",      # переместить задачу в другой квадрант
+                    "overdue_tasks",  # показать задачи с дедлайном сегодня/просроченные
                 ],
                 "description": "Операция"
             },
             "text": {
                 "type": "string",
                 "description": (
-                    "Текст для операции. "
-                    "Для done_task/delete_task — точный текст задачи из vault. "
-                    "Для list_tasks/cleanup — оставь пустым."
+                    "Текст для операции.\n"
+                    "done_task/delete_task — можно неточный текст задачи (fuzzy match).\n"
+                    "search — запрос или #тег для поиска по тегу.\n"
+                    "list_tasks/clear_done/stats/cleanup — оставь пустым."
                 )
             },
             "quadrant": {
                 "type": "string",
                 "enum": ["q1", "q2", "q3", "q4"],
                 "description": (
-                    "Только для add_task. Матрица Эйзенхауэра:\n"
+                    "Только для add_task:\n"
                     "q1 — срочно И важно (дедлайн сегодня/завтра)\n"
-                    "q2 — важно, не срочно (цели, развитие) ← дефолт\n"
-                    "q3 — срочно, не важно (мелкие просьбы)\n"
+                    "q2 — важно, не срочно ← дефолт\n"
+                    "q3 — срочно, не важно\n"
                     "q4 — ни то ни другое"
                 )
             },
@@ -67,102 +68,142 @@ VAULT_TOOL = {
                 "enum": ["short", "long"],
                 "description": "Для create_plan: short (≤2 нед) или long"
             },
+            "folder": {
+                "type": "string",
+                "description": "Для list_files: папка (Заметки / Zettelkasten / Дневник / Планы)"
+            },
+            "deadline": {
+                "type": "string",
+                "description": "Дедлайн для add_task, формат: ДД.ММ или ДД.ММ.ГГГГ. Пример: 20.03"
+            },
+            "target_quadrant": {
+                "type": "string",
+                "enum": ["q1", "q2", "q3", "q4"],
+                "description": "Для move_task: целевой квадрант"
+            },
         },
         "required": ["op"]
     }
 }
 
 
-# ── Executor ──────────────────────────────────────────────────────────────────
-
 async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
-                       plan_horizon: str = "short", user_id: int = 0) -> str:
-    """Выполняет одну операцию vault. Возвращает строку-результат для модели."""
+                       plan_horizon: str = "short", folder: str = "Заметки",
+                       deadline: str = "", target_quadrant: str = "q2",
+                       user_id: int = 0) -> str:
     try:
         from app.integrations.obsidian import (
-            QUADRANTS, add_tasks, add_zettel, cleanup_vault, create_note,
-            create_plan, delete_task_obsidian, format_all_tasks,
-            list_zettel_titles, mark_task_done_obsidian, search_vault,
-            update_zettel, vault_available, write_diary,
+            QUADRANTS, add_task_with_deadline, add_tasks, add_zettel,
+            cleanup_vault, clear_done_tasks, create_note, create_plan,
+            delete_task_obsidian, format_all_tasks, get_overdue_tasks,
+            list_files, list_zettel_titles, mark_task_done_obsidian,
+            move_task, read_note, search_vault, update_zettel, vault_available,
+            vault_stats, write_diary, zettel_similarity,
         )
         from app.database import delete_task, get_active_tasks, mark_task_done, save_task
 
-        if op != "list_tasks" and op != "cleanup" and not vault_available():
-            return "vault недоступен — OBSIDIAN_VAULT_PATH не задан"
+        no_vault_ops = {"list_tasks", "cleanup", "stats"}
+        if op not in no_vault_ops and not vault_available():
+            return "vault недоступен — проверь OBSIDIAN_VAULT_PATH"
 
+        # ── add_task ──────────────────────────────────────────────────────────
         if op == "add_task":
             if not text:
                 return "ошибка: текст задачи пустой"
             if quadrant not in QUADRANTS:
                 quadrant = "q2"
-            add_tasks([text], quadrant=quadrant)
+            if deadline:
+                task_text = add_task_with_deadline(text, quadrant, deadline)
+            else:
+                add_tasks([text], quadrant=quadrant)
+                task_text = text
             if user_id:
                 _prio = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
-                save_task(user_id, text, _prio.get(quadrant, 2), "")
+                save_task(user_id, task_text, _prio.get(quadrant, 2), "")
             q = QUADRANTS[quadrant]
-            logger.info("vault add_task [%s]: '%s'", quadrant, text[:50])
+            logger.info("vault add_task [%s]: '%s'", quadrant, task_text[:50])
             return f"добавлено в {q['emoji']} {q['title']}"
 
+        # ── done_task ─────────────────────────────────────────────────────────
         elif op == "done_task":
             if not text:
                 return "ошибка: текст задачи пустой"
             found = mark_task_done_obsidian(text)
             if user_id:
                 for t in get_active_tasks(user_id):
-                    if text.lower() in t[1].lower():
+                    if text.lower() in t[1].lower() or t[1].lower() in text.lower():
                         mark_task_done(t[0], user_id)
                         break
             logger.info("vault done_task: '%s' found=%s", text[:50], found)
-            return f"выполнено: «{text}»" if found else f"не нашла задачу: «{text}»"
+            return f"выполнено ✅" if found else f"не нашла задачу «{text}» — проверь список"
 
+        # ── delete_task ───────────────────────────────────────────────────────
         elif op == "delete_task":
             if not text:
                 return "ошибка: текст задачи пустой"
             found = delete_task_obsidian(text)
             if user_id:
                 for t in get_active_tasks(user_id):
-                    if text.lower() in t[1].lower():
+                    if text.lower() in t[1].lower() or t[1].lower() in text.lower():
                         delete_task(t[0], user_id)
                         break
             logger.info("vault delete_task: '%s' found=%s", text[:50], found)
-            return f"удалено: «{text}»" if found else f"не нашла задачу: «{text}»"
+            return f"удалено 🗑️" if found else f"не нашла задачу «{text}»"
 
+        # ── list_tasks ────────────────────────────────────────────────────────
         elif op == "list_tasks":
             return format_all_tasks()
 
+        # ── clear_done ────────────────────────────────────────────────────────
+        elif op == "clear_done":
+            count = clear_done_tasks()
+            # Синхронизируем БД
+            if user_id:
+                from app.integrations.obsidian import sync_tasks_to_db
+                sync_tasks_to_db(user_id)
+            return f"удалено {count} выполненных задач" if count else "выполненных задач нет"
+
+        # ── write_diary ───────────────────────────────────────────────────────
         elif op == "write_diary":
             if not text:
                 return "ошибка: текст записи пустой"
             path = write_diary(text)
             logger.info("vault write_diary: %s", path)
-            return f"записано в дневник: {path}"
+            return f"записано в дневник"
 
+        # ── add_zettel ────────────────────────────────────────────────────────
         elif op == "add_zettel":
             if not text:
                 return "ошибка: текст пустой"
-            # Быстрый dedup по словам без LLM
+            # Быстрый dedup по сходству без LLM
             titles = list_zettel_titles()
-            text_words = set(w for w in text.lower().split() if len(w) > 3)
-            for entry in titles[-30:]:
-                title_words = set(w for w in entry["title"].lower().split() if len(w) > 3)
-                tag_words   = set(w for tag in entry["tags"] for w in tag.lower().split())
-                overlap = len(text_words & (title_words | tag_words))
-                if overlap >= 3:
-                    path = update_zettel(entry["id"], text)
-                    logger.info("vault update_zettel: %s", entry["id"])
-                    return f"дополнила карточку «{entry['title']}»"
-            path = add_zettel(text.split("\n")[0][:60], text)
-            logger.info("vault add_zettel: '%s'", text[:40])
-            return f"добавила в базу знаний: {path}"
+            best_match = None
+            best_score = 0.0
+            for entry in titles:
+                score = zettel_similarity(text, entry)
+                if score > best_score:
+                    best_score = score
+                    best_match = entry
+            if best_match and best_score >= 0.45:
+                path = update_zettel(best_match["id"], text)
+                logger.info("vault update_zettel [score=%.2f]: %s", best_score, best_match["id"])
+                return f"дополнила карточку «{best_match['title']}»"
+            # Новая карточка
+            title = text.split("\n")[0][:60].strip()
+            path  = add_zettel(title, text)
+            logger.info("vault add_zettel: '%s'", title[:40])
+            return f"добавила в базу знаний: «{title}»"
 
+        # ── create_note ───────────────────────────────────────────────────────
         elif op == "create_note":
             if not text:
                 return "ошибка: текст пустой"
             title = text.split("\n")[0][:50]
             path  = create_note(title, text)
             logger.info("vault create_note: %s", path)
-            return f"заметка создана: {path}"
+            return f"заметка создана: «{title}»"
 
+        # ── create_plan ───────────────────────────────────────────────────────
         elif op == "create_plan":
             if not text:
                 return "ошибка: текст пустой"
@@ -170,10 +211,22 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
                 plan_horizon = "short"
             title  = text.split("\n")[0][:50]
             path   = create_plan(title, text, plan_horizon)
-            folder = "Краткосрочные" if plan_horizon == "short" else "Долгосрочные"
+            folder_rus = "Краткосрочные" if plan_horizon == "short" else "Долгосрочные"
             logger.info("vault create_plan [%s]: %s", plan_horizon, path)
-            return f"план в {folder}: {path}"
+            return f"план в {folder_rus}: «{title}»"
 
+        # ── read_note ─────────────────────────────────────────────────────────
+        elif op == "read_note":
+            if not text:
+                return "ошибка: запрос пустой"
+            content = read_note(text)
+            if not content:
+                return f"заметка «{text}» не найдена"
+            # Убираем frontmatter для читаемости
+            content = re.sub(r"^---.*?---\n\n?", "", content, flags=re.DOTALL)
+            return content[:2000] + ("\n\n...(обрезано)" if len(content) > 2000 else "")
+
+        # ── search ────────────────────────────────────────────────────────────
         elif op == "search":
             if not text:
                 return "ошибка: запрос пустой"
@@ -182,15 +235,58 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
                 return f"ничего не найдено по «{text}»"
             lines = [f"найдено {len(results)} по «{text}»:"]
             for r in results[:5]:
-                lines.append(f"• {r['path']}: {r['snippet'][:100]}")
+                lines.append(f"• {r['title']}: {r['snippet'][:100]}")
             return "\n".join(lines)
 
+        # ── list_files ────────────────────────────────────────────────────────
+        elif op == "list_files":
+            folder = folder or "Заметки"
+            files  = list_files(folder)
+            if not files:
+                return f"в «{folder}» пусто"
+            names = [f.split("/")[-1].replace(".md", "") for f in files[:20]]
+            result = f"📁 {folder} ({len(files)}):\n" + "\n".join(f"• {n}" for n in names)
+            if len(files) > 20:
+                result += f"\n...и ещё {len(files)-20}"
+            return result
+
+        # ── stats ─────────────────────────────────────────────────────────────
+        elif op == "stats":
+            stats = vault_stats()
+            total = sum(stats.values())
+            icons = {"Дневник": "📔", "Заметки": "📝", "Zettelkasten": "🧠", "Планы": "📅"}
+            lines = ["📊 Vault:"]
+            for k, v in stats.items():
+                icon = icons.get(k, "")
+                lines.append(f"{icon} {k}: {v}".strip())
+            lines.append(f"Всего: {total}")
+            return "\n".join(lines)
+
+        # ── move_task ─────────────────────────────────────────────────────────
+        elif op == "move_task":
+            if not text:
+                return "ошибка: текст задачи пустой"
+            tq = target_quadrant if target_quadrant in QUADRANTS else "q2"
+            ok = move_task(text, tq)
+            q  = QUADRANTS[tq]
+            return f"перемещено в {q['emoji']} {q['title']}" if ok else f"задача не найдена: «{text}»"
+
+        # ── overdue_tasks ─────────────────────────────────────────────────────
+        elif op == "overdue_tasks":
+            tasks = get_overdue_tasks(days_threshold=1)  # сегодня + завтра
+            if not tasks:
+                return "нет задач с дедлайном на сегодня/завтра"
+            lines = ["⏰ Задачи с дедлайном:"]
+            for t in tasks:
+                flag = " 🔴 ПРОСРОЧЕНО" if t["overdue"] else ""
+                lines.append(f"  • {t['text']}{flag}")
+            return "\n".join(lines)
+
+        # ── cleanup ───────────────────────────────────────────────────────────
         elif op == "cleanup":
             result  = cleanup_vault()
             deleted = result.get("deleted", [])
-            if not deleted:
-                return "vault чист"
-            return f"удалено {len(deleted)}: {', '.join(deleted)}"
+            return f"удалено {len(deleted)}: {', '.join(deleted)}" if deleted else "vault чист"
 
         else:
             return f"неизвестная операция: {op}"
@@ -201,12 +297,8 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
 
 
 async def process_tool_calls(tool_calls: list, user_id: int) -> list[dict]:
-    """
-    Параллельно обрабатывает все tool_calls.
-    Возвращает список {tool_call_id, result} для сборки ToolMessages.
-    """
+    """Параллельно обрабатывает все tool_calls."""
     import asyncio
-    results = []
 
     async def _one(tc: dict) -> dict:
         if tc.get("name") != "vault":
@@ -217,10 +309,11 @@ async def process_tool_calls(tool_calls: list, user_id: int) -> list[dict]:
             text=args.get("text", ""),
             quadrant=args.get("quadrant", "q2"),
             plan_horizon=args.get("plan_horizon", "short"),
+            folder=args.get("folder", "Заметки"),
+            deadline=args.get("deadline", ""),
+            target_quadrant=args.get("target_quadrant", "q2"),
             user_id=user_id,
         )
         return {"tool_call_id": tc.get("id", "call_0"), "result": result}
 
-    # Параллельный запуск всех операций
-    results = await asyncio.gather(*[_one(tc) for tc in tool_calls])
-    return list(results)
+    return list(await asyncio.gather(*[_one(tc) for tc in tool_calls]))

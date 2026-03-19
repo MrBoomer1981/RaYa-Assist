@@ -18,8 +18,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import delete_task, get_active_tasks, mark_task_done, save_task
 from app.integrations.obsidian import (
-    add_tasks, delete_task_obsidian,
-    format_all_tasks, get_all_tasks,
+    add_task_with_deadline, add_tasks, delete_task_obsidian,
+    format_all_tasks, get_all_tasks, get_overdue_tasks,
     mark_task_done_obsidian, vault_available,
 )
 from app.utils import strip_json
@@ -27,30 +27,26 @@ from app.utils import strip_json
 logger = logging.getLogger(__name__)
 
 _SYSTEM = """\
-Ты RaYa — личный ассистент Сократа. Управляешь задачами через Obsidian.
+Ты RaYa — личный менеджер Сократа. Управляешь задачами через Obsidian.
 
-Задачи хранятся в 4 файлах по матрице Эйзенхауэра:
-🔴 Q1 — Срочно и важно (дедлайн сегодня/завтра, критично)
-🟡 Q2 — Важно, не срочно (цели, развитие, планирование)
-🟠 Q3 — Срочно, не важно (мелкие просьбы, рутина)
-⚪ Q4 — Не срочно, не важно (когда-нибудь)
+Матрица Эйзенхауэра — 4 файла:
+🔴 Q1 — Срочно и важно (дедлайн сегодня/завтра)
+🟡 Q2 — Важно, не срочно (цели, развитие) ← дефолт
+🟠 Q3 — Срочно, не важно (мелкие просьбы)
+⚪ Q4 — Не срочно, не важно
 
-Что умеешь:
-- Добавлять задачи → определяй квадрант автоматически
-- Показывать список → собирай все задачи в одно сообщение
-- Отмечать выполненными → по тексту задачи
-- Удалять → по тексту задачи
+Операции:
+- Добавить → определяй квадрант по контексту
+- Добавить с дедлайном → <tasks deadline="ДД.ММ"> ...
+- Показать все → format_all_tasks
+- Выполнить → <done>текст</done>
+- Удалить → <delete>текст</delete>
+- Переместить → <move quadrant="q1">текст задачи</move>
+- Очистить выполненные → <clear_done/>
 
-Когда добавляешь — верни JSON:
-<tasks>{"groups": [{"quadrant": "q1", "tasks": ["задача"]}, {"quadrant": "q2", "tasks": ["задача2"]}]}</tasks>
-
-Когда отмечаешь выполненной:
-<done>точный текст задачи</done>
-
-Когда удаляешь:
-<delete>точный текст задачи</delete>
-
-Обращайся только "Сократ". Отвечай кратко.\
+При добавлении с дедлайном — ставь Q1 если срок сегодня/завтра, Q2 если позже.
+Если Сократ говорит "я сделал X" → <done>X</done> и спроси что дальше.
+Обращайся только "Сократ".\
 """
 
 
@@ -110,6 +106,22 @@ class TodoAgent(BaseAgent):
                         break
             logger.info("🗑️ Задача удалена: '%s'", text[:50])
 
+        # ── Переместить между квадрантами ──────────────────────────────────────
+        for match in re.finditer(r'<move quadrant="([^"]+)">(.*?)</move>', raw, re.DOTALL):
+            target_q = match.group(1).strip()
+            text     = match.group(2).strip()
+            if vault_available():
+                from app.integrations.obsidian import move_task
+                ok = move_task(text, target_q)
+                if ok:
+                    logger.info("↔️  Задача перемещена в %s: '%s'", target_q, text[:50])
+
+        # ── Очистить выполненные ───────────────────────────────────────────────
+        if "<clear_done" in raw and vault_available():
+            from app.integrations.obsidian import clear_done_tasks
+            count = clear_done_tasks()
+            logger.info("🗑️ Очищено %d выполненных задач", count)
+
         # Убираем теги из ответа
         reply = re.sub(r"\s*<(tasks|done|delete)>.*?</(tasks|done|delete)>",
                        "", raw, flags=re.DOTALL).strip()
@@ -165,6 +177,7 @@ class TodoAgent(BaseAgent):
         try:
             data   = json.loads(strip_json(raw_json))
             groups = data.get("groups", [])
+            deadline = data.get("deadline", "")
         except Exception:
             logger.warning("todo: не смог распарсить tasks JSON: %s", raw_json[:100])
             return
@@ -179,7 +192,11 @@ class TodoAgent(BaseAgent):
 
             # Obsidian
             if vault_available():
-                add_tasks(tasks, quadrant=quadrant)
+                if deadline:
+                    for t in tasks:
+                        add_task_with_deadline(t, quadrant, deadline)
+                else:
+                    add_tasks(tasks, quadrant=quadrant)
 
             # БД (для напоминаний)
             priority = _Q_TO_PRIORITY.get(quadrant, 2)

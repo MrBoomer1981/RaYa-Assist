@@ -86,55 +86,56 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
 
 async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
     """
-    Читает задачи Q1 из Obsidian (срочно и важно) и напоминает о них.
-    Фоллбек на БД если Obsidian недоступен.
-    sent_today — тексты уже отправленных сегодня (защита от повтора).
+    Напоминает о задачах с дедлайном сегодня/завтра.
+    Читает из Obsidian vault. Фоллбек — БД.
     """
     try:
-        from app.integrations.obsidian import get_all_tasks, vault_available
+        overdue = []
+        try:
+            from app.integrations.obsidian import get_overdue_tasks, vault_available
+            if vault_available():
+                overdue = get_overdue_tasks(days_threshold=1)
+        except Exception:
+            pass
 
-        urgent_tasks = []
-
-        if vault_available():
-            # Читаем Q1 из Obsidian
-            all_tasks = get_all_tasks()
-            q1 = all_tasks.get("q1", {})
-            urgent_tasks = [
-                t["text"] for t in q1.get("tasks", [])
-                if not t["done"] and t["text"] not in sent_today
-            ]
-        else:
-            # Фоллбек — БД с приоритетом 1
+        # Фоллбек на БД если vault недоступен
+        if not overdue:
             today    = _now_msk().date()
             tomorrow = today + timedelta(days=1)
             with sqlite3.connect(str(DB_PATH)) as con:
                 rows = con.execute("""
-                    SELECT id, text FROM tasks
-                    WHERE user_id = ? AND done = 0 AND priority = 1
-                    ORDER BY created_at ASC LIMIT 3
-                """, (user_id,)).fetchall()
-            urgent_tasks = [r[1] for r in rows if r[0] not in sent_today]
+                    SELECT id, text, due_date FROM tasks
+                    WHERE user_id = ? AND done = 0
+                      AND due_date IN (?, ?)
+                    ORDER BY due_date ASC LIMIT 3
+                """, (user_id, str(today), str(tomorrow))).fetchall()
+            overdue = [{"text": r[1], "overdue": str(r[2]) < str(today),
+                        "deadline": r[2], "hash": r[0]} for r in rows]
 
-        if not urgent_tasks:
+        if not overdue:
             return False
 
-        text = urgent_tasks[0]
+        # Фильтруем уже отправленные (по тексту задачи)
+        new_tasks = [t for t in overdue if hash(t["text"]) not in sent_today]
+        if not new_tasks:
+            return False
+
+        task = new_tasks[0]
+        when = "сегодня" if not task.get("overdue") else "просрочена"
         msg  = await _gen(llm, (
-            f"У Сократа срочная важная задача: «{text}». "
+            f"У Сократа задача {when}: «{task['text']}». "
             f"Напомни коротко — одно предложение, без занудства."
         ))
         if msg:
             await bot.send_message(chat_id=user_id, text=msg)
-            sent_today.add(text)
-            logger.info("📋 Task deadline: '%s'", text[:40])
+            sent_today.add(hash(task["text"]))
+            logger.info("📋 Task deadline: '%s' (%s)", task["text"][:40], when)
             return True
 
     except Exception:
         logger.exception("proactive: task deadline")
     return False
 
-
-# ── Триггер 3: Длинная пауза (2+ дня) ────────────────────────────────────────
 
 async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime | None) -> tuple[bool, datetime | None]:
     """
@@ -560,6 +561,7 @@ class ProactiveService:
 # ══════════════════════════════════════════════════════════
 
 
+# NOTE: unused — candidate for removal
 def get_last_message_time(user_id: int) -> datetime | None:
     """Возвращает время последнего сообщения пользователя."""
     try:

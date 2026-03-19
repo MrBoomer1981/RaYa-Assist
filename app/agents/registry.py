@@ -83,7 +83,7 @@ AGENTS: dict[str, AgentInfo] = {
             "выполнено", "выполни задачу", "удали задачу",
             "нужно сделать", "не забыть сделать", "дедлайн",
         ),
-        enabled=False,
+        # enabled=True (default)  # re-enabled
     ),
 
     "obsidian": AgentInfo(
@@ -100,7 +100,7 @@ AGENTS: dict[str, AgentInfo] = {
             "найди в obsidian", "что я писал", "список заметок",
             "статистика vault", "почисти vault",
         ),
-        enabled=False,
+        # enabled=True (default)  # re-enabled
     ),
 
     "text": AgentInfo(
