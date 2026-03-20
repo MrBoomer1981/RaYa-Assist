@@ -465,5 +465,34 @@ def create_app(llm_service) -> FastAPI:
             content = _re.sub(r"^---.*?---\n+", "", content, flags=_re.DOTALL).strip()
         return {"content": content}
 
+
+    @app.post("/api/tasks/undo")
+    async def task_undo(body: dict, token: str = Query(default="")):
+        """Вернуть выполненную задачу в активные."""
+        _check_token(token)
+        text = body.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import undo_task, vault_available
+        ok = undo_task(text) if vault_available() else False
+        return {"ok": ok}
+
+    @app.post("/api/tasks/move_and_undo")
+    async def task_move_and_undo(body: dict, token: str = Query(default="")):
+        """Вернуть выполненную задачу в активные И переместить в новый квадрант."""
+        _check_token(token)
+        text = body.get("text", "").strip()
+        tq   = body.get("target_quadrant", "q2")
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import move_task, undo_task, vault_available
+        if not vault_available():
+            return {"ok": False}
+        # Сначала возвращаем в активные
+        undo_task(text)
+        # Потом перемещаем в нужный квадрант
+        ok = move_task(text, tq)
+        return {"ok": ok}
+
     logger.info("🌐 Веб-сервер создан")
     return app

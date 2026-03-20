@@ -764,6 +764,43 @@ aside {
 .sr-title { font-size: 12px; color: var(--text2); margin-bottom: 3px; transition: color 0.15s; }
 .sr-snippet { font-size: 11px; color: var(--text3); line-height: 1.5; }
 .sr-score { float: right; font-size: 10px; color: var(--text3); }
+
+/* ── Task undo button ───────────────────────────────── */
+.task-undo {
+  background: none;
+  border: 1px solid var(--border2);
+  color: var(--text3);
+  border-radius: 2px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.task-undo:hover { color: var(--text); border-color: var(--text3); }
+
+/* ── Done section separator ─────────────────────────── */
+.done-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+/* ── Done task item ─────────────────────────────────── */
+.task-item.done .task-drag-handle { opacity: 0; }
+.task-item.done:hover .task-drag-handle { opacity: 0.5; }
+.task-item.done .task-check { color: var(--text3); font-size: 10px; }
+
+/* ── Dragging state ─────────────────────────────────── */
+.task-item.dragging { opacity: 0.35; background: var(--bg3); border: 1px dashed var(--border2); }
+
+/* ── Drag-over quadrant highlight ───────────────────── */
+.quadrant.drag-over {
+  outline: 1px dashed var(--text3);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 /* ── Scrollbars ─────────────────────────────────────────── */
 * { scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
 </style>
@@ -1148,20 +1185,25 @@ const Q_CONFIG = {
   q4: { label: 'Q4 — Не срочно, не важно',cls: 'q4', emoji: '⚪' },
 };
 
+// Drag state
+let _dragText = null, _dragFromQ = null, _dragDone = false;
+
+// Кэш последних данных для rollback
+let _lastTasksData = null;
+
 async function loadTasks() {
   try {
     const res  = await fetch(api('/api/tasks'));
     const data = await res.json();
+    _lastTasksData = data;
     renderTasks(data);
     updateTasksBadge(data);
+    updateAsideTasks(data);
   } catch(e) {
     document.getElementById('tasksContainer').innerHTML =
-      '<div class="empty-state"><div class="empty-sub">Не удалось загрузить задачи</div></div>';
+      '<div class="empty-state"><div class="empty-icon">◈</div><div class="empty-sub">Не удалось загрузить задачи</div></div>';
   }
 }
-
-// Drag state
-let _dragText = null, _dragFromQ = null;
 
 function parseDeadline(text) {
   const m = text.match(/до (\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?/);
@@ -1174,11 +1216,11 @@ function parseDeadline(text) {
 function deadlineTag(text) {
   const d = parseDeadline(text);
   if (!d) return '';
-  const now   = new Date(); now.setHours(0,0,0,0);
-  const diff  = Math.round((d - now) / 86400000);
-  if (diff < 0)  return `<span class="task-deadline overdue">просрочено</span>`;
+  const now  = new Date(); now.setHours(0,0,0,0);
+  const diff = Math.round((d - now) / 86400000);
+  if (diff < 0)   return `<span class="task-deadline overdue">просрочено</span>`;
   if (diff === 0) return `<span class="task-deadline today">сегодня</span>`;
-  if (diff <= 2) return `<span class="task-deadline today">${diff}д</span>`;
+  if (diff <= 2)  return `<span class="task-deadline today">${diff}д</span>`;
   return `<span class="task-deadline upcoming">${d.getDate()}.${String(d.getMonth()+1).padStart(2,'0')}</span>`;
 }
 
@@ -1188,41 +1230,56 @@ function renderTasks(data) {
   let html = '';
 
   for (const [qkey, qcfg] of Object.entries(Q_CONFIG)) {
-    const qdata = data[qkey];
-    if (!qdata || !qdata.tasks.length) continue;
-    const active = qdata.tasks.filter(t => !t.done);
-    const done   = qdata.tasks.filter(t => t.done);
+    const qdata  = data[qkey];
+    const tasks  = qdata ? qdata.tasks : [];
+    const active = tasks.filter(t => !t.done);
+    const done   = tasks.filter(t => t.done);
     totalActive += active.length;
 
+    // Показываем квадрант если есть хоть что-то
+    if (!active.length && !done.length) continue;
+
     html += `<div class="quadrant" data-q="${qkey}"
-      ondragover="dragOver(event,this)" ondrop="dropTask(event,'${qkey}')"
+      ondragover="dragOver(event,this)"
+      ondrop="dropTask(event,'${qkey}')"
       ondragleave="this.classList.remove('drag-over')">
       <div class="quadrant-header">
         <div class="q-dot ${qcfg.cls}"></div>
         <div class="q-label">${qcfg.label}</div>
-        <div class="q-count">${active.length} активных${done.length ? ' · ' + done.length + ' готово' : ''}</div>
+        <div class="q-count">${active.length} активных${done.length ? ' · ' + done.length + ' выполнено' : ''}</div>
       </div>`;
 
+    // Активные задачи — draggable, клик = выполнить
     for (const task of active) {
-      const esc  = task.text.replace(/"/g,'&quot;').replace(/</g,'&lt;');
-      const dl   = deadlineTag(task.text);
+      const esc = escAttr(task.text);
+      const dl  = deadlineTag(task.text);
       html += `<div class="task-item" draggable="true"
-        data-text="${esc}" data-q="${qkey}"
-        onclick="markDone('${esc}')"
-        ondragstart="dragStart(event,'${esc}','${qkey}')">
-        <div class="task-drag-handle">⠿</div>
-        <div class="task-check"></div>
-        <div class="task-text">${formatText(task.text)}</div>
+        data-text="${esc}" data-q="${qkey}" data-done="0"
+        ondragstart="dragStart(event,'${esc}','${qkey}',false)"
+        ondragend="dragEnd(event)">
+        <div class="task-drag-handle" title="Перетащи в другой квадрант">⠿</div>
+        <div class="task-check" onclick="markDone('${esc}')" title="Отметить выполненной"></div>
+        <div class="task-text" onclick="markDone('${esc}')">${formatText(task.text)}</div>
         ${dl}
       </div>`;
     }
 
-    for (const task of done) {
-      html += `<div class="task-item done">
-        <div class="task-drag-handle"></div>
-        <div class="task-check">✓</div>
-        <div class="task-text">${formatText(task.text)}</div>
-      </div>`;
+    // Выполненные — тоже draggable, кнопка "вернуть"
+    if (done.length) {
+      html += `<div class="done-section">`;
+      for (const task of done) {
+        const esc = escAttr(task.text);
+        html += `<div class="task-item done" draggable="true"
+          data-text="${esc}" data-q="${qkey}" data-done="1"
+          ondragstart="dragStart(event,'${esc}','${qkey}',true)"
+          ondragend="dragEnd(event)">
+          <div class="task-drag-handle" title="Перетащи чтобы вернуть в активные">⠿</div>
+          <div class="task-check done-check" title="Задача выполнена">✓</div>
+          <div class="task-text">${formatText(task.text)}</div>
+          <button class="task-undo" onclick="undoTask('${esc}')" title="Вернуть в активные">↩</button>
+        </div>`;
+      }
+      html += `</div>`;
     }
 
     html += '</div>';
@@ -1240,43 +1297,151 @@ function renderTasks(data) {
   document.getElementById('tasksTotal').textContent = totalActive > 0 ? `${totalActive} активных` : '';
 }
 
+function escAttr(text) {
+  return text.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Отметить выполненной (optimistic UI)
 async function markDone(taskText) {
+  const item = document.querySelector(`.task-item[data-text="${CSS.escape(taskText)}"][data-done="0"]`);
+  if (item) {
+    item.classList.add('done');
+    item.querySelector('.task-check').textContent = '✓';
+    item.setAttribute('data-done', '1');
+  }
   try {
     await fetch(api('/api/tasks/done'), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({text: taskText})
     });
-    setTimeout(loadTasks, 300);
-  } catch(e) {}
+    setTimeout(loadTasks, 600);
+  } catch(e) {
+    // Rollback
+    if (item) { item.classList.remove('done'); item.querySelector('.task-check').textContent = ''; item.setAttribute('data-done','0'); }
+  }
+}
+
+// Вернуть выполненную в активные
+async function undoTask(taskText) {
+  const item = document.querySelector(`.task-item[data-text="${CSS.escape(taskText)}"][data-done="1"]`);
+  if (item) item.style.opacity = '0.4';
+  try {
+    await fetch(api('/api/tasks/undo'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text: taskText})
+    });
+    setTimeout(loadTasks, 400);
+  } catch(e) {
+    if (item) item.style.opacity = '';
+  }
 }
 
 async function clearDoneTasks() {
+  if (!confirm('Удалить все выполненные задачи?')) return;
   try {
     await fetch(api('/api/tasks/clear_done'), {method:'POST'});
     setTimeout(loadTasks, 300);
   } catch(e) {}
 }
 
+// ── Drag & Drop ────────────────────────────────────────────
+function dragStart(e, text, fromQ, isDone) {
+  _dragText   = text;
+  _dragFromQ  = fromQ;
+  _dragDone   = isDone;
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', text);
+}
+
+function dragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+}
+
+function dragOver(e, el) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.quadrant').forEach(q => q.classList.remove('drag-over'));
+  el.classList.add('drag-over');
+}
+
+async function dropTask(e, toQ) {
+  e.preventDefault();
+  document.querySelectorAll('.quadrant').forEach(q => q.classList.remove('drag-over'));
+
+  const text   = _dragText;
+  const fromQ  = _dragFromQ;
+  const isDone = _dragDone;
+  _dragText = null; _dragFromQ = null; _dragDone = false;
+
+  if (!text) return;
+
+  // Одинаковый квадрант + активная задача = ничего не делаем
+  if (fromQ === toQ && !isDone) return;
+
+  // Если задача выполнена и её перетаскивают в любой квадрант — сначала делаем undo
+  const endpoint = isDone
+    ? '/api/tasks/move_and_undo'   // undo + move в один запрос
+    : '/api/tasks/move';
+
+  // Optimistic UI — убираем элемент сразу
+  const item = document.querySelector(`.task-item[data-text="${CSS.escape(text)}"]`);
+  const savedHtml = item ? item.outerHTML : null;
+  if (item) item.style.opacity = '0.3';
+
+  try {
+    const res = await fetch(api(endpoint), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({text, target_quadrant: toQ})
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    setTimeout(loadTasks, 300);
+  } catch(err) {
+    // Rollback — восстанавливаем элемент
+    if (item) item.style.opacity = '';
+    console.error('dropTask failed:', err);
+  }
+}
+
 function updateTasksBadge(data) {
   if (!data) { loadTasksBadge(); return; }
   let count = 0;
+  const hasUrgent = data.q1 && data.q1.tasks && data.q1.tasks.some(t => !t.done);
   for (const q of Object.values(data)) {
     if (q && q.tasks) count += q.tasks.filter(t => !t.done).length;
   }
   const badge = document.getElementById('tasksBadge');
-  badge.textContent = count || '—';
-  badge.className = 'nav-badge' + (data.q1 && data.q1.tasks.filter(t=>!t.done).length > 0 ? ' urgent' : '');
+  badge.textContent   = count || '—';
+  badge.className     = 'nav-badge' + (hasUrgent ? ' urgent' : '');
 }
 
 async function loadTasksBadge() {
   try {
-    const res = await fetch(api('/api/tasks'));
+    const res  = await fetch(api('/api/tasks'));
     const data = await res.json();
     updateTasksBadge(data);
   } catch(e) {}
 }
 
+function updateAsideTasks(data) {
+  const el = document.getElementById('asideTasks');
+  if (!el || !data) return;
+  const lines = [];
+  for (const [qkey, qdata] of Object.entries(data)) {
+    if (!qdata || !qdata.tasks) continue;
+    const active = qdata.tasks.filter(t => !t.done);
+    if (active.length) {
+      const dot = {q1:'🔴',q2:'🟡',q3:'🟠',q4:'⚪'}[qkey] || '';
+      lines.push(`${dot} ${active.length}`);
+    }
+  }
+  el.innerHTML = lines.length ? lines.join('&nbsp;&nbsp;') : '—';
+}
+
+// ── Memory ─────────────────────────────────────────────────
 // ── Memory ────────────────────────────────────────────────
 async function loadMemory() {
   try {

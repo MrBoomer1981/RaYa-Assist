@@ -777,6 +777,65 @@ def get_task_count() -> dict:
     }
 
 
+def undo_task(task_text: str) -> bool:
+    """
+    Возвращает выполненную задачу в активные — [x] → [ ].
+    Fuzzy match если точного нет.
+    """
+    found = _undo_exact(task_text)
+    if found:
+        return True
+    actual = find_task_fuzzy_done(task_text)
+    if actual:
+        return _undo_exact(actual)
+    return False
+
+
+def _undo_exact(task_text: str) -> bool:
+    """Меняет [x] → [ ] для точного текста задачи."""
+    found = False
+    for q in QUADRANTS.values():
+        rel     = Path(q["file"])
+        content = _read(rel)
+        if not content:
+            continue
+        new = re.sub(
+            r"^(- \[)[xX](\] " + re.escape(task_text) + r".*)$",
+            r"\g<1> \2",
+            content, flags=re.MULTILINE
+        )
+        if new != content:
+            _write(rel, new)
+            found = True
+            logger.info("↩️  Задача возвращена: '%s'", task_text[:50])
+    return found
+
+
+def find_task_fuzzy_done(query: str) -> str | None:
+    """Нечёткий поиск среди ВЫПОЛНЕННЫХ задач."""
+    q = query.lower().strip()
+    best_match = None
+    best_score = 0
+
+    for task in search_tasks("done"):
+        text    = task["text"].lower()
+        if q == text:
+            return task["text"]
+        if q in text or text in q:
+            score = len(q) / max(len(text), 1)
+            if score > best_score:
+                best_score  = score
+                best_match  = task["text"]
+        q_words = set(q.split())
+        t_words = set(text.split())
+        overlap = len(q_words & t_words) / max(len(q_words), 1)
+        if overlap > 0.6 and overlap > best_score:
+            best_score = overlap
+            best_match = task["text"]
+
+    return best_match if best_score > 0.4 else None
+
+
 def sync_tasks_to_db(user_id: int) -> dict:
     if not vault_available():
         return {"ok": False, "reason": "vault недоступен"}

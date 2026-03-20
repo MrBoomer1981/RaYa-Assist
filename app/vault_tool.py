@@ -43,6 +43,7 @@ VAULT_TOOL = {
                     "week_plan",      # план задач на неделю
                     "batch_done",     # отметить несколько задач выполненными
                     "diary_context",  # показать контекст дневника
+                    "undo_task",      # вернуть выполненную задачу в активные
                 ],
                 "description": "Операция"
             },
@@ -286,6 +287,19 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
                 flag = " 🔴 ПРОСРОЧЕНО" if t["overdue"] else ""
                 lines.append(f"  • {t['text']}{flag}")
             return "\n".join(lines)
+
+        # ── undo_task ─────────────────────────────────────────────────────────
+        elif op == "undo_task":
+            if not text:
+                return "ошибка: текст задачи пустой"
+            ok = undo_task(text)
+            if user_id and ok:
+                for t in get_active_tasks(user_id):
+                    if text.lower() in t[1].lower():
+                        mark_task_done(t[0], user_id)  # снимаем done в БД
+                        break
+            logger.info("vault undo_task: '%s' ok=%s", text[:50], ok)
+            return f"возвращено в активные: «{text}»" if ok else f"не нашла: «{text}»"
 
         # ── week_plan ─────────────────────────────────────────────────────────
         elif op == "week_plan":
