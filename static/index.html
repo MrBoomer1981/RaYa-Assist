@@ -801,6 +801,490 @@ aside {
   outline-offset: 2px;
   border-radius: 3px;
 }
+
+/* ── Calendar ───────────────────────────────────────── */
+.cal-wrap { display: flex; flex-direction: column; height: 100%; }
+
+.cal-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px; border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cal-nav { background: none; border: 1px solid var(--border2); color: var(--text2);
+  width: 28px; height: 28px; border-radius: 2px; cursor: pointer; font-size: 13px;
+  transition: all 0.15s; display: flex; align-items: center; justify-content: center; }
+.cal-nav:hover { color: var(--text); border-color: var(--text2); }
+
+.cal-month-label { font-size: 14px; font-weight: 500; color: var(--text); min-width: 140px; }
+.cal-today-btn { margin-left: auto; background: none; border: 1px solid var(--border2);
+  color: var(--text2); padding: 4px 10px; border-radius: 2px; cursor: pointer;
+  font-size: 11px; font-family: var(--font-mono); transition: all 0.15s; }
+.cal-today-btn:hover { color: var(--text); border-color: var(--text2); }
+
+/* Сетка месяца */
+.cal-grid-wrap { flex: 1; overflow-y: auto; padding: 0 12px 12px; }
+.cal-dow { display: grid; grid-template-columns: repeat(7, 1fr);
+  padding: 10px 0 6px; position: sticky; top: 0; background: var(--bg); z-index: 2; }
+.cal-dow-cell { text-align: center; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--text3); padding: 4px; }
+
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+
+.cal-cell {
+  min-height: 72px; border: 1px solid var(--border); border-radius: 2px;
+  padding: 6px; cursor: pointer; transition: background 0.12s; position: relative;
+}
+.cal-cell:hover { background: var(--bg3); border-color: var(--border2); }
+.cal-cell.other-month { opacity: 0.3; cursor: default; }
+.cal-cell.other-month:hover { background: none; }
+.cal-cell.today { border-color: var(--text2); }
+.cal-cell.selected { background: var(--bg2); border-color: var(--accent); }
+
+.cal-day-num {
+  font-size: 11px; color: var(--text2); margin-bottom: 4px; line-height: 1;
+}
+.cal-cell.today .cal-day-num { color: var(--text); font-weight: 500; }
+
+.cal-event-pill {
+  font-size: 10px; line-height: 1.3; padding: 2px 5px; border-radius: 2px;
+  margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--bg); font-weight: 500;
+}
+.cal-event-pill.blue   { background: #378ADD; }
+.cal-event-pill.green  { background: #1D9E75; }
+.cal-event-pill.red    { background: #E24B4A; }
+.cal-event-pill.orange { background: #EF9F27; }
+.cal-event-pill.purple { background: #7F77DD; }
+.cal-more { font-size: 10px; color: var(--text3); margin-top: 1px; }
+
+/* День — дневное расписание */
+.day-view { display: flex; flex-direction: column; height: 100%; }
+.day-view-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.day-back { background: none; border: 1px solid var(--border2); color: var(--text2);
+  padding: 4px 10px; border-radius: 2px; cursor: pointer; font-size: 11px;
+  font-family: var(--font-mono); transition: all 0.15s; }
+.day-back:hover { color: var(--text); }
+.day-date-label { font-size: 14px; font-weight: 500; color: var(--text); }
+.day-date-sub   { font-size: 11px; color: var(--text3); }
+
+.day-body { flex: 1; overflow-y: auto; display: flex; gap: 0; }
+
+/* Временные слоты */
+.day-timeline { width: 52px; flex-shrink: 0; padding-top: 4px; }
+.day-slot-time {
+  height: 52px; display: flex; align-items: flex-start; justify-content: flex-end;
+  padding: 4px 8px 0 0; font-size: 10px; color: var(--text3);
+}
+
+.day-events-col { flex: 1; border-left: 1px solid var(--border); position: relative; }
+.day-slot {
+  height: 52px; border-bottom: 1px solid var(--border);
+  position: relative; cursor: pointer; transition: background 0.1s;
+}
+.day-slot:hover { background: var(--bg3); }
+.day-slot.has-event { background: var(--bg2); }
+
+.day-event-block {
+  position: absolute; left: 4px; right: 4px;
+  border-radius: 2px; padding: 3px 7px; font-size: 11px;
+  color: var(--bg); font-weight: 500; cursor: pointer; z-index: 2;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.day-event-block .ev-title { line-height: 1.3; }
+.day-event-block .ev-time  { font-size: 10px; opacity: 0.85; }
+.day-event-block.blue   { background: #378ADD; }
+.day-event-block.green  { background: #1D9E75; }
+.day-event-block.red    { background: #E24B4A; }
+.day-event-block.orange { background: #EF9F27; }
+.day-event-block.purple { background: #7F77DD; }
+
+/* Allday полоса */
+.day-allday { padding: 8px 12px; border-bottom: 1px solid var(--border);
+  display: flex; gap: 6px; flex-wrap: wrap; min-height: 36px; align-items: center; }
+.day-allday-label { font-size: 10px; color: var(--text3); width: 52px; flex-shrink: 0; }
+
+/* Заметки дня */
+.day-notes { padding: 12px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.day-notes textarea {
+  width: 100%; background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: 2px; color: var(--text); font-family: var(--font-mono);
+  font-size: 12px; padding: 8px 10px; resize: none; height: 80px;
+  transition: border-color 0.15s; line-height: 1.6;
+}
+.day-notes textarea:focus { outline: none; border-color: var(--text3); }
+.day-notes textarea::placeholder { color: var(--text3); }
+
+/* Модалка добавления события */
+.event-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.event-modal-overlay.open { display: flex; }
+.event-modal {
+  background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: 4px; padding: 20px; width: 340px; max-width: 90vw;
+}
+.event-modal h3 { font-size: 13px; font-weight: 500; margin-bottom: 14px; color: var(--text); }
+.ev-field { margin-bottom: 10px; }
+.ev-field label { font-size: 11px; color: var(--text3); display: block; margin-bottom: 4px; }
+.ev-field input, .ev-field textarea, .ev-field select {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 2px; color: var(--text); font-family: var(--font-mono);
+  font-size: 12px; padding: 7px 10px;
+}
+.ev-field input:focus, .ev-field textarea:focus, .ev-field select:focus {
+  outline: none; border-color: var(--text3);
+}
+.ev-colors { display: flex; gap: 8px; margin-top: 4px; }
+.ev-color-dot {
+  width: 20px; height: 20px; border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent; transition: all 0.12s;
+}
+.ev-color-dot.selected { border-color: var(--text); transform: scale(1.15); }
+.ev-modal-btns { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+
+/* ══════════════════════════════════════════════════════
+   CALENDAR
+   ══════════════════════════════════════════════════════ */
+
+/* Сетка месяца */
+.cal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cal-nav {
+  background: none;
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  width: 28px; height: 28px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.cal-nav:hover { color: var(--text); border-color: var(--text3); }
+
+.cal-month-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1;
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+
+.cal-today-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  background: none;
+  border: 1px solid var(--border2);
+  color: var(--text2);
+  border-radius: 2px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: all 0.15s;
+}
+.cal-today-btn:hover { color: var(--text); border-color: var(--text3); }
+
+.cal-grid-wrap {
+  padding: 12px 16px;
+  flex-shrink: 0;
+}
+
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-bottom: 4px;
+}
+
+.cal-wd {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 4px 0;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.cal-cell {
+  aspect-ratio: 1;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 2px;
+  position: relative;
+  transition: background 0.1s;
+  min-width: 0;
+}
+
+.cal-cell:hover { background: var(--bg3); }
+
+.cal-cell.other-month .cal-day-num { color: var(--text3); }
+
+.cal-cell.today .cal-day-num {
+  background: var(--text);
+  color: var(--bg);
+  border-radius: 50%;
+  width: 22px; height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cal-cell.selected {
+  background: var(--bg2);
+  outline: 1px solid var(--border2);
+}
+
+.cal-day-num {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 22px;
+  width: 22px;
+  text-align: center;
+}
+
+.cal-dots {
+  display: flex;
+  gap: 2px;
+  margin-top: 2px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.cal-dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+}
+.cal-dot.blue   { background: #378ADD; }
+.cal-dot.green  { background: #1D9E75; }
+.cal-dot.red    { background: #E24B4A; }
+.cal-dot.orange { background: #EF9F27; }
+.cal-dot.purple { background: #7F77DD; }
+
+/* Панель дня */
+.cal-day-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+.cal-day-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.cal-day-title {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+}
+
+.cal-day-back {
+  font-size: 11px;
+  color: var(--text3);
+  cursor: pointer;
+  padding: 3px 8px;
+  border: 1px solid var(--border2);
+  border-radius: 2px;
+  background: none;
+  font-family: var(--font-mono);
+  transition: all 0.15s;
+}
+.cal-day-back:hover { color: var(--text2); }
+
+.cal-day-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  gap: 0;
+}
+
+/* Временные слоты */
+.cal-timeline {
+  width: 48px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.cal-slot-label {
+  height: 48px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 0 8px 0 0;
+  font-size: 10px;
+  color: var(--text3);
+  box-sizing: border-box;
+}
+
+.cal-events-col {
+  flex: 1;
+  padding: 8px 16px;
+  min-width: 0;
+}
+
+.cal-hour-row {
+  height: 48px;
+  border-top: 1px solid var(--border);
+  position: relative;
+  box-sizing: border-box;
+}
+
+.cal-hour-row:first-child { border-top: none; }
+
+.cal-event-block {
+  position: absolute;
+  left: 0; right: 0;
+  top: 2px;
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 22px;
+}
+.cal-event-block:hover { opacity: 0.8; }
+
+.cal-event-block.blue   { background: rgba(55,138,221,0.18); border-left: 2px solid #378ADD; color: #378ADD; }
+.cal-event-block.green  { background: rgba(29,158,117,0.18); border-left: 2px solid #1D9E75; color: #1D9E75; }
+.cal-event-block.red    { background: rgba(226,75,74,0.18);  border-left: 2px solid #E24B4A; color: #E24B4A; }
+.cal-event-block.orange { background: rgba(239,159,39,0.18); border-left: 2px solid #EF9F27; color: #EF9F27; }
+.cal-event-block.purple { background: rgba(127,119,221,0.18);border-left: 2px solid #7F77DD; color: #7F77DD; }
+
+.cal-allday-section {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  display: none;
+  flex-shrink: 0;
+}
+.cal-allday-section.has-events { display: block; }
+
+.cal-allday-event {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  margin: 2px 4px 2px 0;
+  cursor: pointer;
+}
+
+/* Форма добавления события */
+.cal-add-form {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.cal-add-input {
+  flex: 1;
+  min-width: 150px;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 2px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  transition: border-color 0.15s;
+}
+.cal-add-input:focus { outline: none; border-color: var(--text3); }
+.cal-add-input::placeholder { color: var(--text3); }
+
+.cal-time-input {
+  width: 72px;
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: 2px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.cal-time-input:focus { outline: none; border-color: var(--text3); }
+
+.cal-color-picker {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-color-btn {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.cal-color-btn.selected { border-color: var(--text); }
+.cal-color-btn.blue   { background: #378ADD; }
+.cal-color-btn.green  { background: #1D9E75; }
+.cal-color-btn.red    { background: #E24B4A; }
+.cal-color-btn.orange { background: #EF9F27; }
+.cal-color-btn.purple { background: #7F77DD; }
+
+.cal-add-btn {
+  background: var(--text);
+  color: var(--bg);
+  border: none;
+  border-radius: 2px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.cal-add-btn:hover { opacity: 0.85; }
+
+.cal-empty-day {
+  padding: 24px;
+  color: var(--text3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.cal-view-month { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.cal-view-day   { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+.cal-view-day.active   { display: flex; }
+.cal-view-month.active { display: flex; }
 /* ── Scrollbars ─────────────────────────────────────────── */
 * { scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
 </style>
@@ -821,10 +1305,10 @@ aside {
   <!-- Nav -->
   <nav>
     <div class="nav-section">Главное</div>
-    <div class="nav-item" data-panel="search" onclick="switchPanel('search',this)">
-      <span class="nav-icon">⌕</span> Поиск
+    <div class="nav-item active" data-panel="calendar" onclick="switchPanel('calendar',this)">
+      <span class="nav-icon">◫</span> Календарь
     </div>
-    <div class="nav-item active" data-panel="chat" onclick="switchPanel('chat',this)">
+    <div class="nav-item" data-panel="chat" onclick="switchPanel('chat',this)">
       <span class="nav-icon">_</span> Чат
     </div>
     <div class="nav-item" data-panel="tasks" onclick="switchPanel('tasks',this)">
@@ -838,6 +1322,9 @@ aside {
       <span class="nav-icon" style="font-size:9px">▶</span> Дополнительно
     </div>
     <div class="nav-extra" id="navExtra">
+      <div class="nav-item" data-panel="search" onclick="switchPanel('search',this)">
+        <span class="nav-icon">⌕</span> Поиск
+      </div>
       <div class="nav-item" data-panel="memory" onclick="switchPanel('memory',this)">
         <span class="nav-icon">◇</span> Память
       </div>
@@ -885,6 +1372,74 @@ aside {
       <div class="voice-status" id="voiceStatus"></div>
     </div>
 
+
+    <!-- Calendar -->
+    <div class="panel" id="panel-calendar">
+
+      <!-- Месячный вид -->
+      <div class="cal-view-month active" id="calViewMonth">
+        <div class="cal-header">
+          <button class="cal-nav" onclick="calPrevMonth()">‹</button>
+          <div class="cal-month-label" id="calMonthLabel"></div>
+          <button class="cal-today-btn" onclick="calGoToday()">сегодня</button>
+          <button class="cal-nav" onclick="calNextMonth()">›</button>
+        </div>
+        <div class="cal-grid-wrap">
+          <div class="cal-weekdays">
+            <div class="cal-wd">пн</div><div class="cal-wd">вт</div>
+            <div class="cal-wd">ср</div><div class="cal-wd">чт</div>
+            <div class="cal-wd">пт</div>
+            <div class="cal-wd" style="color:var(--q1)">сб</div>
+            <div class="cal-wd" style="color:var(--q1)">вс</div>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+        </div>
+        <!-- Upcoming events под сеткой -->
+        <div style="flex:1;overflow-y:auto;padding:0 16px 12px;border-top:1px solid var(--border)">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);padding:10px 0 6px">Ближайшие</div>
+          <div id="calUpcoming"></div>
+        </div>
+      </div>
+
+      <!-- Дневной вид -->
+      <div class="cal-view-day" id="calViewDay">
+        <div class="cal-day-header">
+          <button class="cal-day-back" onclick="calShowMonth()">← месяц</button>
+          <div class="cal-day-title" id="calDayTitle"></div>
+          <div style="font-size:11px;color:var(--text3)" id="calDayCount"></div>
+        </div>
+
+        <!-- Весь день -->
+        <div class="cal-allday-section" id="calAlldaySection">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Весь день</div>
+          <div id="calAlldayEvents"></div>
+        </div>
+
+        <!-- Timeline -->
+        <div class="cal-day-body" id="calDayBody">
+          <div class="cal-timeline" id="calTimeline"></div>
+          <div class="cal-events-col" id="calEventsCol"></div>
+        </div>
+
+        <!-- Форма добавления -->
+        <div class="cal-add-form">
+          <input class="cal-add-input" id="calAddTitle" placeholder="Название события..."
+            onkeydown="if(event.key==='Enter') calAddEvent()">
+          <input class="cal-time-input" id="calAddTimeStart" type="time" title="Начало">
+          <input class="cal-time-input" id="calAddTimeEnd" type="time" title="Конец">
+          <div class="cal-color-picker" id="calColorPicker">
+            <div class="cal-color-btn blue selected"   onclick="calSelectColor('blue',this)"></div>
+            <div class="cal-color-btn green"  onclick="calSelectColor('green',this)"></div>
+            <div class="cal-color-btn red"    onclick="calSelectColor('red',this)"></div>
+            <div class="cal-color-btn orange" onclick="calSelectColor('orange',this)"></div>
+            <div class="cal-color-btn purple" onclick="calSelectColor('purple',this)"></div>
+          </div>
+          <button class="cal-add-btn" onclick="calAddEvent()">+ добавить</button>
+        </div>
+      </div>
+
+    </div>
+
     <!-- Search -->
     <div class="panel" id="panel-search">
       <div class="panel-header">
@@ -902,6 +1457,106 @@ aside {
           <div class="empty-icon">⌕</div>
           <div class="empty-title">Семантический поиск</div>
           <div class="empty-sub">Ищет по смыслу, а не только по словам</div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- Calendar -->
+    <div class="panel active" id="panel-calendar">
+
+      <!-- Месячный вид -->
+      <div id="cal-month-view" class="cal-wrap">
+        <div class="cal-header">
+          <button class="cal-nav" onclick="calPrev()">‹</button>
+          <span class="cal-month-label" id="calMonthLabel">Март 2026</span>
+          <button class="cal-nav" onclick="calNext()">›</button>
+          <button class="cal-today-btn" onclick="calGoToday()">сегодня</button>
+          <button class="btn-ghost" onclick="openEventModal(calSelectedDate || todayStr())">+ событие</button>
+        </div>
+        <div class="cal-grid-wrap">
+          <div class="cal-dow">
+            <div class="cal-dow-cell">Пн</div><div class="cal-dow-cell">Вт</div>
+            <div class="cal-dow-cell">Ср</div><div class="cal-dow-cell">Чт</div>
+            <div class="cal-dow-cell">Пт</div>
+            <div class="cal-dow-cell" style="color:var(--q3)">Сб</div>
+            <div class="cal-dow-cell" style="color:var(--q1)">Вс</div>
+          </div>
+          <div class="cal-grid" id="calGrid"></div>
+        </div>
+      </div>
+
+      <!-- Дневной вид -->
+      <div id="cal-day-view" class="day-view" style="display:none">
+        <div class="day-view-header">
+          <button class="day-back" onclick="showMonthView()">‹ назад</button>
+          <div>
+            <div class="day-date-label" id="dayDateLabel"></div>
+            <div class="day-date-sub" id="dayDateSub"></div>
+          </div>
+          <button class="btn-ghost" style="margin-left:auto" onclick="openEventModal(calSelectedDate)">+ событие</button>
+        </div>
+
+        <!-- Весь день -->
+        <div style="display:flex; border-bottom:1px solid var(--border); flex-shrink:0">
+          <div class="day-allday-label" style="padding:8px 0 8px 12px; font-size:10px; color:var(--text3); width:52px; flex-shrink:0">
+            весь<br>день
+          </div>
+          <div class="day-allday" id="dayAlldayEvents" style="flex:1; border-left:1px solid var(--border)"></div>
+        </div>
+
+        <!-- Временная сетка -->
+        <div class="day-body" id="dayBody">
+          <div class="day-timeline" id="dayTimeline"></div>
+          <div class="day-events-col" id="dayEventsCol"></div>
+        </div>
+
+        <!-- Заметки дня -->
+        <div class="day-notes">
+          <div style="font-size:10px; color:var(--text3); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.08em">Заметки дня</div>
+          <textarea id="dayNotes" placeholder="Мысли, планы, итоги дня..."
+            onblur="saveDayNotes()"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- Event modal -->
+    <div class="event-modal-overlay" id="eventModalOverlay" onclick="closeEventModal(event)">
+      <div class="event-modal" onclick="event.stopPropagation()">
+        <h3 id="eventModalTitle">Новое событие</h3>
+        <input type="hidden" id="evModalId">
+        <div class="ev-field">
+          <label>Название</label>
+          <input type="text" id="evTitle" placeholder="Название события">
+        </div>
+        <div class="ev-field" style="display:grid; grid-template-columns:1fr 1fr; gap:8px">
+          <div>
+            <label>Начало</label>
+            <input type="time" id="evTimeStart">
+          </div>
+          <div>
+            <label>Конец</label>
+            <input type="time" id="evTimeEnd">
+          </div>
+        </div>
+        <div class="ev-field">
+          <label>Описание</label>
+          <input type="text" id="evDesc" placeholder="Необязательно">
+        </div>
+        <div class="ev-field">
+          <label>Цвет</label>
+          <div class="ev-colors">
+            <div class="ev-color-dot selected" data-color="blue"   style="background:#378ADD" onclick="selectColor('blue',this)"></div>
+            <div class="ev-color-dot"          data-color="green"  style="background:#1D9E75" onclick="selectColor('green',this)"></div>
+            <div class="ev-color-dot"          data-color="red"    style="background:#E24B4A" onclick="selectColor('red',this)"></div>
+            <div class="ev-color-dot"          data-color="orange" style="background:#EF9F27" onclick="selectColor('orange',this)"></div>
+            <div class="ev-color-dot"          data-color="purple" style="background:#7F77DD" onclick="selectColor('purple',this)"></div>
+          </div>
+        </div>
+        <div class="ev-modal-btns">
+          <button class="btn-ghost danger" id="evDeleteBtn" style="display:none; margin-right:auto" onclick="deleteEventModal()">удалить</button>
+          <button class="btn-ghost" onclick="closeEventModal()">отмена</button>
+          <button class="send-btn" style="height:32px; padding:0 14px; font-size:12px" onclick="saveEventModal()">сохранить</button>
         </div>
       </div>
     </div>
@@ -1007,7 +1662,9 @@ function switchPanel(name, el) {
   document.getElementById(`panel-${name}`).classList.add('active');
   if (el) el.classList.add('active');
 
+  if (name === 'calendar')  loadCalendarMonth();
   if (name === 'tasks')     loadTasks();
+  if (name === 'calendar')  { calLoadMonth(_calYear, _calMonth); calLoadUpcoming(); }
   if (name === 'memory')    loadMemory();
   if (name === 'diary')     loadDiary();
   if (name === 'reminders') loadReminders();
@@ -1751,11 +2408,616 @@ async function rebuildIndex() {
   }
 }
 
+
+// ── Calendar ───────────────────────────────────────────
+const MONTHS_RU  = ['Январь','Февраль','Март','Апрель','Май','Июнь',
+                    'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+const DAYS_SHORT = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+const COLOR_HEX  = {blue:'#378ADD',green:'#1D9E75',red:'#E24B4A',orange:'#EF9F27',purple:'#7F77DD'};
+
+let calYear  = new Date().getFullYear();
+let calMonth = new Date().getMonth() + 1;  // 1-based
+let calSelectedDate = null;
+let calEventsCache  = {};  // date → [events]
+let evModalColor    = 'blue';
+let evModalDate     = '';
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function fmtDate(dateStr) {
+  const [y,m,d] = dateStr.split('-');
+  const dt = new Date(+y,+m-1,+d);
+  const days = ['Воскресенье','Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'];
+  return { dayName: days[dt.getDay()], day: +d, month: MONTHS_RU[+m-1], year: y };
+}
+
+// ── Месячный вид ────────────────────────────────────────
+async function loadCalendarMonth() {
+  const res  = await fetch(api(`/api/calendar/month?year=${calYear}&month=${calMonth}`));
+  const data = await res.json();
+  calEventsCache = data.by_day || {};
+  document.getElementById('calMonthLabel').textContent = `${data.month_name} ${calYear}`;
+  renderCalGrid();
+}
+
+function renderCalGrid() {
+  const today    = todayStr();
+  const firstDay = new Date(calYear, calMonth - 1, 1);
+  // Понедельник = 0
+  let startDow   = firstDay.getDay() - 1;
+  if (startDow < 0) startDow = 6;
+
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
+  const prevDays    = new Date(calYear, calMonth - 1, 0).getDate();
+
+  let cells = [];
+
+  // Предыдущий месяц
+  for (let i = startDow - 1; i >= 0; i--) {
+    const d  = prevDays - i;
+    const m  = calMonth - 1 === 0 ? 12 : calMonth - 1;
+    const y  = calMonth - 1 === 0 ? calYear - 1 : calYear;
+    cells.push({ day: d, month: m, year: y, cur: false });
+  }
+  // Текущий месяц
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ day: d, month: calMonth, year: calYear, cur: true });
+  }
+  // Следующий месяц
+  const rem = 42 - cells.length;
+  for (let d = 1; d <= rem; d++) {
+    const m = calMonth + 1 === 13 ? 1 : calMonth + 1;
+    const y = calMonth + 1 === 13 ? calYear + 1 : calYear;
+    cells.push({ day: d, month: m, year: y, cur: false });
+  }
+
+  const grid = document.getElementById('calGrid');
+  grid.innerHTML = cells.map(c => {
+    const dateStr = `${c.year}-${String(c.month).padStart(2,'0')}-${String(c.day).padStart(2,'0')}`;
+    const evs     = calEventsCache[dateStr] || [];
+    const isToday = dateStr === today;
+    const isSel   = dateStr === calSelectedDate;
+    const isWeekend = (new Date(c.year, c.month-1, c.day).getDay() + 6) % 7 >= 5;
+
+    let cls = 'cal-cell';
+    if (!c.cur)  cls += ' other-month';
+    if (isToday) cls += ' today';
+    if (isSel)   cls += ' selected';
+
+    const dayColor = isWeekend && c.cur ? 'color:var(--text3)' : '';
+    let inner = `<div class="cal-day-num" style="${dayColor}">${c.day}</div>`;
+
+    evs.slice(0, 3).forEach(ev => {
+      const t = ev.time_start ? ev.time_start.slice(0,5) + ' ' : '';
+      inner += `<div class="cal-event-pill ${ev.color}">${t}${ev.title}</div>`;
+    });
+    if (evs.length > 3) {
+      inner += `<div class="cal-more">+${evs.length - 3}</div>`;
+    }
+
+    const clickable = c.cur ? `onclick="openDayView('${dateStr}')"` : '';
+    return `<div class="${cls}" ${clickable}>${inner}</div>`;
+  }).join('');
+}
+
+function calPrev() {
+  calMonth--;
+  if (calMonth < 1) { calMonth = 12; calYear--; }
+  loadCalendarMonth();
+}
+function calNext() {
+  calMonth++;
+  if (calMonth > 12) { calMonth = 1; calYear++; }
+  loadCalendarMonth();
+}
+function calGoToday() {
+  const now = new Date();
+  calYear  = now.getFullYear();
+  calMonth = now.getMonth() + 1;
+  loadCalendarMonth();
+}
+
+// ── Дневной вид ─────────────────────────────────────────
+async function openDayView(dateStr) {
+  calSelectedDate = dateStr;
+  renderCalGrid();
+
+  const res  = await fetch(api(`/api/calendar/day?date=${dateStr}`));
+  const data = await res.json();
+
+  const { dayName, day, month, year } = fmtDate(dateStr);
+  document.getElementById('dayDateLabel').textContent = `${dayName}, ${day} ${month}`;
+  document.getElementById('dayDateSub').textContent   = year;
+  document.getElementById('dayNotes').value           = data.notes || '';
+
+  renderDayView(data.events || []);
+
+  document.getElementById('cal-month-view').style.display = 'none';
+  document.getElementById('cal-day-view').style.display   = 'flex';
+}
+
+function renderDayView(events) {
+  const HOURS  = Array.from({length: 24}, (_, i) => i);
+  const SLOT_H = 52; // px на час
+
+  // Весь день
+  const allDay   = events.filter(e => !e.time_start);
+  const timed    = events.filter(e =>  e.time_start);
+  const alldayEl = document.getElementById('dayAlldayEvents');
+  alldayEl.innerHTML = allDay.length
+    ? allDay.map(e => `<div class="cal-event-pill ${e.color}" style="cursor:pointer" onclick="openEventModal('${calSelectedDate}',${JSON.stringify(e).replace(/"/g,'&quot;')})">${e.title}</div>`).join('')
+    : '<span style="font-size:11px;color:var(--text3)">нет событий на весь день</span>';
+
+  // Временная шкала
+  const timeline = document.getElementById('dayTimeline');
+  timeline.innerHTML = HOURS.map(h =>
+    `<div class="day-slot-time">${h}:00</div>`
+  ).join('');
+
+  // Слоты
+  const col = document.getElementById('dayEventsCol');
+  col.innerHTML = HOURS.map(h => {
+    const hasEv = timed.some(e => parseInt(e.time_start) === h);
+    return `<div class="day-slot${hasEv ? ' has-event' : ''}"
+      onclick="openEventModal('${calSelectedDate}', null, '${String(h).padStart(2,'0')}:00')">
+    </div>`;
+  }).join('');
+
+  // Накладываем события поверх
+  timed.forEach(ev => {
+    const [hh, mm]  = ev.time_start.split(':').map(Number);
+    const endParts  = ev.time_end ? ev.time_end.split(':').map(Number) : [hh + 1, 0];
+    const topPx     = hh * SLOT_H + (mm / 60) * SLOT_H;
+    const durH      = (endParts[0] - hh) + (endParts[1] - mm) / 60;
+    const heightPx  = Math.max(durH * SLOT_H - 3, 22);
+    const timeLabel = ev.time_end ? `${ev.time_start}–${ev.time_end}` : ev.time_start;
+    const evData    = JSON.stringify(ev).replace(/"/g, '&quot;');
+
+    const block = document.createElement('div');
+    block.className = `day-event-block ${ev.color}`;
+    block.style.cssText = `top:${topPx}px; height:${heightPx}px`;
+    block.innerHTML = `<div class="ev-time">${timeLabel}</div><div class="ev-title">${ev.title}</div>`;
+    block.onclick = (e) => { e.stopPropagation(); openEventModal(calSelectedDate, ev); };
+    col.appendChild(block);
+  });
+
+  // Скроллим к рабочему времени
+  document.getElementById('dayBody').scrollTop = 8 * SLOT_H - 20;
+}
+
+function showMonthView() {
+  document.getElementById('cal-month-view').style.display = 'flex';
+  document.getElementById('cal-day-view').style.display   = 'none';
+}
+
+// ── Заметки дня ─────────────────────────────────────────
+async function saveDayNotes() {
+  // Сохраняем в vault как заметку дня (через чат = просто fetch)
+  const notes = document.getElementById('dayNotes').value.trim();
+  if (!notes || !calSelectedDate) return;
+  try {
+    await fetch(api('/api/calendar/day_notes'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({date: calSelectedDate, notes})
+    });
+  } catch(e) {}
+}
+
+// ── Модалка событий ─────────────────────────────────────
+function openEventModal(dateStr, existingEvent, presetTime) {
+  evModalDate  = dateStr || calSelectedDate || todayStr();
+  evModalColor = existingEvent ? existingEvent.color : 'blue';
+
+  document.getElementById('eventModalTitle').textContent = existingEvent ? 'Редактировать' : 'Новое событие';
+  document.getElementById('evModalId').value    = existingEvent ? existingEvent.id : '';
+  document.getElementById('evTitle').value      = existingEvent ? existingEvent.title : '';
+  document.getElementById('evTimeStart').value  = existingEvent ? existingEvent.time_start : (presetTime || '');
+  document.getElementById('evTimeEnd').value    = existingEvent ? existingEvent.time_end   : '';
+  document.getElementById('evDesc').value       = existingEvent ? existingEvent.description : '';
+  document.getElementById('evDeleteBtn').style.display = existingEvent ? 'block' : 'none';
+
+  // Выбор цвета
+  document.querySelectorAll('.ev-color-dot').forEach(d => {
+    d.classList.toggle('selected', d.dataset.color === evModalColor);
+  });
+
+  document.getElementById('eventModalOverlay').classList.add('open');
+  setTimeout(() => document.getElementById('evTitle').focus(), 50);
+}
+
+function closeEventModal(e) {
+  if (e && e.target !== document.getElementById('eventModalOverlay')) return;
+  document.getElementById('eventModalOverlay').classList.remove('open');
+}
+
+function selectColor(color, el) {
+  evModalColor = color;
+  document.querySelectorAll('.ev-color-dot').forEach(d => d.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+async function saveEventModal() {
+  const title = document.getElementById('evTitle').value.trim();
+  if (!title) { document.getElementById('evTitle').focus(); return; }
+
+  const evId  = document.getElementById('evModalId').value;
+  const body  = {
+    date:        evModalDate,
+    title,
+    time_start:  document.getElementById('evTimeStart').value,
+    time_end:    document.getElementById('evTimeEnd').value,
+    description: document.getElementById('evDesc').value,
+    color:       evModalColor,
+  };
+
+  try {
+    if (evId) {
+      await fetch(api(`/api/calendar/events/${evId}`), {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+    } else {
+      await fetch(api('/api/calendar/events'), {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body)
+      });
+    }
+    document.getElementById('eventModalOverlay').classList.remove('open');
+    // Обновляем текущий вид
+    await loadCalendarMonth();
+    if (calSelectedDate) openDayView(calSelectedDate);
+  } catch(e) { console.error(e); }
+}
+
+async function deleteEventModal() {
+  const evId = document.getElementById('evModalId').value;
+  if (!evId || !confirm('Удалить событие?')) return;
+  try {
+    await fetch(api(`/api/calendar/events/${evId}`), {method:'DELETE'});
+    document.getElementById('eventModalOverlay').classList.remove('open');
+    await loadCalendarMonth();
+    if (calSelectedDate) openDayView(calSelectedDate);
+  } catch(e) {}
+}
+
+// Esc закрывает модалку
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('eventModalOverlay').classList.remove('open');
+});
+
+
+// ── Calendar ──────────────────────────────────────────────
+const MONTHS_RU = ['Январь','Февраль','Март','Апрель','Май','Июнь',
+                   'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+const DAYS_RU   = ['пн','вт','ср','чт','пт','сб','вс'];
+
+let _calYear    = new Date().getFullYear();
+let _calMonth   = new Date().getMonth() + 1;
+let _calDay     = null;
+let _calEvents  = {};       // {date: [events]}
+let _calColor   = 'blue';
+
+// Инициализация
+async function initCalendar() {
+  await calLoadMonth(_calYear, _calMonth);
+  await calLoadUpcoming();
+}
+
+// Загружаем месяц
+async function calLoadMonth(y, m) {
+  try {
+    const res  = await fetch(api(`/api/calendar/month?year=${y}&month=${m}`));
+    const data = await res.json();
+    _calEvents = {};
+    for (const e of data.events) {
+      if (!_calEvents[e.date]) _calEvents[e.date] = [];
+      _calEvents[e.date].push(e);
+    }
+    renderCalGrid(y, m);
+  } catch(err) {
+    console.error('calLoadMonth:', err);
+  }
+}
+
+// Рендер сетки месяца
+function renderCalGrid(y, m) {
+  _calYear = y; _calMonth = m;
+  document.getElementById('calMonthLabel').textContent = `${MONTHS_RU[m-1]} ${y}`;
+
+  const grid  = document.getElementById('calGrid');
+  const today = new Date();
+  const todayStr = fmtDate(today);
+
+  // Первый день месяца (ISO: пн=1)
+  const firstDay = new Date(y, m-1, 1);
+  const lastDay  = new Date(y, m, 0).getDate();
+  let startDow   = firstDay.getDay(); // 0=вс
+  if (startDow === 0) startDow = 7;  // 7=вс (ISO)
+  startDow--;                         // 0=пн
+
+  let html = '';
+  // Ячейки предыдущего месяца
+  const prevLast = new Date(y, m-1, 0).getDate();
+  for (let i = startDow - 1; i >= 0; i--) {
+    const d = prevLast - i;
+    const pm = m === 1 ? 12 : m - 1;
+    const py = m === 1 ? y - 1 : y;
+    const ds = fmtDate(new Date(py, pm-1, d));
+    html += calCell(ds, d, true, ds === todayStr);
+  }
+  // Текущий месяц
+  for (let d = 1; d <= lastDay; d++) {
+    const ds = fmtDate(new Date(y, m-1, d));
+    html += calCell(ds, d, false, ds === todayStr);
+  }
+  // Следующий месяц
+  const total = startDow + lastDay;
+  const nextCells = total % 7 === 0 ? 0 : 7 - (total % 7);
+  for (let d = 1; d <= nextCells; d++) {
+    const nm = m === 12 ? 1 : m + 1;
+    const ny = m === 12 ? y + 1 : y;
+    const ds = fmtDate(new Date(ny, nm-1, d));
+    html += calCell(ds, d, true, false);
+  }
+
+  grid.innerHTML = html;
+}
+
+function calCell(dateStr, day, otherMonth, isToday) {
+  const events  = _calEvents[dateStr] || [];
+  const isWeekend = new Date(dateStr).getDay() === 0 || new Date(dateStr).getDay() === 6;
+  const isSel   = dateStr === _calDay;
+
+  let cls = 'cal-cell';
+  if (otherMonth) cls += ' other-month';
+  if (isToday)    cls += ' today';
+  if (isSel)      cls += ' selected';
+
+  let dayNum = `<div class="cal-day-num" style="${isWeekend && !isToday ? 'color:var(--q1)' : ''}">${day}</div>`;
+  if (isToday) dayNum = `<div class="cal-day-num">${day}</div>`;
+
+  // Точки событий (макс 3)
+  let dots = '';
+  if (events.length) {
+    dots = '<div class="cal-dots">';
+    const shown = events.slice(0, 3);
+    for (const e of shown) dots += `<div class="cal-dot ${e.color}"></div>`;
+    if (events.length > 3) dots += `<div style="font-size:8px;color:var(--text3)">${events.length}</div>`;
+    dots += '</div>';
+  }
+
+  return `<div class="${cls}" onclick="calOpenDay('${dateStr}')">${dayNum}${dots}</div>`;
+}
+
+// Открыть день
+async function calOpenDay(dateStr) {
+  _calDay = dateStr;
+  // Обновляем selected в сетке
+  document.querySelectorAll('.cal-cell').forEach(c => c.classList.remove('selected'));
+  document.querySelectorAll('.cal-cell').forEach(c => {
+    if (c.getAttribute('onclick')?.includes(dateStr)) c.classList.add('selected');
+  });
+
+  // Загружаем события дня
+  try {
+    const res  = await fetch(api(`/api/calendar/day?date=${dateStr}`));
+    const data = await res.json();
+    renderDayView(dateStr, data.events);
+  } catch(e) {
+    renderDayView(dateStr, []);
+  }
+
+  document.getElementById('calViewMonth').classList.remove('active');
+  document.getElementById('calViewDay').classList.add('active');
+}
+
+// Рендер дневного вида
+function renderDayView(dateStr, events) {
+  const d      = new Date(dateStr + 'T12:00:00');
+  const dow    = DAYS_RU[(d.getDay() + 6) % 7];
+  const isToday = dateStr === fmtDate(new Date());
+  const label  = `${dow}, ${d.getDate()} ${MONTHS_RU[d.getMonth()]}${isToday ? ' — сегодня' : ''}`;
+
+  document.getElementById('calDayTitle').textContent = label;
+  document.getElementById('calDayCount').textContent =
+    events.length ? `${events.length} событий` : '';
+
+  // Весь день
+  const allDay   = events.filter(e => !e.time_start);
+  const timed    = events.filter(e => e.time_start);
+  const alldaySec = document.getElementById('calAlldaySection');
+  const alldayEl  = document.getElementById('calAlldayEvents');
+
+  if (allDay.length) {
+    alldaySec.classList.add('has-events');
+    alldayEl.innerHTML = allDay.map(e =>
+      `<div class="cal-allday-event ${e.color}" style="background:var(--bg3)"
+        onclick="calDeleteEvent(${e.id},'${dateStr}')" title="Нажми чтобы удалить">
+        ${e.title}
+      </div>`
+    ).join('');
+  } else {
+    alldaySec.classList.remove('has-events');
+  }
+
+  // Timeline 00:00–23:00
+  const timeline = document.getElementById('calTimeline');
+  const evCol    = document.getElementById('calEventsCol');
+
+  let tlHtml  = '';
+  let evHtml  = '';
+
+  for (let h = 0; h < 24; h++) {
+    const hstr  = String(h).padStart(2, '0') + ':00';
+    tlHtml += `<div class="cal-slot-label">${h === 0 ? '' : hstr}</div>`;
+
+    // Событие в этом часу
+    const hourEvents = timed.filter(e => {
+      const eh = parseInt(e.time_start.split(':')[0]);
+      return eh === h;
+    });
+
+    let rowInner = '';
+    for (const e of hourEvents) {
+      const startMin = parseInt(e.time_start.split(':')[1]);
+      const topPx    = Math.round(startMin / 60 * 48);
+      let heightPx   = 44;
+      if (e.time_end) {
+        const eh2 = parseInt(e.time_end.split(':')[0]);
+        const em2 = parseInt(e.time_end.split(':')[1]);
+        const totalMins = (eh2 - h) * 60 + em2 - startMin;
+        heightPx = Math.max(22, Math.round(totalMins / 60 * 48) - 2);
+      }
+      const timeLabel = e.time_end ? `${e.time_start}–${e.time_end}` : e.time_start;
+      rowInner += `<div class="cal-event-block ${e.color}"
+        style="top:${topPx}px;height:${heightPx}px"
+        onclick="calDeleteEvent(${e.id},'${dateStr}')" title="Нажми чтобы удалить">
+        <span style="opacity:.7;white-space:nowrap">${timeLabel}</span>
+        <span>${e.title}</span>
+      </div>`;
+    }
+    evHtml += `<div class="cal-hour-row">${rowInner}</div>`;
+  }
+
+  timeline.innerHTML = tlHtml;
+  evCol.innerHTML    = evHtml;
+
+  // Скроллим к текущему времени
+  const now = new Date();
+  if (dateStr === fmtDate(now)) {
+    const scrollTo = (now.getHours() * 48) - 96;
+    setTimeout(() => {
+      document.getElementById('calDayBody').scrollTop = Math.max(0, scrollTo);
+    }, 50);
+  } else {
+    document.getElementById('calDayBody').scrollTop = 8 * 48; // 8:00
+  }
+}
+
+// Добавить событие
+async function calAddEvent() {
+  const title = document.getElementById('calAddTitle').value.trim();
+  const ts    = document.getElementById('calAddTimeStart').value;
+  const te    = document.getElementById('calAddTimeEnd').value;
+  if (!title || !_calDay) return;
+
+  const body = { title, date: _calDay, time_start: ts, time_end: te, color: _calColor };
+  try {
+    const res = await fetch(api('/api/calendar/events'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) return;
+    document.getElementById('calAddTitle').value = '';
+    document.getElementById('calAddTimeStart').value = '';
+    document.getElementById('calAddTimeEnd').value   = '';
+    // Обновляем
+    await calOpenDay(_calDay);
+    await calLoadMonth(_calYear, _calMonth);
+    await calLoadUpcoming();
+  } catch(e) { console.error(e); }
+}
+
+// Удалить событие
+async function calDeleteEvent(id, dateStr) {
+  if (!confirm('Удалить событие?')) return;
+  try {
+    await fetch(api(`/api/calendar/events/${id}`), {method: 'DELETE'});
+    await calOpenDay(dateStr);
+    await calLoadMonth(_calYear, _calMonth);
+    await calLoadUpcoming();
+  } catch(e) {}
+}
+
+// Выбор цвета
+function calSelectColor(color, el) {
+  _calColor = color;
+  document.querySelectorAll('.cal-color-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+}
+
+// Навигация
+async function calPrevMonth() {
+  _calMonth--;
+  if (_calMonth < 1) { _calMonth = 12; _calYear--; }
+  await calLoadMonth(_calYear, _calMonth);
+}
+
+async function calNextMonth() {
+  _calMonth++;
+  if (_calMonth > 12) { _calMonth = 1; _calYear++; }
+  await calLoadMonth(_calYear, _calMonth);
+}
+
+function calGoToday() {
+  const now = new Date();
+  _calYear  = now.getFullYear();
+  _calMonth = now.getMonth() + 1;
+  calLoadMonth(_calYear, _calMonth);
+  calShowMonth();
+}
+
+function calShowMonth() {
+  document.getElementById('calViewDay').classList.remove('active');
+  document.getElementById('calViewMonth').classList.add('active');
+}
+
+// Ближайшие события
+async function calLoadUpcoming() {
+  try {
+    const res  = await fetch(api('/api/calendar/upcoming?limit=10'));
+    const data = await res.json();
+    const el   = document.getElementById('calUpcoming');
+    if (!data.events.length) {
+      el.innerHTML = '<div style="font-size:11px;color:var(--text3);padding:8px 0">нет событий</div>';
+      return;
+    }
+    let html = '', prevDate = '';
+    const todayStr = fmtDate(new Date());
+    for (const e of data.events) {
+      if (e.date !== prevDate) {
+        const d   = new Date(e.date + 'T12:00:00');
+        const lbl = e.date === todayStr ? 'Сегодня' :
+          `${d.getDate()} ${MONTHS_RU[d.getMonth()].slice(0,3)}`;
+        html += `<div style="font-size:10px;color:var(--text3);padding:8px 0 3px;text-transform:uppercase;letter-spacing:.05em">${lbl}</div>`;
+        prevDate = e.date;
+      }
+      const t = e.time_start ? `<span style="color:var(--text3);margin-right:6px">${e.time_start}</span>` : '';
+      html += `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);cursor:pointer"
+        onclick="calOpenDay('${e.date}')">
+        <div style="width:3px;height:28px;border-radius:2px;background:${colorHex(e.color)};flex-shrink:0"></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${e.title}</div>
+          <div style="font-size:10px;color:var(--text3)">${e.time_start || 'Весь день'}</div>
+        </div>
+      </div>`;
+    }
+    el.innerHTML = html;
+  } catch(e) {}
+}
+
+function colorHex(c) {
+  return {blue:'#378ADD',green:'#1D9E75',red:'#E24B4A',orange:'#EF9F27',purple:'#7F77DD'}[c] || '#378ADD';
+}
+
+function fmtDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
 // ── Init ──────────────────────────────────────────────────
 (async () => {
+  loadCalendarMonth();
   loadStatus();
   loadAsideContext();
   loadTasksBadge();
+  initCalendar();
   setInterval(loadStatus, 30000);
   setInterval(loadAsideTasks, 10000);
 })();

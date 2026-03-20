@@ -494,5 +494,177 @@ def create_app(llm_service) -> FastAPI:
         ok = move_task(text, tq)
         return {"ok": ok}
 
+
+    # ── Calendar API ──────────────────────────────────────────────────────────
+
+    @app.get("/api/calendar/month")
+    async def calendar_month(year: int = 0, month: int = 0,
+                             token: str = Query(default="")):
+        _check_token(token)
+        from datetime import date
+        from app.calendar_service import get_month
+        from app.config import settings
+        today = date.today()
+        y = year  or today.year
+        m = month or today.month
+        return get_month(settings.telegram_user_id, y, m)
+
+    @app.get("/api/calendar/day")
+    async def calendar_day(date: str = "", token: str = Query(default="")):
+        _check_token(token)
+        from datetime import date as _date
+        from app.calendar_service import get_day
+        from app.config import settings
+        d = date or str(_date.today())
+        return get_day(settings.telegram_user_id, d)
+
+    @app.post("/api/calendar/events")
+    async def calendar_add_event(body: dict, token: str = Query(default="")):
+        _check_token(token)
+        from app.calendar_service import create_event
+        from app.config import settings
+        ev = create_event(
+            user_id     = settings.telegram_user_id,
+            date        = body.get("date", ""),
+            title       = body.get("title", ""),
+            time_start  = body.get("time_start", ""),
+            time_end    = body.get("time_end", ""),
+            description = body.get("description", ""),
+            color       = body.get("color", "blue"),
+        )
+        return ev
+
+    @app.put("/api/calendar/events/{event_id}")
+    async def calendar_update_event(event_id: int, body: dict,
+                                    token: str = Query(default="")):
+        _check_token(token)
+        from app.database import update_event
+        from app.config import settings
+        ok = update_event(event_id, settings.telegram_user_id, **body)
+        return {"ok": ok}
+
+    @app.delete("/api/calendar/events/{event_id}")
+    async def calendar_delete_event(event_id: int,
+                                    token: str = Query(default="")):
+        _check_token(token)
+        from app.database import delete_event
+        from app.config import settings
+        ok = delete_event(event_id, settings.telegram_user_id)
+        return {"ok": ok}
+
+    @app.get("/api/calendar/upcoming")
+    async def calendar_upcoming(token: str = Query(default="")):
+        _check_token(token)
+        from app.database import get_upcoming_events
+        from app.config import settings
+        return {"events": get_upcoming_events(settings.telegram_user_id, limit=7)}
+
+
+    # ══════════════════════════════════════════════════════
+    # CALENDAR API
+    # ══════════════════════════════════════════════════════
+
+    @app.get("/api/calendar/month")
+    async def calendar_month(year: int, month: int, token: str = Query(default="")):
+        """События за месяц. Возвращает {events: [...], days_with_events: [...]}"""
+        _check_token(token)
+        from app.database import get_events_for_month
+        user_id = settings.telegram_user_id
+        events  = get_events_for_month(user_id, year, month)
+        days    = list({e["date"] for e in events})
+        return {"events": events, "days_with_events": days}
+
+    @app.get("/api/calendar/day")
+    async def calendar_day(date: str, token: str = Query(default="")):
+        """События на конкретный день YYYY-MM-DD."""
+        _check_token(token)
+        from app.database import get_events_for_date
+        user_id = settings.telegram_user_id
+        events  = get_events_for_date(user_id, date)
+        return {"date": date, "events": events}
+
+    @app.get("/api/calendar/upcoming")
+    async def calendar_upcoming(limit: int = 7, token: str = Query(default="")):
+        """Ближайшие события."""
+        _check_token(token)
+        from app.database import get_upcoming_events
+        user_id = settings.telegram_user_id
+        return {"events": get_upcoming_events(user_id, limit)}
+
+    @app.post("/api/calendar/events")
+    async def calendar_add(body: dict, token: str = Query(default="")):
+        """Создать событие."""
+        _check_token(token)
+        from app.database import save_event
+        user_id = settings.telegram_user_id
+        title   = body.get("title", "").strip()
+        date    = body.get("date", "").strip()
+        if not title or not date:
+            raise HTTPException(status_code=400, detail="title и date обязательны")
+        event_id = save_event(
+            user_id=user_id,
+            date=date,
+            title=title,
+            time_start=body.get("time_start", ""),
+            time_end=body.get("time_end", ""),
+            description=body.get("description", ""),
+            color=body.get("color", "blue"),
+        )
+        from app.database import get_events_for_date
+        return {"id": event_id, "ok": True}
+
+    @app.put("/api/calendar/events/{event_id}")
+    async def calendar_update(event_id: int, body: dict, token: str = Query(default="")):
+        """Обновить событие."""
+        _check_token(token)
+        from app.database import update_event
+        user_id = settings.telegram_user_id
+        ok = update_event(event_id, user_id, **body)
+        return {"ok": ok}
+
+    @app.delete("/api/calendar/events/{event_id}")
+    async def calendar_delete(event_id: int, token: str = Query(default="")):
+        """Удалить событие."""
+        _check_token(token)
+        from app.database import delete_event
+        user_id = settings.telegram_user_id
+        ok = delete_event(event_id, user_id)
+        return {"ok": ok}
+
+
+    @app.post("/api/calendar/day_notes")
+    async def calendar_day_notes(body: dict, token: str = Query(default="")):
+        """Сохраняет заметки дня в Obsidian vault."""
+        _check_token(token)
+        date  = body.get("date", "")
+        notes = body.get("notes", "")
+        if not date:
+            raise HTTPException(status_code=400, detail="date обязателен")
+        try:
+            from app.integrations.obsidian import vault_available, _read, _write, _frontmatter
+            from datetime import datetime
+            if vault_available():
+                y, m, d   = date.split("-")
+                dt        = datetime(int(y), int(m), int(d))
+                from pathlib import Path as _Path
+                rel_path  = _Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
+                existing  = _read(rel_path)
+                if not existing:
+                    fm      = _frontmatter(["дневник", dt.strftime("%Y-%m")], {"date": date})
+                    content = f"{fm}\n\n# {d} {dt.strftime('%B')} {y}\n\n## 📝 Заметки\n\n{notes}\n"
+                elif "## 📝 Заметки" in existing:
+                    import re as _re
+                    content = _re.sub(
+                        r"## 📝 Заметки.*$",
+                        f"## 📝 Заметки\n\n{notes}",
+                        existing, flags=_re.DOTALL
+                    )
+                else:
+                    content = existing.rstrip() + f"\n\n## 📝 Заметки\n\n{notes}\n"
+                _write(rel_path, content)
+        except Exception as e:
+            pass
+        return {"ok": True}
+
     logger.info("🌐 Веб-сервер создан")
     return app

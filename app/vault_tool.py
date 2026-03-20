@@ -44,6 +44,12 @@ VAULT_TOOL = {
                     "batch_done",     # отметить несколько задач выполненными
                     "diary_context",  # показать контекст дневника
                     "undo_task",      # вернуть выполненную задачу в активные
+                    "add_event",      # добавить событие в календарь
+                    "list_events",    # показать события (date или upcoming)
+                    "delete_event",   # удалить событие по id или названию
+                    "add_event",      # добавить событие в календарь
+                    "get_events",     # события на дату или ближайшие
+                    "delete_event",   # удалить событие по id
                 ],
                 "description": "Операция"
             },
@@ -85,6 +91,38 @@ VAULT_TOOL = {
                 "enum": ["q1", "q2", "q3", "q4"],
                 "description": "Для move_task: целевой квадрант"
             },
+            "event_date": {
+                "type": "string",
+                "description": "Дата события YYYY-MM-DD. Для list_events: конкретная дата или пусто = ближайшие"
+            },
+            "event_time_start": {"type": "string", "description": "Время начала HH:MM"},
+            "event_time_end":   {"type": "string", "description": "Время конца HH:MM"},
+            "event_color": {
+                "type": "string",
+                "enum": ["blue", "green", "red", "orange", "purple"],
+                "description": "Цвет события"
+            },
+            "event_date": {
+                "type": "string",
+                "description": "Дата события: YYYY-MM-DD. Сегодня если не указана."
+            },
+            "event_time": {
+                "type": "string",
+                "description": "Время начала: HH:MM. Пусто = весь день."
+            },
+            "event_time_end": {
+                "type": "string",
+                "description": "Время окончания: HH:MM."
+            },
+            "event_color": {
+                "type": "string",
+                "enum": ["blue", "green", "red", "orange", "purple"],
+                "description": "Цвет события. blue по умолчанию."
+            },
+            "event_id": {
+                "type": "integer",
+                "description": "ID события для delete_event"
+            },
         },
         "required": ["op"]
     }
@@ -94,6 +132,9 @@ VAULT_TOOL = {
 async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
                        plan_horizon: str = "short", folder: str = "Заметки",
                        deadline: str = "", target_quadrant: str = "q2",
+                       event_date: str = "", event_time: str = "",
+                       event_time_end: str = "", event_color: str = "blue",
+                       event_id: int = 0,
                        user_id: int = 0) -> str:
     try:
         from app.integrations.obsidian import (
@@ -301,6 +342,37 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
             logger.info("vault undo_task: '%s' ok=%s", text[:50], ok)
             return f"возвращено в активные: «{text}»" if ok else f"не нашла: «{text}»"
 
+        # ── add_event ─────────────────────────────────────────────────────────
+        elif op == "add_event":
+            if not text:
+                return "ошибка: название события пустое"
+            from datetime import date as _date
+            date_str = event_date or str(_date.today())
+            from app.calendar_service import create_event
+            ev = create_event(
+                user_id=user_id, date=date_str, title=text,
+                time_start=event_time, time_end=event_time_end,
+                description=deadline, color=event_color,
+            )
+            t = f"{ev['time_start']}–{ev['time_end']}" if ev["time_start"] else "весь день"
+            return f"событие добавлено: {ev['title']} · {date_str} · {t}"
+
+        # ── get_events ────────────────────────────────────────────────────────
+        elif op == "get_events":
+            from datetime import date as _date
+            from app.calendar_service import format_day_for_telegram, format_upcoming_for_telegram
+            if event_date:
+                return format_day_for_telegram(user_id, event_date)
+            return format_upcoming_for_telegram(user_id)
+
+        # ── delete_event ──────────────────────────────────────────────────────
+        elif op == "delete_event":
+            if not event_id:
+                return "ошибка: не указан id события"
+            from app.database import delete_event as _del
+            ok = _del(event_id, user_id)
+            return "событие удалено" if ok else "событие не найдено"
+
         # ── week_plan ─────────────────────────────────────────────────────────
         elif op == "week_plan":
             return get_week_plan()
@@ -324,6 +396,61 @@ async def run_vault_op(op: str, text: str = "", quadrant: str = "q2",
         elif op == "diary_context":
             ctx_text = get_diary_context(days=3)
             return ctx_text if ctx_text else "дневник пустой за последние 3 дня"
+
+        # ── add_event ─────────────────────────────────────────────────────────
+        elif op == "add_event":
+            if not text or not event_date:
+                return "ошибка: нужны text (название) и event_date (YYYY-MM-DD)"
+            from app.database import save_event
+            eid = save_event(
+                user_id=user_id, date=event_date, title=text,
+                time_start=event_time_start, time_end=event_time_end,
+                description="", color=event_color or "blue",
+            )
+            time_str = f" в {event_time_start}" if event_time_start else ""
+            logger.info("vault add_event: %s %s", event_date, text[:40])
+            return f"событие добавлено: {event_date}{time_str} — «{text}» (id={eid})"
+
+        # ── list_events ────────────────────────────────────────────────────────
+        elif op == "list_events":
+            from app.database import get_events_for_date, get_upcoming_events
+            if event_date:
+                events = get_events_for_date(user_id, event_date)
+                if not events:
+                    return f"событий на {event_date} нет"
+                lines = [f"📅 {event_date}:"]
+                for e in events:
+                    t = f"{e['time_start']}" + (f"–{e['time_end']}" if e['time_end'] else "")
+                    lines.append(f"  • {t + ' ' if t else ''}{e['title']}")
+                return "\n".join(lines)
+            else:
+                events = get_upcoming_events(user_id, limit=7)
+                if not events:
+                    return "ближайших событий нет"
+                lines = ["📅 Ближайшие события:"]
+                prev_date = ""
+                for e in events:
+                    if e["date"] != prev_date:
+                        lines.append(f"\n{e['date']}:")
+                        prev_date = e["date"]
+                    t = e["time_start"] + (f"–{e['time_end']}" if e["time_end"] else "")
+                    lines.append(f"  • {t + ' ' if t else ''}{e['title']}")
+                return "\n".join(lines)
+
+        # ── delete_event ───────────────────────────────────────────────────────
+        elif op == "delete_event":
+            from app.database import delete_event as _del_ev, get_events_for_date, get_upcoming_events
+            # Пробуем удалить по id (если text — число)
+            if text.isdigit():
+                ok = _del_ev(int(text), user_id)
+                return f"событие удалено" if ok else f"событие id={text} не найдено"
+            # Ищем по названию среди ближайших
+            events = get_upcoming_events(user_id, limit=30)
+            for e in events:
+                if text.lower() in e["title"].lower():
+                    ok = _del_ev(e["id"], user_id)
+                    return f"удалено: «{e['title']}» ({e['date']})"
+            return f"не нашла событие «{text}»"
 
         # ── cleanup ───────────────────────────────────────────────────────────
         elif op == "cleanup":
@@ -355,6 +482,11 @@ async def process_tool_calls(tool_calls: list, user_id: int) -> list[dict]:
             folder=args.get("folder", "Заметки"),
             deadline=args.get("deadline", ""),
             target_quadrant=args.get("target_quadrant", "q2"),
+            event_date=args.get("event_date", ""),
+            event_time=args.get("event_time", ""),
+            event_time_end=args.get("event_time_end", ""),
+            event_color=args.get("event_color", "blue"),
+            event_id=int(args.get("event_id", 0)),
             user_id=user_id,
         )
         return {"tool_call_id": tc.get("id", "call_0"), "result": result}
