@@ -72,8 +72,16 @@ def _load_index() -> dict:
 
 
 def _save_index(index: dict) -> None:
+    """Атомарная запись — tmp файл → rename. Безопасно при crash."""
     _INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _INDEX_FILE.write_text(json.dumps(index, ensure_ascii=False))
+    tmp = _INDEX_FILE.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_INDEX_FILE)   # атомарная замена на POSIX
+    except Exception:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def _extract_text(content: str) -> tuple[str, str, str]:

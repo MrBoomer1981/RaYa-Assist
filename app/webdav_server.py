@@ -10,6 +10,7 @@ Railway Variables:
   OBSIDIAN_VAULT_PATH — путь к vault (default: /data/obsidian_vault)
 """
 import base64
+import hmac
 import hashlib
 import logging
 import mimetypes
@@ -29,9 +30,13 @@ logger = logging.getLogger(__name__)
 def VAULT_PATH() -> Path:
     # WebDAV отдаёт базовую папку — Remotely Save сам заходит в RaYa-Vault
     return Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
-WEBDAV_USER = os.getenv("WEBDAV_USER", "raya")
-WEBDAV_PASS = os.getenv("WEBDAV_PASSWORD", "")
-PREFIX      = "/webdav"
+PREFIX = "/webdav"
+
+def _webdav_creds() -> tuple[str, str]:
+    """Читаем при каждом запросе — Railway Variables могут обновиться."""
+    user = os.getenv("WEBDAV_USER", "raya")
+    pwd  = os.getenv("WEBDAV_PASSWORD", "")
+    return user, pwd
 
 
 # ══════════════════════════════════════════════════════════
@@ -39,15 +44,27 @@ PREFIX      = "/webdav"
 # ══════════════════════════════════════════════════════════
 
 def _check_auth(request: Request) -> bool:
-    if not WEBDAV_PASS:
-        return True
+    """
+    Basic Auth проверка.
+    Если WEBDAV_PASSWORD не задан — всегда 401 (безопасный дефолт).
+    Использует hmac.compare_digest против timing attack.
+    """
+    import hmac
+    webdav_user, webdav_pass = _webdav_creds()
+
+    if not webdav_pass:
+        logger.warning("WebDAV: WEBDAV_PASSWORD не задан — доступ закрыт")
+        return False
+
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("basic "):
         return False
     try:
-        decoded = base64.b64decode(auth[6:]).decode()
+        decoded   = base64.b64decode(auth[6:]).decode("utf-8")
         user, pwd = decoded.split(":", 1)
-        return user == WEBDAV_USER and pwd == WEBDAV_PASS
+        user_ok   = hmac.compare_digest(user.encode(), webdav_user.encode())
+        pass_ok   = hmac.compare_digest(pwd.encode(),  webdav_pass.encode())
+        return user_ok and pass_ok
     except Exception:
         return False
 

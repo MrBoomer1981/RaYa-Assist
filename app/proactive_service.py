@@ -8,6 +8,8 @@ proactive.py — проактивные сообщения RaYa: дайджес�
 
 import itertools
 import logging
+import os
+from pathlib import Path
 from app.feature_flags import (
     FEATURE_MORNING_DIGEST, FEATURE_PROACTIVE_ACTIVITY,
     FEATURE_PROACTIVE_IDEA_FOLLOWUP, FEATURE_PROACTIVE_SILENCE,
@@ -370,6 +372,8 @@ _CHECK_INTERVAL_SEC = 60     # проверка каждую минуту
 
 class ProactiveService:
 
+    _STATE_FILE = Path(os.getenv("DB_PATH", "/data/database.db")).parent / "proactive_state.json"
+
     def __init__(self, bot: Bot, llm_service) -> None:
         self._bot  = bot
         self._llm  = llm_service
@@ -378,7 +382,36 @@ class ProactiveService:
 
         self._digest_sent_date: str  = ""
         self._last_initiative:  datetime | None = None
-        self._trigger_state:    dict = {}  # персистентное состояние триггеров  # когда последний раз писали первой
+        self._trigger_state:    dict = self._load_state()
+
+    def _load_state(self) -> dict:
+        """Загружает trigger_state с диска — переживает рестарт Railway."""
+        try:
+            import json as _j
+            if self._STATE_FILE.exists():
+                data = _j.loads(self._STATE_FILE.read_text())
+                for key in ("sent_task_ids", "sent_diary_ids"):
+                    if key in data:
+                        data[key] = set(data[key])
+                logger.info("📂 Proactive state загружен (%d ключей)", len(data))
+                return data
+        except Exception as e:
+            logger.warning("proactive: load state failed: %s", e)
+        return {}
+
+    def _save_state(self) -> None:
+        """Сохраняет trigger_state на диск атомарно."""
+        try:
+            import json as _j
+            data = dict(self._trigger_state)
+            for key in ("sent_task_ids", "sent_diary_ids"):
+                if key in data:
+                    data[key] = list(data[key])
+            tmp = self._STATE_FILE.with_suffix(".tmp")
+            tmp.write_text(_j.dumps(data, ensure_ascii=False, default=str))
+            tmp.replace(self._STATE_FILE)
+        except Exception as e:
+            logger.warning("proactive: save state failed: %s", e)
 
     def start(self) -> None:
         self._sched_task = asyncio.create_task(self._run_scheduler())
@@ -487,7 +520,9 @@ class ProactiveService:
         try:
             user_id = settings.telegram_user_id
             llm     = self._llm._llm
-            await check_all_triggers(user_id, self._bot, llm, self._trigger_state)
+            sent = await check_all_triggers(user_id, self._bot, llm, self._trigger_state)
+            if sent:
+                self._save_state()
         except Exception:
             logger.exception("Ошибка проактивных триггеров")
 

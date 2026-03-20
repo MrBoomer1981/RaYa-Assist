@@ -66,11 +66,11 @@ class LLMService:
 
         from app.llm_pipeline import (
             MemoryService, ContextService, ConsistencyService,
-            RouterCalibration, make_tone_controller_factory,
+              RouterCalibration,
         )
         self._memory      = MemoryService(self._llm)
         self._context     = ContextService(self._llm)
-        self._tone        = make_tone_controller_factory(settings.groq_api_key)
+          # ToneController убран — логика в системном промпте
         self._consistency = ConsistencyService(self._llm)
         self._calibration = RouterCalibration()
 
@@ -182,8 +182,6 @@ class LLMService:
             user_id, agent_result.agent_name, reminder is not None,
         )
 
-        # Tone Controller — корректируем тон если нужно (быстрая 8b модель)
-        reply = await self._tone.process(user_message, reply)
 
         # Consistency — проверяем согласованность с принятыми решениями
         reply = await self._consistency.check_and_fix(user_id, reply, user_message)

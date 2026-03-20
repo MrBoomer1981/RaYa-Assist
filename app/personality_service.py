@@ -603,6 +603,7 @@ _EMOTION_PATTERN = re.compile(r"<emotion>([\w]+)</emotion>", re.IGNORECASE)
 VALID_EMOTIONS = {
     "calm", "warm", "excited", "curious",
     "supportive", "serious", "playful", "concerned", "proud",
+    "focused",  # рабочий режим — задачи, планирование
 }
 
 def extract_emotion_tag(text: str) -> tuple[str, str]:

@@ -13,8 +13,20 @@ import logging
 import os
 import re
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
+
+# Per-file locks — защита от race condition при параллельных запросах
+_file_locks: dict[str, threading.Lock] = {}
+_locks_mutex = threading.Lock()
+
+def _get_file_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _locks_mutex:
+        if key not in _file_locks:
+            _file_locks[key] = threading.Lock()
+        return _file_locks[key]
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +79,19 @@ def _frontmatter(tags: list, extra: dict | None = None) -> str:
 
 
 def _write(rel_path: Path, content: str) -> Path:
+    """Атомарная запись через tmp файл + per-file lock."""
     full = VAULT_PATH() / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
-    full.write_text(content, encoding="utf-8")
+    tmp  = full.with_suffix(full.suffix + ".tmp")
+    lock = _get_file_lock(full)
+    with lock:
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(full)   # атомарная замена на POSIX
+        except Exception:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+            raise
     return full
 
 

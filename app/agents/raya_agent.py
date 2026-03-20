@@ -42,7 +42,10 @@ _HARD_RULES = (
     "Информацию из поиска излагай своими словами без упоминания источника.\n"
     "3. На вопросы о курсах/ценах — максимум 2-3 предложения. "
     "Только самое важное, без перечислений.\n"
-    "4. Никаких URL в ответах."
+    "4. Никаких URL в ответах.\n"
+    "5. Тон ответа: живой, личный, не формальный. "
+    "Если ответ звучит как шаблонный текст из инструкции — перепиши своими словами. "
+    "Короткий вопрос → 1-3 предложения. Сложная задача → столько сколько нужно."
 )
 
 _SYSTEM_CACHE_TTL = 60  # секунд — как долго кэшируем статичную часть промпта
@@ -123,14 +126,28 @@ class RayaAgent(BaseAgent):
 
         async def _get_vault_summary():
             try:
-                from app.integrations.obsidian import get_tasks_summary, vault_available
-                if vault_available():
-                    summary = get_tasks_summary()
-                    if summary != "задач нет":
-                        return f"Текущие задачи Сократа: {summary}"
+                from app.integrations.obsidian import (
+                    get_tasks_summary, get_overdue_tasks, vault_available
+                )
+                if not vault_available():
+                    return ""
+                parts = []
+                # Краткая сводка по квадрантам
+                summary = get_tasks_summary()
+                if summary and summary != "задач нет":
+                    parts.append(f"Задачи: {summary}")
+                # Просроченные и горящие — явно показываем
+                overdue = get_overdue_tasks(days_threshold=1)
+                if overdue:
+                    urgent = [t["text"] for t in overdue if t.get("overdue")]
+                    today  = [t["text"] for t in overdue if not t.get("overdue")]
+                    if urgent:
+                        parts.append("🔴 ПРОСРОЧЕНО: " + "; ".join(urgent[:3]))
+                    if today:
+                        parts.append("⏰ Сегодня дедлайн: " + "; ".join(today[:3]))
+                return "\n".join(parts) if parts else ""
             except Exception:
-                pass
-            return ""
+                return ""
 
         # Запускаем всё параллельно
         (

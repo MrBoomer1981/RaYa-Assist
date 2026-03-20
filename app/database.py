@@ -31,19 +31,42 @@ def _migrate(con: sqlite3.Connection) -> None:
 
 @contextmanager
 def _conn() -> Generator[sqlite3.Connection, None, None]:
-    """Контекстный менеджер соединения с авто-commit/rollback."""
-    con = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA synchronous=NORMAL")
-    con.execute("PRAGMA foreign_keys=ON")
-    try:
-        yield con
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+    """
+    Контекстный менеджер соединения с авто-commit/rollback.
+    Retry при SQLITE_BUSY — до 5 попыток с backoff.
+    """
+    import time as _time
+    last_err = None
+    for attempt in range(5):
+        try:
+            con = sqlite3.connect(
+                DB_PATH,
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                timeout=10,        # ждём lock до 10 сек
+            )
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA synchronous=NORMAL")
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("PRAGMA busy_timeout=5000")  # ms
+            try:
+                yield con
+                con.commit()
+                return
+            except sqlite3.OperationalError as e:
+                con.rollback()
+                raise
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
+        except sqlite3.OperationalError as e:
+            last_err = e
+            if "locked" in str(e).lower() and attempt < 4:
+                _time.sleep(0.1 * (2 ** attempt))  # 0.1, 0.2, 0.4, 0.8s
+                continue
+            raise
+    raise last_err
 
 
 def init_db() -> None:
@@ -207,6 +230,7 @@ def save_reminder(
         return cur.lastrowid or 0
 
 
+# NOTE: unused — candidate for removal
 def next_reminder_time(remind_at: datetime, recurrence: str) -> datetime | None:
     """Вычисляет следующее время для повторяющегося напоминания."""
     from datetime import timedelta
