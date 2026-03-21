@@ -155,19 +155,6 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER NOT NULL,
-                date        TEXT NOT NULL,        -- YYYY-MM-DD
-                time_start  TEXT,                 -- HH:MM или NULL (весь день)
-                time_end    TEXT,                 -- HH:MM или NULL
-                title       TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                color       TEXT DEFAULT 'blue',  -- blue/green/red/orange/purple
-                created_at  TEXT DEFAULT (datetime('now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_events_date ON events(user_id, date);
-
-            CREATE TABLE IF NOT EXISTS events (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id     INTEGER NOT NULL,
                 date        TEXT NOT NULL,
                 time_start  TEXT,
                 time_end    TEXT,

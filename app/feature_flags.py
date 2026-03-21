@@ -21,12 +21,12 @@ def _flag(name: str, default: bool = True) -> bool:
 
 
 # ── Агенты ────────────────────────────────────────────────────────────────────
-FEATURE_IMAGE_AGENT   = _flag("FEATURE_IMAGE_AGENT",   default=False)
-FEATURE_IDEAS_AGENT   = _flag("FEATURE_IDEAS_AGENT",   default=False)
+FEATURE_IMAGE_AGENT   = _flag("FEATURE_IMAGE_AGENT",   default=True)
+FEATURE_IDEAS_AGENT   = _flag("FEATURE_IDEAS_AGENT",   default=True)
 
 # ── Проактивные триггеры ──────────────────────────────────────────────────────
-FEATURE_PROACTIVE_IDEA_FOLLOWUP   = _flag("FEATURE_PROACTIVE_IDEA",     default=False)
-FEATURE_PROACTIVE_ACTIVITY        = _flag("FEATURE_PROACTIVE_ACTIVITY", default=False)
+FEATURE_PROACTIVE_IDEA_FOLLOWUP   = _flag("FEATURE_PROACTIVE_IDEA",     default=True)
+FEATURE_PROACTIVE_ACTIVITY        = _flag("FEATURE_PROACTIVE_ACTIVITY", default=True)
 FEATURE_PROACTIVE_SILENCE         = _flag("FEATURE_PROACTIVE_SILENCE",  default=True)
 FEATURE_MORNING_DIGEST            = _flag("FEATURE_MORNING_DIGEST",     default=True)
 FEATURE_TASK_DEADLINES            = _flag("FEATURE_TASK_DEADLINES",     default=True)

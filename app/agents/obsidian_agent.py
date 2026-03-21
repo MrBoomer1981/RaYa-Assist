@@ -294,7 +294,6 @@ class ObsidianAgent(BaseAgent):
             return AgentResult(success=False, agent_name=self.agent_name,
                 content="Сократ, не смогла разобрать задачи.")
 
-        _Q_TO_PRIO  = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
         reply_lines = ["Задачи добавлены по матрице Эйзенхауэра:\n"]
         for group in groups:
             q     = group.get("quadrant", "q2")
@@ -303,12 +302,6 @@ class ObsidianAgent(BaseAgent):
                 continue
             q_info = QUADRANTS.get(q, QUADRANTS["q2"])
             add_tasks(tasks, quadrant=q)
-            prio = _Q_TO_PRIO.get(q, 2)
-            for t in tasks:
-                try:
-                    save_task(ctx.user_id, t, prio, "")
-                except Exception:
-                    pass
             reply_lines.append(f"{q_info['emoji']} **{q_info['title']}**")
             for t in tasks:
                 reply_lines.append(f"  • {t}")
