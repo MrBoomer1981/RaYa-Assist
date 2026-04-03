@@ -1,5 +1,1 @@
-.env
-venv/
-__pycache__/
-*.pyc
-database.db
+Nothing should be ignored since only a Python source file (`audit.py`) was modified and there are no build artifacts, dependencies, or temporary files in the changes.

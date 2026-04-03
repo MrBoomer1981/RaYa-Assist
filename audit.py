@@ -99,9 +99,9 @@ os.environ.update({'GROQ_API_KEY':'gsk_test','TELEGRAM_TOKEN':'1:test','ALLOWED_
 # Очищаем кеш app.* перед каждым импортом чтобы избежать накопления
 for mod in ['app.config','app.utils','app.database','app.agents.base_agent','app.agents.registry',
     'app.agents.router','app.agents.orchestrator','app.agents.raya_agent','app.agents.code_agent',
-    'app.agents.image_agent','app.agents.diary_agent','app.agents.research_agent','app.agents.science_agent',
+    'app.agents.image_agent','app.agents.research_agent',
     'app.agents.todo_agent','app.agents.morning_agent','app.agents.text_agent','app.agents.ideas_agent',
-    'app.agents.planning_agent','app.agents.explain_agent','app.agents.critic_agent','app.llm_pipeline',
+    'app.agents.explain_agent','app.agents.critic_agent','app.llm_pipeline',
     'app.llm_service','app.personality_service','app.proactive_service','app.search_service',
     'app.middleware','app.handlers','app.web_server','app.core']:
     for k in [k for k in sys.modules if k.startswith('app.')]: del sys.modules[k]
