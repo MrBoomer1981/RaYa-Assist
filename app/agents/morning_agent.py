@@ -101,24 +101,24 @@ _PHILOSOPHY = [
 # ── Темы для поиска новостей ──────────────────────────────────────────────────
 _NEWS_QUERIES = [
     # Технологии и AI
-    ("AI technology breakthroughs today", "🤖 AI и технологии"),
-    ("artificial intelligence news today", "🤖 AI и технологии"),
+    ("прорыв в искусственном интеллекте сегодня", "🤖 AI и технологии"),
+    ("новости технологий инновации сегодня", "🤖 AI и технологии"),
 
     # Бизнес и стартапы
-    ("startup funding tech business news today", "💼 Бизнес"),
-    ("entrepreneurship business world news today", "💼 Бизнес"),
+    ("стартапы инвестиции бизнес новости сегодня", "💼 Бизнес"),
+    ("предпринимательство экономика мира сегодня", "💼 Бизнес"),
 
     # Наука
-    ("science discovery research news today", "🔬 Наука"),
-    ("space exploration science breakthrough today", "🔬 Наука"),
+    ("научные открытия исследования сегодня", "🔬 Наука"),
+    ("космос исследование космоса открытия сегодня", "🔬 Наука"),
 
     # Мировые события
-    ("world news important events today", "🌍 Мир"),
-    ("global economy geopolitics today", "🌍 Мир"),
+    ("важные мировые события сегодня", "🌍 Мир"),
+    ("геополитика экономика мира сегодня", "🌍 Мир"),
 
     # Продуктивность и психология
-    ("productivity psychology habits research today", "🧠 Психология"),
-    ("mental performance focus research today", "🧠 Психология"),
+    ("психология продуктивность привычки исследования", "🧠 Психология"),
+    ("ментальное здоровье фокус внимание исследования", "🧠 Психология"),
 ]
 
 
@@ -256,7 +256,8 @@ async def _get_tasks(user_id: int) -> str:
 async def _get_news() -> str:
     """
     Параллельный поиск по 4 темам через Tavily.
-    Берёт 2 рандомных темы чтобы каждый день было разное.
+    Берёт 4 рандомных темы чтобы каждый день было разное.
+    Возвращает развернутую информацию на русском языке.
     """
     try:
         from app.search_service import SearchService
@@ -266,9 +267,9 @@ async def _get_news() -> str:
         # Выбираем 4 рандомных темы из пула
         selected = random.sample(_NEWS_QUERIES, min(4, len(_NEWS_QUERIES)))
 
-        # Параллельный поиск
+        # Параллельный поиск с увеличенным количеством результатов
         results = await asyncio.gather(
-            *[svc.search(query, max_results=2) for query, _ in selected],
+            *[svc.search(query, max_results=3) for query, _ in selected],
             return_exceptions=True
         )
 
@@ -280,9 +281,9 @@ async def _get_news() -> str:
             text = str(result).strip()
             if len(text) < 30:
                 continue
-            # Берём первые 400 символов
-            preview = text[:400].rstrip()
-            if len(text) > 400:
+            # Берём первые 800 символов для более развернутой информации
+            preview = text[:800].rstrip()
+            if len(text) > 800:
                 preview += "..."
             sections.append(f"**{label}**\n{preview}")
 

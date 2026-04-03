@@ -365,6 +365,7 @@ POST https://raya-assist-production.up.railway.app/api/search/index?token=sokrat
 
 | Дата | Изменение |
 |---|---|
+| 2026-03 | Новости в дайджесте — русский язык, развернутая информация (800 символов на тему) |
 | 2026-03 | Семантический поиск (Groq embeddings) |
 | 2026-03 | Календарь — месячный вид, дневное расписание, Obsidian daily notes |
 | 2026-03 | Матрица Эйзенхауэра — drag&drop, undo, дедлайны в UI |
