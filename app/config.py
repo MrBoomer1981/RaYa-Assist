@@ -47,14 +47,14 @@ class Settings(BaseSettings):
 
     # Список разрешённых Telegram user_id (безопасность)
     # Формат в .env: ALLOWED_USER_IDS=123456789,987654321
+    # Пустой список = проект общедоступный
     allowed_user_ids: str = ""
 
     # Опциональные ключи для расширений
     tavily_api_key: str = ""
 
-    # Telegram user_id владельца — нужен для веб-интерфейса
-    # Найти: написать боту /start и посмотреть логи Railway (user_id=XXXXXXXXX)
-    telegram_user_id: int = 0  # ОБЯЗАТЕЛЬНО задать TELEGRAM_USER_ID в Railway Variables
+    # Telegram user_id владельца — больше не требуется для общедоступного режима
+    telegram_user_id: int = 0
 
     # Параметры модели
     model_name: str = "llama-3.3-70b-versatile"
@@ -70,17 +70,7 @@ class Settings(BaseSettings):
         if not self.system_prompt:
             object.__setattr__(self, "system_prompt", _load_persona())
 
-    @field_validator("telegram_user_id")
-    @classmethod
-    def validate_telegram_user_id(cls, v: int) -> int:
-        if v == 0:
-            import warnings
-            warnings.warn(
-                "TELEGRAM_USER_ID не задан — веб-интерфейс будет работать некорректно. "
-                "Добавь переменную в Railway Variables.",
-                stacklevel=2,
-            )
-        return v
+
 
     @field_validator("temperature")
     @classmethod
@@ -102,9 +92,9 @@ class Settings(BaseSettings):
 
     @property
     def allowed_ids(self) -> set[int]:
-        """Возвращает множество разрешённых user_id."""
+        """Возвращает множество разрешённых user_id. Пустой = все разрешены."""
         if not self.allowed_user_ids:
-            return set()
+            return set()  # пустой = общедоступный режим
         ids = set()
         for part in self.allowed_user_ids.split(","):
             part = part.strip()
@@ -114,6 +104,7 @@ class Settings(BaseSettings):
 
     @property
     def security_enabled(self) -> bool:
+        """False = проект общедоступный, True = только для listed user_id."""
         return bool(self.allowed_user_ids)
 
 

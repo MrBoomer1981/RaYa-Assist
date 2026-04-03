@@ -46,15 +46,16 @@ def _webdav_creds() -> tuple[str, str]:
 def _check_auth(request: Request) -> bool:
     """
     Basic Auth проверка.
-    Если WEBDAV_PASSWORD не задан — всегда 401 (безопасный дефолт).
-    Использует hmac.compare_digest против timing attack.
+    Если WEBDAV_PASSWORD не задан — доступ открыт (общедоступный режим).
+    Если задан — использует hmac.compare_digest против timing attack.
     """
     import hmac
     webdav_user, webdav_pass = _webdav_creds()
 
+    # Общедоступный режим — пароль не задан
     if not webdav_pass:
-        logger.warning("WebDAV: WEBDAV_PASSWORD не задан — доступ закрыт")
-        return False
+        logger.info("WebDAV: WEBDAV_PASSWORD не задан — общедоступный режим")
+        return True
 
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("basic "):

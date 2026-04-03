@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 class AccessMiddleware(BaseMiddleware):
     """
-    Блокирует сообщения не из ALLOWED_USER_IDS.
-    Если список пуст — пропускает всех (режим разработки).
+    Middleware для проверки доступа.
+    Если ALLOWED_USER_IDS пуст — проект общедоступный, все пропускаются.
     """
 
     async def __call__(
@@ -26,6 +26,7 @@ class AccessMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
+        # Общедоступный режим — пропускаем всех
         if not settings.security_enabled:
             return await handler(event, data)
         user = data.get("event_from_user")
