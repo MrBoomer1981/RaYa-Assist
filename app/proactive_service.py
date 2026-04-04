@@ -388,11 +388,19 @@ class ProactiveService:
         """Загружает trigger_state с диска — переживает рестарт Railway."""
         try:
             import json as _j
+            from datetime import datetime as _dt
             if self._STATE_FILE.exists():
                 data = _j.loads(self._STATE_FILE.read_text())
                 for key in ("sent_task_ids", "sent_diary_ids"):
                     if key in data:
                         data[key] = set(data[key])
+                # Конвертируем строки обратно в datetime для полей времени
+                for key in ("last_task_check", "last_absence_check", "last_reminder_check"):
+                    if key in data and isinstance(data[key], str):
+                        try:
+                            data[key] = _dt.fromisoformat(data[key])
+                        except ValueError:
+                            pass
                 logger.info("📂 Proactive state загружен (%d ключей)", len(data))
                 return data
         except Exception as e:
