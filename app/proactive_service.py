@@ -513,7 +513,11 @@ class ProactiveService:
 
         # ── Умные триггеры проактивности ─────────────────────────────────────
         try:
-            user_id = settings.telegram_user_id
+            from app.database import get_all_known_users
+            known_users = get_all_known_users()
+            if not known_users:
+                return
+            user_id = settings.telegram_user_id if settings.telegram_user_id else known_users[0]
             llm     = self._llm._llm
             sent = await check_all_triggers(user_id, self._bot, llm, self._trigger_state)
             if sent:
@@ -526,7 +530,11 @@ class ProactiveService:
         if not FEATURE_PROACTIVE_SILENCE:
             return
         try:
-            user_id   = settings.telegram_user_id
+            from app.database import get_all_known_users
+            known_users = get_all_known_users()
+            if not known_users:
+                return
+            user_id   = settings.telegram_user_id if settings.telegram_user_id else known_users[0]
             last_msg  = get_last_message_time(user_id)
 
             if last_msg is None:
@@ -557,7 +565,12 @@ class ProactiveService:
         """Генерирует и отправляет утренний дайджест."""
         try:
             logger.info("🌅 Генерируем утренний дайджест...")
-            user_id = settings.telegram_user_id
+            from app.database import get_all_known_users
+            known_users = get_all_known_users()
+            if not known_users:
+                logger.info("Нет пользователей — дайджест пропущен")
+                return
+            user_id = settings.telegram_user_id if settings.telegram_user_id else known_users[0]
 
             from app.agents.morning_agent import MorningAgent
             from app.agents.base_agent import AgentContext

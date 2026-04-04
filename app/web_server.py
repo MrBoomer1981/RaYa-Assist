@@ -26,6 +26,7 @@ from app.database import (
     delete_memory_entry,
     delete_reminder,
     get_active_reminders,
+    get_all_known_users,
     get_conversation_context,
     get_structured_memory,
     load_diary_entries,
@@ -51,6 +52,24 @@ class ReminderRequest(BaseModel):
     text: str
     remind_at: str   # "YYYY-MM-DD HH:MM:SS"
 
+
+def _get_user_id() -> int:
+    """
+    Возвращает user_id для веб-интерфейса.
+    Приоритет: TELEGRAM_USER_ID из настроек -> первый пользователь в БД.
+    Если пользователей ещё нет — возвращает HTTP 503.
+    """
+    if settings.telegram_user_id:
+        return settings.telegram_user_id
+    users = get_all_known_users()
+    if not users:
+        raise HTTPException(
+            status_code=503,
+            detail="Нет пользователей. Сначала напишите боту в Telegram — он запомнит ваш ID."
+        )
+    return users[0]
+
+
 # ── Приложение ────────────────────────────────────────────────────────────────
 
 def create_app(llm_service) -> FastAPI:
@@ -62,7 +81,6 @@ def create_app(llm_service) -> FastAPI:
     _tts   = TTSService()
     _voice = VoiceService()
 
-    # Создаём директорию для изображений если нет
     (STATIC_DIR / "media").mkdir(parents=True, exist_ok=True)
 
     def _check_token(token: str = Query(default="")) -> None:
@@ -85,10 +103,9 @@ def create_app(llm_service) -> FastAPI:
     async def chat(req: ChatRequest, token: str = Query(default="")):
         _check_token(token)
         try:
-            user_id = settings.telegram_user_id
+            user_id = _get_user_id()
             result = await llm_service.chat(user_id, req.message)
 
-            # Изображение от ImageAgent — сохраняем и отдаём URL
             image_url: Optional[str] = None
             if "image" in result.agent_name:
                 image_bytes = (result.metadata or {}).get("image_bytes")
@@ -98,7 +115,7 @@ def create_app(llm_service) -> FastAPI:
                     fpath = _MEDIA_DIR / fname
                     fpath.write_bytes(image_bytes)
                     image_url = f"/static/media/{fname}"
-                    logger.info("🎨 Изображение сохранено: %s", fname)
+                    logger.info("Изображение сохранено: %s", fname)
 
             return {
                 "reply":      result.reply,
@@ -107,6 +124,8 @@ def create_app(llm_service) -> FastAPI:
                 "image_url":  image_url,
                 "emotion":    (result.metadata or {}).get("emotion", "calm"),
             }
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("Ошибка чата")
             raise HTTPException(status_code=500, detail=str(e))
@@ -114,7 +133,7 @@ def create_app(llm_service) -> FastAPI:
     @app.get("/api/history")
     async def history(token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         messages = load_history(user_id, limit=50)
         return [
             {"role": "human" if m.__class__.__name__ == "HumanMessage" else "ai",
@@ -125,7 +144,7 @@ def create_app(llm_service) -> FastAPI:
     @app.delete("/api/history")
     async def delete_history(token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         clear_history(user_id)
         return {"ok": True}
 
@@ -134,32 +153,31 @@ def create_app(llm_service) -> FastAPI:
     @app.get("/api/memory")
     async def memory(token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         structured = get_structured_memory(user_id)
-        # Также возвращаем старые факты для совместимости
         legacy = load_memory(user_id)
         return {
-            "structured": structured,
-            "categories":  MEMORY_CATEGORIES,
+            "structured":   structured,
+            "categories":   MEMORY_CATEGORIES,
             "legacy_facts": legacy,
         }
 
     @app.delete("/api/memory")
     async def delete_memory(token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         clear_memory(user_id)
         clear_structured_memory(user_id)
         return {"ok": True}
 
     @app.delete("/api/memory/{category}/{key}")
-    async def delete_memory_entry(
+    async def delete_memory_entry_route(
         category: str, key: str,
         token: str = Query(default=""),
     ):
         """Удаляет конкретную запись из структурированной памяти."""
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         ok = delete_memory_entry(user_id, category, key)
         return {"ok": ok}
 
@@ -168,7 +186,7 @@ def create_app(llm_service) -> FastAPI:
     @app.get("/api/reminders")
     async def reminders(token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         items = get_active_reminders(user_id)
         return {"reminders": [
             {"id": r[0], "text": r[1], "remind_at": r[2]}
@@ -179,20 +197,19 @@ def create_app(llm_service) -> FastAPI:
     async def add_reminder(req: ReminderRequest, token: str = Query(default="")):
         _check_token(token)
         try:
-            user_id = settings.telegram_user_id
+            user_id = _get_user_id()
             remind_at = datetime.strptime(req.remind_at, "%Y-%m-%d %H:%M:%S")
             rid = save_reminder(user_id, req.text, remind_at)
             return {"id": rid, "ok": True}
+        except HTTPException:
+            raise
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.delete("/api/reminders/{reminder_id}")
-    async def remove_reminder(
-        reminder_id: int,
-        token: str = Query(default=""),
-    ):
+    async def remove_reminder(reminder_id: int, token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         ok = delete_reminder(reminder_id, user_id)
         return {"ok": ok}
 
@@ -202,14 +219,14 @@ def create_app(llm_service) -> FastAPI:
     async def conversation_context(token: str = Query(default="")):
         """Текущий контекст разговора: тема, цель, незавершённые темы, резюме."""
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         return get_conversation_context(user_id)
 
     @app.delete("/api/context")
     async def clear_context(token: str = Query(default="")):
         """Сбрасывает контекст разговора."""
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         save_conversation_context(user_id)
         return {"ok": True}
 
@@ -218,7 +235,7 @@ def create_app(llm_service) -> FastAPI:
     @app.get("/api/diary")
     async def diary(limit: int = 20, token: str = Query(default="")):
         _check_token(token)
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         entries = load_diary_entries(user_id, limit=limit)
         return {"entries": [
             {"created_at": e[0], "entry": e[1]}
@@ -229,39 +246,30 @@ def create_app(llm_service) -> FastAPI:
 
     @app.post("/api/voice")
     async def voice_chat(request: Request, token: str = Query(default="")):
-        """
-        Принимает аудио (webm/ogg) → Whisper → LLM → TTS.
-        Возвращает: {text, reply, audio_base64 | null, agent_name}
-        """
+        """Принимает аудио (webm/ogg) → Whisper → LLM → TTS."""
         _check_token(token)
         try:
             body = await request.body()
             if not body:
                 raise HTTPException(status_code=400, detail="Пустое аудио")
 
-            # Whisper — передаём байты напрямую
             text = await _voice.transcribe(body)
-
             if not text:
                 return {"text": "", "reply": "Не удалось распознать речь", "audio_base64": None, "agent_name": "raya"}
 
-            # LLM — генерируем ответ
-            user_id = settings.telegram_user_id
+            user_id = _get_user_id()
             result  = await llm_service.chat(user_id, text, is_voice=True)
 
-            # TTS — озвучиваем ответ
             audio_bytes = await _tts.synthesize(result.reply, is_voice=True) if _tts.enabled else None
             audio_b64   = base64.b64encode(audio_bytes).decode() if audio_bytes else None
 
-            emotion = (result.metadata or {}).get("emotion", "calm")
             return {
-                "text":        text,
-                "reply":       result.reply,
+                "text":         text,
+                "reply":        result.reply,
                 "audio_base64": audio_b64,
-                "agent_name":  result.agent_name,
-                "emotion":     emotion,
+                "agent_name":   result.agent_name,
+                "emotion":      (result.metadata or {}).get("emotion", "calm"),
             }
-
         except HTTPException:
             raise
         except Exception as e:
@@ -280,33 +288,31 @@ def create_app(llm_service) -> FastAPI:
         _check_token(token)
         from app.agents.registry import get_enabled_agents
         return {
-            "model":        settings.model_name,
-            "search":       settings.search_enabled,
-            "agents":       [a.name for a in get_enabled_agents()],
-            "utc_time":     datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+            "model":    settings.model_name,
+            "search":   settings.search_enabled,
+            "agents":   [a.name for a in get_enabled_agents()],
+            "utc_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-
     # ── WebDAV (Obsidian Remotely Save) ───────────────────────────────────────
-    # Монтируем на тот же порт что и веб-интерфейс — Railway даёт только 1 порт
 
     try:
         from app.webdav_server import _dispatch
-        app.add_route("/webdav",          _dispatch, methods=["GET","PUT","DELETE","PROPFIND","MKCOL","MOVE","COPY","PROPPATCH","OPTIONS","HEAD"])
-        app.add_route("/webdav/",         _dispatch, methods=["GET","PUT","DELETE","PROPFIND","MKCOL","MOVE","COPY","PROPPATCH","OPTIONS","HEAD"])
-        app.add_route("/webdav/{path:path}", _dispatch, methods=["GET","PUT","DELETE","PROPFIND","MKCOL","MOVE","COPY","PROPPATCH","OPTIONS","HEAD"])
-        logger.info("📁 WebDAV смонтирован на /webdav (основной порт)")
+        methods = ["GET", "PUT", "DELETE", "PROPFIND", "MKCOL", "MOVE", "COPY", "PROPPATCH", "OPTIONS", "HEAD"]
+        app.add_route("/webdav",             _dispatch, methods=methods)
+        app.add_route("/webdav/",            _dispatch, methods=methods)
+        app.add_route("/webdav/{path:path}", _dispatch, methods=methods)
+        logger.info("WebDAV смонтирован на /webdav (основной порт)")
     except Exception:
-        logger.warning("⚠️ WebDAV не смонтирован")
+        logger.warning("WebDAV не смонтирован")
 
-
-    # ── Очистка vault от лишних файлов ───────────────────────────────────────
+    # ── Очистка vault ─────────────────────────────────────────────────────────
 
     @app.delete("/api/vault/cleanup")
     async def vault_cleanup(token: str = Query(default="")):
         """Удаляет все файлы из vault кроме папок созданных RaYa."""
         _check_token(token)
-        import os, shutil
+        import shutil
         vault_base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
         subdir     = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
         vault      = vault_base / subdir if subdir else vault_base
@@ -316,7 +322,6 @@ def create_app(llm_service) -> FastAPI:
 
         raya_folders = {"Дневник", "Заметки", "Задачи", "Zettelkasten", ".obsidian"}
         deleted = []
-
         for item in list(vault.iterdir()):
             if item.name not in raya_folders:
                 if item.is_dir():
@@ -324,35 +329,28 @@ def create_app(llm_service) -> FastAPI:
                 else:
                     item.unlink()
                 deleted.append(item.name)
-
         return {"ok": True, "deleted": deleted, "count": len(deleted)}
-
 
     @app.delete("/api/vault/file")
     async def vault_delete_file(path: str = Query(default=""), token: str = Query(default="")):
         """Удаляет конкретный файл из vault по relative path."""
         _check_token(token)
-        import os, shutil
+        import shutil
         vault_base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
         subdir     = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
         vault      = vault_base / subdir if subdir else vault_base
 
         if not path:
             raise HTTPException(status_code=400, detail="path обязателен")
-
         target = (vault / path).resolve()
-        # Защита от path traversal
         if not str(target).startswith(str(vault.resolve())):
             raise HTTPException(status_code=403, detail="Forbidden")
-
         if not target.exists():
             raise HTTPException(status_code=404, detail="Файл не найден")
-
         if target.is_dir():
             shutil.rmtree(target)
         else:
             target.unlink()
-
         return {"ok": True, "deleted": path}
 
     @app.get("/api/features")
@@ -361,7 +359,6 @@ def create_app(llm_service) -> FastAPI:
         _check_token(token)
         from app.feature_flags import status as ff_status
         return ff_status()
-
 
     # ── Задачи (Obsidian) ─────────────────────────────────────────────────────
 
@@ -372,7 +369,7 @@ def create_app(llm_service) -> FastAPI:
         try:
             from app.integrations.obsidian import get_all_tasks, vault_available
             if not vault_available():
-                return {"q1":{"tasks":[]},"q2":{"tasks":[]},"q3":{"tasks":[]},"q4":{"tasks":[]}}
+                return {"q1": {"tasks": []}, "q2": {"tasks": []}, "q3": {"tasks": []}, "q4": {"tasks": []}}
             return get_all_tasks()
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -385,10 +382,8 @@ def create_app(llm_service) -> FastAPI:
         if not text:
             raise HTTPException(status_code=400, detail="text обязателен")
         from app.integrations.obsidian import mark_task_done_obsidian, vault_available
-        if vault_available():
-            ok = mark_task_done_obsidian(text)
-            return {"ok": ok}
-        return {"ok": False}
+        ok = mark_task_done_obsidian(text) if vault_available() else False
+        return {"ok": ok}
 
     @app.post("/api/tasks/clear_done")
     async def clear_done(token: str = Query(default="")):
@@ -406,6 +401,45 @@ def create_app(llm_service) -> FastAPI:
         plan = get_week_plan() if vault_available() else "vault недоступен"
         return {"plan": plan}
 
+    @app.post("/api/tasks/move")
+    async def move_task_api(body: dict, token: str = Query(default="")):
+        """Переместить задачу в другой квадрант."""
+        _check_token(token)
+        text   = body.get("text", "").strip()
+        target = body.get("target_quadrant", "q2")
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import move_task, vault_available
+        ok = move_task(text, target) if vault_available() else False
+        return {"ok": ok}
+
+    @app.post("/api/tasks/undo")
+    async def task_undo(body: dict, token: str = Query(default="")):
+        """Вернуть выполненную задачу в активные."""
+        _check_token(token)
+        text = body.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import undo_task, vault_available
+        ok = undo_task(text) if vault_available() else False
+        return {"ok": ok}
+
+    @app.post("/api/tasks/move_and_undo")
+    async def task_move_and_undo(body: dict, token: str = Query(default="")):
+        """Вернуть выполненную задачу в активные И переместить в новый квадрант."""
+        _check_token(token)
+        text = body.get("text", "").strip()
+        tq   = body.get("target_quadrant", "q2")
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.integrations.obsidian import move_task, undo_task, vault_available
+        if not vault_available():
+            return {"ok": False}
+        undo_task(text)
+        ok = move_task(text, tq)
+        return {"ok": ok}
+
+    # ── Поиск по vault ────────────────────────────────────────────────────────
 
     @app.get("/api/search")
     async def vault_search(q: str = "", token: str = Query(default="")):
@@ -436,19 +470,6 @@ def create_app(llm_service) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-
-    @app.post("/api/tasks/move")
-    async def move_task_api(body: dict, token: str = Query(default="")):
-        """Переместить задачу в другой квадрант."""
-        _check_token(token)
-        text = body.get("text", "").strip()
-        target = body.get("target_quadrant", "q2")
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import move_task, vault_available
-        ok = move_task(text, target) if vault_available() else False
-        return {"ok": ok}
-
     @app.get("/api/vault/note")
     async def get_vault_note(path: str = "", token: str = Query(default="")):
         """Читает конкретную заметку из vault."""
@@ -461,134 +482,41 @@ def create_app(llm_service) -> FastAPI:
             return {"content": None}
         content = read_note(path)
         if content:
-            # Убираем frontmatter
             content = _re.sub(r"^---.*?---\n+", "", content, flags=_re.DOTALL).strip()
         return {"content": content}
 
-
-    @app.post("/api/tasks/undo")
-    async def task_undo(body: dict, token: str = Query(default="")):
-        """Вернуть выполненную задачу в активные."""
-        _check_token(token)
-        text = body.get("text", "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import undo_task, vault_available
-        ok = undo_task(text) if vault_available() else False
-        return {"ok": ok}
-
-    @app.post("/api/tasks/move_and_undo")
-    async def task_move_and_undo(body: dict, token: str = Query(default="")):
-        """Вернуть выполненную задачу в активные И переместить в новый квадрант."""
-        _check_token(token)
-        text = body.get("text", "").strip()
-        tq   = body.get("target_quadrant", "q2")
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import move_task, undo_task, vault_available
-        if not vault_available():
-            return {"ok": False}
-        # Сначала возвращаем в активные
-        undo_task(text)
-        # Потом перемещаем в нужный квадрант
-        ok = move_task(text, tq)
-        return {"ok": ok}
-
-
-    # ── Calendar API ──────────────────────────────────────────────────────────
+    # ── Календарь ─────────────────────────────────────────────────────────────
 
     @app.get("/api/calendar/month")
     async def calendar_month(year: int = 0, month: int = 0,
                              token: str = Query(default="")):
         _check_token(token)
         from datetime import date
-        from app.calendar_service import get_month
-        from app.config import settings
-        today = date.today()
-        y = year  or today.year
-        m = month or today.month
-        return get_month(settings.telegram_user_id, y, m)
+        from app.database import get_events_for_month
+        today   = date.today()
+        y       = year  or today.year
+        m       = month or today.month
+        user_id = _get_user_id()
+        events  = get_events_for_month(user_id, y, m)
+        days    = list({e["date"] for e in events})
+        return {"events": events, "days_with_events": days}
 
     @app.get("/api/calendar/day")
     async def calendar_day(date: str = "", token: str = Query(default="")):
         _check_token(token)
         from datetime import date as _date
-        from app.calendar_service import get_day
-        from app.config import settings
-        d = date or str(_date.today())
-        return get_day(settings.telegram_user_id, d)
-
-    @app.post("/api/calendar/events")
-    async def calendar_add_event(body: dict, token: str = Query(default="")):
-        _check_token(token)
-        from app.calendar_service import create_event
-        from app.config import settings
-        ev = create_event(
-            user_id     = settings.telegram_user_id,
-            date        = body.get("date", ""),
-            title       = body.get("title", ""),
-            time_start  = body.get("time_start", ""),
-            time_end    = body.get("time_end", ""),
-            description = body.get("description", ""),
-            color       = body.get("color", "blue"),
-        )
-        return ev
-
-    @app.put("/api/calendar/events/{event_id}")
-    async def calendar_update_event(event_id: int, body: dict,
-                                    token: str = Query(default="")):
-        _check_token(token)
-        from app.database import update_event
-        from app.config import settings
-        ok = update_event(event_id, settings.telegram_user_id, **body)
-        return {"ok": ok}
-
-    @app.delete("/api/calendar/events/{event_id}")
-    async def calendar_delete_event(event_id: int,
-                                    token: str = Query(default="")):
-        _check_token(token)
-        from app.database import delete_event
-        from app.config import settings
-        ok = delete_event(event_id, settings.telegram_user_id)
-        return {"ok": ok}
-
-    @app.get("/api/calendar/upcoming")
-    async def calendar_upcoming(token: str = Query(default="")):
-        _check_token(token)
-        from app.database import get_upcoming_events
-        from app.config import settings
-        return {"events": get_upcoming_events(settings.telegram_user_id, limit=7)}
-
-
-    # ══════════════════════════════════════════════════════
-    # CALENDAR API
-    # ══════════════════════════════════════════════════════
-
-    @app.get("/api/calendar/month")
-    async def calendar_month(year: int, month: int, token: str = Query(default="")):
-        """События за месяц. Возвращает {events: [...], days_with_events: [...]}"""
-        _check_token(token)
-        from app.database import get_events_for_month
-        user_id = settings.telegram_user_id
-        events  = get_events_for_month(user_id, year, month)
-        days    = list({e["date"] for e in events})
-        return {"events": events, "days_with_events": days}
-
-    @app.get("/api/calendar/day")
-    async def calendar_day(date: str, token: str = Query(default="")):
-        """События на конкретный день YYYY-MM-DD."""
-        _check_token(token)
         from app.database import get_events_for_date
-        user_id = settings.telegram_user_id
-        events  = get_events_for_date(user_id, date)
-        return {"date": date, "events": events}
+        d       = date or str(_date.today())
+        user_id = _get_user_id()
+        events  = get_events_for_date(user_id, d)
+        return {"date": d, "events": events}
 
     @app.get("/api/calendar/upcoming")
     async def calendar_upcoming(limit: int = 7, token: str = Query(default="")):
         """Ближайшие события."""
         _check_token(token)
         from app.database import get_upcoming_events
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         return {"events": get_upcoming_events(user_id, limit)}
 
     @app.post("/api/calendar/events")
@@ -596,7 +524,7 @@ def create_app(llm_service) -> FastAPI:
         """Создать событие."""
         _check_token(token)
         from app.database import save_event
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         title   = body.get("title", "").strip()
         date    = body.get("date", "").strip()
         if not title or not date:
@@ -610,7 +538,6 @@ def create_app(llm_service) -> FastAPI:
             description=body.get("description", ""),
             color=body.get("color", "blue"),
         )
-        from app.database import get_events_for_date
         return {"id": event_id, "ok": True}
 
     @app.put("/api/calendar/events/{event_id}")
@@ -618,7 +545,7 @@ def create_app(llm_service) -> FastAPI:
         """Обновить событие."""
         _check_token(token)
         from app.database import update_event
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         ok = update_event(event_id, user_id, **body)
         return {"ok": ok}
 
@@ -627,10 +554,9 @@ def create_app(llm_service) -> FastAPI:
         """Удалить событие."""
         _check_token(token)
         from app.database import delete_event
-        user_id = settings.telegram_user_id
+        user_id = _get_user_id()
         ok = delete_event(event_id, user_id)
         return {"ok": ok}
-
 
     @app.post("/api/calendar/day_notes")
     async def calendar_day_notes(body: dict, token: str = Query(default="")):
@@ -642,29 +568,27 @@ def create_app(llm_service) -> FastAPI:
             raise HTTPException(status_code=400, detail="date обязателен")
         try:
             from app.integrations.obsidian import vault_available, _read, _write, _frontmatter
-            from datetime import datetime
             if vault_available():
                 y, m, d   = date.split("-")
                 dt        = datetime(int(y), int(m), int(d))
-                from pathlib import Path as _Path
-                rel_path  = _Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
+                rel_path  = Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
                 existing  = _read(rel_path)
                 if not existing:
                     fm      = _frontmatter(["дневник", dt.strftime("%Y-%m")], {"date": date})
-                    content = f"{fm}\n\n# {d} {dt.strftime('%B')} {y}\n\n## 📝 Заметки\n\n{notes}\n"
-                elif "## 📝 Заметки" in existing:
+                    content = f"{fm}\n\n# {d} {dt.strftime('%B')} {y}\n\n## Заметки\n\n{notes}\n"
+                elif "## Заметки" in existing:
                     import re as _re
                     content = _re.sub(
-                        r"## 📝 Заметки.*$",
-                        f"## 📝 Заметки\n\n{notes}",
+                        r"## Заметки.*$",
+                        f"## Заметки\n\n{notes}",
                         existing, flags=_re.DOTALL
                     )
                 else:
-                    content = existing.rstrip() + f"\n\n## 📝 Заметки\n\n{notes}\n"
+                    content = existing.rstrip() + f"\n\n## Заметки\n\n{notes}\n"
                 _write(rel_path, content)
-        except Exception as e:
-            pass
+        except Exception:
+            logger.exception("calendar_day_notes: ошибка записи в vault")
         return {"ok": True}
 
-    logger.info("🌐 Веб-сервер создан")
+    logger.info("Веб-сервер создан")
     return app

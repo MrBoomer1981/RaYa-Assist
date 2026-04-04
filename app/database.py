@@ -747,6 +747,15 @@ def get_upcoming_events(user_id: int, limit: int = 5) -> list[dict]:
              "description": r[5], "color": r[6]} for r in rows]
 
 
+def get_all_known_users() -> list[int]:
+    """Возвращает список всех user_id, у которых есть история сообщений."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT DISTINCT user_id FROM history ORDER BY user_id"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
 def save_memory(user_id: int, facts: list[str]) -> None:
     """Сохраняет список фактов в user_memory (legacy)."""
     with _conn() as con:

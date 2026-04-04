@@ -74,11 +74,9 @@ class Settings(BaseSettings):
     @classmethod
     def validate_telegram_user_id(cls, v: int) -> int:
         if v == 0:
-            import warnings
-            warnings.warn(
-                "TELEGRAM_USER_ID не задан — веб-интерфейс будет работать некорректно. "
-                "Добавь переменную в Railway Variables.",
-                stacklevel=2,
+            logger.info(
+                "ℹ️ TELEGRAM_USER_ID не задан — user_id будет определяться динамически "
+                "из первого пользователя в БД. Веб-интерфейс потребует хотя бы одного входящего сообщения."
             )
         return v
 

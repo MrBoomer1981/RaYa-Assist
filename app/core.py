@@ -120,9 +120,19 @@ class Core:
         """Синхронизирует задачи БД с Obsidian vault."""
         try:
             from app.integrations.obsidian import sync_tasks_to_db, vault_available
+            from app.database import get_all_known_users
             if vault_available():
-                result = sync_tasks_to_db(settings.telegram_user_id)
-                logger.info("🔄 Задачи синхронизированы: %s", result)
+                known_users = get_all_known_users()
+                if settings.telegram_user_id:
+                    users = [settings.telegram_user_id]
+                elif known_users:
+                    users = known_users
+                else:
+                    logger.info("🔄 Sync tasks: нет пользователей, пропускаем")
+                    return
+                for uid in users:
+                    result = sync_tasks_to_db(uid)
+                    logger.info("🔄 Задачи синхронизированы для user_id=%s: %s", uid, result)
         except Exception:
             logger.warning("Sync tasks: ошибка при старте", exc_info=True)
 
