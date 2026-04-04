@@ -53,6 +53,49 @@ def _simple_similarity(a: str, b: str) -> float:
 _observation_counter: dict[int, int] = {}
 
 
+def get_repeat_observation(user_id: int, message: str) -> str | None:
+    """
+    Проверяет, является ли сообщение повтором недавнего вопроса.
+    Возвращает строку-замечание если найден повтор, иначе None.
+    """
+    history = load_history(user_id, limit=_HISTORY_DEPTH)
+    if len(history) < 2:
+        return None
+    
+    # Ищем похожие сообщения пользователя (HumanMessage)
+    for msg in history[:-1]:  # исключаем текущее
+        if msg.__class__.__name__ != "HumanMessage":
+            continue
+        prev_text = msg.content if hasattr(msg, 'content') else str(msg)
+        similarity = _simple_similarity(message, prev_text)
+        if similarity >= _SIMILARITY_THRESHOLD:
+            return f"🔁 Ты уже спрашивал об этом недавно."
+    
+    return None
+
+
+def get_pattern_observation(user_id: int) -> str | None:
+    """
+    Анализирует паттерны поведения пользователя.
+    Срабатывает редко (каждые 12 сообщений).
+    Возвращает наблюдение или None.
+    """
+    history = load_history(user_id, limit=50)
+    if len(history) < 10:
+        return None
+    
+    # Считаем типы вопросов
+    tech_count = sum(1 for m in history 
+                     if m.__class__.__name__ == "HumanMessage" 
+                     and any(kw in (m.content if hasattr(m, 'content') else str(m)).lower() 
+                             for kw in ["python", "код", "функция", "ошибка", "баг"]))
+    
+    if tech_count > len(history) * 0.7:
+        return "📊 Заметил: ты часто обращаешься за помощью с кодом. Может стоит завести привычку документировать решения?"
+    
+    return None
+
+
 def build_observation_block(user_id: int, message: str) -> str:
     """
     Собирает наблюдения для системного промпта.
