@@ -212,6 +212,12 @@ class RaYaState:
 _states: dict[int, RaYaState] = {}
 
 
+def get_state(user_id: int) -> RaYaState:
+    """Возвращает состояние пользователя или создаёт новое."""
+    if user_id not in _states:
+        _states[user_id] = RaYaState()
+    return _states[user_id]
+
 
 def update_state(user_id: int, message: str, search_results: str = "") -> RaYaState:
     """
