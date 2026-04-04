@@ -746,86 +746,11 @@ def get_upcoming_events(user_id: int, limit: int = 5) -> list[dict]:
              "time_end": r[3] or "", "title": r[4],
              "description": r[5], "color": r[6]} for r in rows]
 
-# ════════════════════════════════════════════════════════
-# CALENDAR EVENTS
-# ════════════════════════════════════════════════════════
 
-def save_event(user_id: int, date: str, title: str,
-               time_start: str = "", time_end: str = "",
-               description: str = "", color: str = "blue") -> int:
+def save_memory(user_id: int, facts: list[str]) -> None:
+    """Сохраняет список фактов в user_memory (legacy)."""
     with _conn() as con:
-        cur = con.execute(
-            """INSERT INTO events
-               (user_id, date, time_start, time_end, title, description, color)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, date, time_start or None, time_end or None,
-             title, description, color)
+        con.executemany(
+            "INSERT INTO user_memory (user_id, fact) VALUES (?, ?)",
+            [(user_id, f) for f in facts if f],
         )
-        return cur.lastrowid
-
-
-def get_events_for_date(user_id: int, date: str) -> list[dict]:
-    with _conn() as con:
-        rows = con.execute(
-            """SELECT id, date, time_start, time_end, title, description, color
-               FROM events WHERE user_id=? AND date=?
-               ORDER BY CASE WHEN time_start IS NULL THEN '99:99' ELSE time_start END""",
-            (user_id, date)
-        ).fetchall()
-    return [_event_row(r) for r in rows]
-
-
-def get_events_for_month(user_id: int, year: int, month: int) -> list[dict]:
-    prefix = f"{year:04d}-{month:02d}"
-    with _conn() as con:
-        rows = con.execute(
-            """SELECT id, date, time_start, time_end, title, description, color
-               FROM events WHERE user_id=? AND date LIKE ?
-               ORDER BY date,
-               CASE WHEN time_start IS NULL THEN '99:99' ELSE time_start END""",
-            (user_id, f"{prefix}-%")
-        ).fetchall()
-    return [_event_row(r) for r in rows]
-
-
-def update_event(event_id: int, user_id: int, **kwargs) -> bool:
-    allowed = {"date", "time_start", "time_end", "title", "description", "color"}
-    fields  = {k: v for k, v in kwargs.items() if k in allowed}
-    if not fields:
-        return False
-    sets = ", ".join(f"{k}=?" for k in fields)
-    vals = list(fields.values()) + [event_id, user_id]
-    with _conn() as con:
-        cur = con.execute(
-            f"UPDATE events SET {sets} WHERE id=? AND user_id=?", vals
-        )
-        return cur.rowcount > 0
-
-
-def delete_event(event_id: int, user_id: int) -> bool:
-    with _conn() as con:
-        cur = con.execute(
-            "DELETE FROM events WHERE id=? AND user_id=?", (event_id, user_id)
-        )
-        return cur.rowcount > 0
-
-
-def get_upcoming_events(user_id: int, limit: int = 7) -> list[dict]:
-    with _conn() as con:
-        rows = con.execute(
-            """SELECT id, date, time_start, time_end, title, description, color
-               FROM events WHERE user_id=? AND date >= date('now')
-               ORDER BY date,
-               CASE WHEN time_start IS NULL THEN '99:99' ELSE time_start END
-               LIMIT ?""",
-            (user_id, limit)
-        ).fetchall()
-    return [_event_row(r) for r in rows]
-
-
-def _event_row(r) -> dict:
-    return {
-        "id": r[0], "date": r[1],
-        "time_start": r[2] or "", "time_end": r[3] or "",
-        "title": r[4], "description": r[5], "color": r[6],
-    }

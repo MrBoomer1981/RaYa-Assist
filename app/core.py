@@ -136,12 +136,6 @@ class Core:
             return None
 
     def _log_startup(self, svc: Services) -> None:
-        from app.feature_flags import status as ff_status
-        ff = ff_status()
-        disabled = [k for k, v in ff.items() if not v]
-        if disabled:
-            logger.info("🚩 Feature flags OFF: %s", ", ".join(disabled))
-    def _log_startup(self, svc: Services) -> None:
         from app.agents.registry import get_enabled_agents
         agent_names = [a.name for a in get_enabled_agents()]
         logger.info(
