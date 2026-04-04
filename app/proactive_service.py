@@ -384,15 +384,29 @@ class ProactiveService:
         self._last_initiative:  datetime | None = None
         self._trigger_state:    dict = self._load_state()
 
+    _DATETIME_KEYS = (
+        "last_task_check", "last_absence_check", "last_idea_check",
+        "last_absence_msg", "last_suggestion",
+    )
+
     def _load_state(self) -> dict:
         """Загружает trigger_state с диска — переживает рестарт Railway."""
         try:
             import json as _j
             if self._STATE_FILE.exists():
                 data = _j.loads(self._STATE_FILE.read_text())
+                # Конвертируем sets обратно
                 for key in ("sent_task_ids", "sent_diary_ids"):
                     if key in data:
                         data[key] = set(data[key])
+                # Конвертируем datetime-строки обратно в datetime объекты
+                for key in self._DATETIME_KEYS:
+                    val = data.get(key)
+                    if isinstance(val, str):
+                        try:
+                            data[key] = datetime.fromisoformat(val)
+                        except (ValueError, TypeError):
+                            del data[key]
                 logger.info("📂 Proactive state загружен (%d ключей)", len(data))
                 return data
         except Exception as e:

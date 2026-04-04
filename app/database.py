@@ -24,9 +24,39 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 def _migrate(con: sqlite3.Connection) -> None:
     """Идемпотентные ALTER TABLE миграции — запускаются один раз при старте."""
-    existing = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
-    if "recurrence" not in existing:
+    # reminders: добавить recurrence если нет
+    rem_cols = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
+    if "recurrence" not in rem_cols:
         con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+
+    # tasks: если таблица существует но колонка text отсутствует — пересоздаём
+    # (старые версии могли использовать 'title' или другое имя)
+    task_cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+    if task_cols and "text" not in task_cols:
+        # Определяем имя старой текстовой колонки
+        old_text_col = next(
+            (c for c in task_cols if c not in ("id", "user_id", "priority", "due_date", "done", "created_at")),
+            None
+        )
+        if old_text_col:
+            con.execute(f"ALTER TABLE tasks RENAME COLUMN {old_text_col} TO text")
+        else:
+            # Нет подходящей колонки — пересоздаём таблицу
+            con.executescript("""
+                CREATE TABLE IF NOT EXISTS tasks_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER NOT NULL,
+                    text       TEXT    NOT NULL,
+                    priority   INTEGER NOT NULL DEFAULT 2,
+                    due_date   TEXT    DEFAULT '',
+                    done       INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
+                    SELECT id, user_id, '', priority, due_date, done, created_at FROM tasks;
+                DROP TABLE tasks;
+                ALTER TABLE tasks_new RENAME TO tasks;
+            """)
 
 
 @contextmanager
