@@ -1,1 +1,4 @@
-Nothing should be ignored based on the provided file changes. The only modified file is 'app/proactive_service.py', which appears to be a source code file and should not be ignored.
+```
+__pycache__/
+*.pyc
+```
