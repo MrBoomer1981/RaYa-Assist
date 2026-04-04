@@ -395,7 +395,7 @@ class ProactiveService:
                     if key in data:
                         data[key] = set(data[key])
                 # Конвертируем строки обратно в datetime для полей времени
-                for key in ("last_task_check", "last_absence_check", "last_reminder_check"):
+                for key in ("last_task_check", "last_absence_check", "last_reminder_check", "last_idea_check"):
                     if key in data and isinstance(data[key], str):
                         try:
                             data[key] = _dt.fromisoformat(data[key])
