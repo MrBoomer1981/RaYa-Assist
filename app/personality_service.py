@@ -417,8 +417,15 @@ _DAY_NAMES = {
     3: "четверг", 4: "пятница", 5: "суббота", 6: "воскресенье",
 }
 
+MOODS = ["нейтрально", "радость", "грусть", "стресс", "усталость", 
+         "энтузиазм", "раздражение", "тревога", "спокойствие"]
+
 _NEGATIVE_MOODS = {"stressed", "sad", "anxious", "tired", "angry", "frustrated"}
 _POSITIVE_MOODS = {"happy", "excited", "focused", "calm", "confident"}
+
+_DETECT_PROMPT = """Определи настроение пользователя в одном слове из списка: {moods}.
+Сообщение: "{message}"
+Ответ (только одно слово):"""
 
 
 async def update_emotional_patterns(user_id: int) -> None:
@@ -516,8 +523,9 @@ async def detect_mood(message: str, llm) -> str:
     if len(message.strip()) < 5:
         return "нейтрально"
     try:
+        prompt = _DETECT_PROMPT.format(moods=", ".join(MOODS), message=message[:300])
         response = await llm.ainvoke(
-            [HumanMessage(content=_DETECT_PROMPT.format(message=message[:300]))]
+            [HumanMessage(content=prompt)]
         )
         mood = str(response.content).strip().lower()
         for m in MOODS:
