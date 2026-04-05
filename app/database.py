@@ -73,7 +73,7 @@ def _migrate() -> None:
             """)
             logger.info("✅ Migration: tasks пересозданы")
 
-        # 3. users: таблица профилей
+        # 3. users: создать таблицу если нет, и добавить недостающие колонки
         con.executescript("""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS users (
@@ -84,6 +84,17 @@ def _migrate() -> None:
                 updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # ALTER TABLE для колонок которые могли отсутствовать в ранних версиях
+        user_cols = {row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        for col, typedef in [
+            ("last_name", "TEXT DEFAULT ''"),
+            ("username",  "TEXT DEFAULT ''"),
+            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+        ]:
+            if col not in user_cols:
+                con.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
+                con.commit()
+                logger.info("✅ Migration: users.%s добавлен", col)
 
     finally:
         con.close()

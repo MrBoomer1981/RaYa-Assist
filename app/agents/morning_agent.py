@@ -101,24 +101,24 @@ _PHILOSOPHY = [
 # ── Темы для поиска новостей ──────────────────────────────────────────────────
 _NEWS_QUERIES = [
     # Технологии и AI
-    ("AI technology breakthroughs today", "🤖 AI и технологии"),
-    ("artificial intelligence news today", "🤖 AI и технологии"),
+    ("новости искусственного интеллекта сегодня", "🤖 AI и технологии"),
+    ("технологии AI прорыв сегодня", "🤖 AI и технологии"),
 
     # Бизнес и стартапы
-    ("startup funding tech business news today", "💼 Бизнес"),
-    ("entrepreneurship business world news today", "💼 Бизнес"),
+    ("стартапы бизнес инвестиции новости сегодня", "💼 Бизнес"),
+    ("мировая экономика бизнес новости сегодня", "💼 Бизнес"),
 
     # Наука
-    ("science discovery research news today", "🔬 Наука"),
-    ("space exploration science breakthrough today", "🔬 Наука"),
+    ("научные открытия исследования новости сегодня", "🔬 Наука"),
+    ("космос наука прорыв сегодня", "🔬 Наука"),
 
     # Мировые события
-    ("world news important events today", "🌍 Мир"),
-    ("global economy geopolitics today", "🌍 Мир"),
+    ("главные мировые новости сегодня", "🌍 Мир"),
+    ("геополитика мировые события сегодня", "🌍 Мир"),
 
     # Продуктивность и психология
-    ("productivity psychology habits research today", "🧠 Психология"),
-    ("mental performance focus research today", "🧠 Психология"),
+    ("продуктивность психология исследования сегодня", "🧠 Психология"),
+    ("когнитивные науки мышление новости сегодня", "🧠 Психология"),
 ]
 
 
@@ -256,10 +256,13 @@ async def _get_tasks(user_id: int) -> str:
 async def _get_news() -> str:
     """
     Параллельный поиск по 4 темам через Tavily.
-    Берёт 2 рандомных темы чтобы каждый день было разное.
+    Результаты пересказываются на русском через LLM.
     """
     try:
         from app.search_service import SearchService
+        from langchain_groq import ChatGroq
+        from langchain_core.messages import SystemMessage, HumanMessage
+        from app.config import settings
 
         svc = SearchService()
 
@@ -272,25 +275,45 @@ async def _get_news() -> str:
             return_exceptions=True
         )
 
-        sections = []
+        raw_sections = []
         for (query, label), result in zip(selected, results):
             if isinstance(result, Exception) or not result:
                 continue
-            # result — отформатированная строка от search_service
             text = str(result).strip()
             if len(text) < 30:
                 continue
-            # Берём первые 400 символов
-            preview = text[:400].rstrip()
-            if len(text) > 400:
-                preview += "..."
-            sections.append(f"**{label}**\n{preview}")
+            raw_sections.append((label, text[:800]))
 
-        if not sections:
+        if not raw_sections:
+            return ""
+
+        # Пересказываем на русском через LLM
+        raw_combined = "\n\n".join(
+            f"[{label}]\n{text}" for label, text in raw_sections
+        )
+        llm = ChatGroq(
+            api_key=settings.groq_api_key,
+            model=settings.router_model,
+            temperature=0.3,
+        )
+        prompt = (
+            "Ниже — результаты поиска новостей по нескольким темам. "
+            "Перескажи каждую тему КРАТКО на русском языке — 1-2 предложения на тему. "
+            "Сохрани эмодзи-метку темы. Никаких URL. Только суть. Формат:\n"
+            "🤖 AI и технологии\n<суть>\n\n💼 Бизнес\n<суть>\n\nи т.д.\n\n"
+            f"Исходные данные:\n{raw_combined}"
+        )
+        response = await llm.ainvoke([
+            SystemMessage(content="Ты помощник который кратко пересказывает новости на русском языке."),
+            HumanMessage(content=prompt),
+        ])
+        summary = str(response.content).strip()
+
+        if not summary:
             return ""
 
         header = "─" * 20
-        return f"\n{header}\n**📰 Дайджест дня**\n\n" + "\n\n".join(sections)
+        return f"\n{header}\n**📰 Дайджест дня**\n\n{summary}"
 
     except Exception as e:
         logger.warning("Новости: %s", e)
