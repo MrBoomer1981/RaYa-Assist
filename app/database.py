@@ -22,47 +22,65 @@ DB_PATH = Path(_os.getenv("DB_PATH", "database.db"))
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
-def _migrate(con: sqlite3.Connection) -> None:
-    """Идемпотентные ALTER TABLE миграции — запускаются при каждом старте."""
-    # reminders: добавить recurrence если нет
-    rem_cols = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
-    if "recurrence" not in rem_cols:
-        con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+def _migrate() -> None:
+    """
+    Идемпотентные миграции БД — запускаются один раз при старте через init_db().
+    Открывает собственное соединение вне транзакции, т.к. executescript()
+    делает implicit COMMIT и несовместим с контекстным менеджером _conn().
+    """
+    import sqlite3 as _sq3
+    con = _sq3.connect(str(DB_PATH), timeout=10)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
 
-    # tasks: надёжная починка — всегда пересоздаём через tmp если нет колонки text
-    task_cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
-    if task_cols and "text" not in task_cols:
-        # Найти старую текстовую колонку (не системная)
-        system_cols = {"id", "user_id", "priority", "due_date", "done", "created_at"}
-        old_col = next((c for c in task_cols if c not in system_cols), None)
-        src_col = old_col if old_col else "''"
-        con.executescript(f"""
-            CREATE TABLE IF NOT EXISTS tasks_new (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id    INTEGER NOT NULL,
-                text       TEXT    NOT NULL DEFAULT '',
-                priority   INTEGER NOT NULL DEFAULT 2,
-                due_date   TEXT    DEFAULT '',
-                done       INTEGER NOT NULL DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        # 1. reminders: добавить recurrence если нет
+        rem_cols = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
+        if "recurrence" not in rem_cols:
+            con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+            con.commit()
+            logger.info("✅ Migration: reminders.recurrence добавлен")
+
+        # 2. tasks: пересоздать таблицу если нет колонки text
+        #    executescript() делает COMMIT сам — вызываем отдельно
+        task_cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+        if task_cols and "text" not in task_cols:
+            system_cols = {"id", "user_id", "priority", "due_date", "done", "created_at"}
+            old_col = next((c for c in task_cols if c not in system_cols), None)
+            src_col = old_col if old_col else "''"
+            logger.info("⚙️  Migration: tasks.%s -> tasks.text", src_col)
+            con.executescript(f"""
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS tasks_new (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id    INTEGER NOT NULL,
+                    text       TEXT    NOT NULL DEFAULT '',
+                    priority   INTEGER NOT NULL DEFAULT 2,
+                    due_date   TEXT    DEFAULT '',
+                    done       INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
+                    SELECT id, user_id, {src_col}, priority, due_date, done, created_at FROM tasks;
+                DROP TABLE tasks;
+                ALTER TABLE tasks_new RENAME TO tasks;
+                CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, done);
+            """)
+            logger.info("✅ Migration: tasks пересозданы")
+
+        # 3. users: таблица профилей
+        con.executescript("""
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS users (
+                user_id     INTEGER PRIMARY KEY,
+                first_name  TEXT    DEFAULT '',
+                last_name   TEXT    DEFAULT '',
+                username    TEXT    DEFAULT '',
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
             );
-            INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
-                SELECT id, user_id, {src_col}, priority, due_date, done, created_at FROM tasks;
-            DROP TABLE tasks;
-            ALTER TABLE tasks_new RENAME TO tasks;
-            CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, done);
         """)
 
-    # users: таблица профилей пользователей
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id     INTEGER PRIMARY KEY,
-            first_name  TEXT    DEFAULT '',
-            last_name   TEXT    DEFAULT '',
-            username    TEXT    DEFAULT '',
-            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
+    finally:
+        con.close()
 
 
 @contextmanager
@@ -211,6 +229,7 @@ def init_db() -> None:
             );
         """)
     logger.info("✅ База данных готова: %s", DB_PATH)
+    _migrate()  # идемпотентные ALTER TABLE миграции
 
 
 # ── История ───────────────────────────────────────────────────────────────────

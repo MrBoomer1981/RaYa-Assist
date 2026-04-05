@@ -6,9 +6,8 @@
 Хранит задачи, события, заметки и знания — связывает их через Obsidian vault.
 
 **Деплой:** Railway.app  
-**Веб:** `https://raya-assist-production.up.railway.app?token=sokrat`  
-**WebDAV:** `https://raya-assist-production.up.railway.app/webdav`  
-**Репо:** `github.com/MrBoomer1981/RaYa-Assist` (private)
+**Веб:** `https://<your-app>.up.railway.app?token=<WEB_TOKEN>`  
+**WebDAV:** `https://<your-app>.up.railway.app/webdav`
 
 ---
 
@@ -255,6 +254,7 @@ DELETE      /api/vault/file
 | `interaction_memory` | Топ-темы, паттерны общения |
 | `conversation_context` | Текущая тема, цель разговора |
 | `events` | События календаря |
+| `users` | Профили пользователей (имя, username) |
 
 ---
 
@@ -264,8 +264,12 @@ DELETE      /api/vault/file
 # Обязательные
 TELEGRAM_TOKEN=
 GROQ_API_KEY=
+
+# Доступ: оставь пустым — доступ для всех; или укажи через запятую
 ALLOWED_USER_IDS=
-TELEGRAM_USER_ID=
+
+# Опционально: если не задан — используется первый пользователь из БД
+# TELEGRAM_USER_ID=
 
 # Vault
 OBSIDIAN_VAULT_PATH=/data/obsidian_vault
@@ -276,7 +280,7 @@ WEBDAV_PASSWORD=
 # Опциональные
 TAVILY_API_KEY=
 HF_TOKEN=
-WEB_TOKEN=sokrat
+WEB_TOKEN=<your_secret_token>
 MODEL_NAME=llama-3.3-70b-versatile
 ROUTER_MODEL=llama-3.1-8b-instant
 TEMPERATURE=0.7
@@ -374,4 +378,7 @@ POST https://raya-assist-production.up.railway.app/api/search/index?token=sokrat
 | 2026-03 | Morning digest: новости через Tavily (4 темы параллельно), 30 цитат, 26 вопросов |
 | 2026-03 | Proactive state persistence (переживает рестарты) |
 | 2026-03 | Persona переработана — RaYa как менеджер который не даёт слиться |
+| 2026-04 | Multi-user: имена из Telegram, `users` таблица, убрана привязка к одному пользователю |
+| 2026-04 | `_migrate()` теперь вызывается при старте — надёжная починка схемы БД |
+| 2026-04 | `_get_user_id()` в web_server — fallback на первого пользователя из БД |
 | 2026-03 | Feature flags — 10 флагов через Railway Variables |
