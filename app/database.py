@@ -41,13 +41,19 @@ def _migrate() -> None:
             logger.info("✅ Migration: reminders.recurrence добавлен")
 
         # 2. tasks: пересоздать таблицу если нет колонки text
-        #    executescript() делает COMMIT сам — вызываем отдельно
-        task_cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
+        #    Читаем реальные колонки — старая схема могла не иметь priority/due_date
+        task_col_rows = con.execute("PRAGMA table_info(tasks)").fetchall()
+        task_cols = {row[1] for row in task_col_rows}
         if task_cols and "text" not in task_cols:
-            system_cols = {"id", "user_id", "priority", "due_date", "done", "created_at"}
+            # Найти текстовую колонку (не системная)
+            system_cols = {"id", "user_id", "priority", "due_date", "done", "created_at", "text"}
             old_col = next((c for c in task_cols if c not in system_cols), None)
-            src_col = old_col if old_col else "''"
-            logger.info("⚙️  Migration: tasks.%s -> tasks.text", src_col)
+            src_text  = old_col  if old_col  else "''"
+            src_prio  = "priority"  if "priority"  in task_cols else "2"
+            src_due   = "due_date"  if "due_date"   in task_cols else "''"
+            src_done  = "done"      if "done"       in task_cols else "0"
+            src_ts    = "created_at" if "created_at" in task_cols else "CURRENT_TIMESTAMP"
+            logger.info("⚙️  Migration: tasks.%s -> tasks.text (cols: %s)", src_text, task_cols)
             con.executescript(f"""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS tasks_new (
@@ -60,7 +66,7 @@ def _migrate() -> None:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
                 INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
-                    SELECT id, user_id, {src_col}, priority, due_date, done, created_at FROM tasks;
+                    SELECT id, user_id, {src_text}, {src_prio}, {src_due}, {src_done}, {src_ts} FROM tasks;
                 DROP TABLE tasks;
                 ALTER TABLE tasks_new RENAME TO tasks;
                 CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, done);
