@@ -271,7 +271,7 @@ def state_to_prompt(state: RaYaState) -> str:
     mood_instructions = {
         "curious":   "Тебе действительно интересна эта тема — дай это почувствоваться в ответе.",
         "warm":      "Ты в хорошем расположении духа — ответ может быть чуть теплее обычного.",
-        "concerned": "Сократ звучит напряжённо — будь особенно внимательной и поддерживающей.",
+        "concerned": "Пользователь звучит напряжённо — будь особенно внимательной и поддерживающей.",
         "playful":   "Настроение лёгкое — можно чуть больше юмора если к месту.",
         "neutral":   "",
     }
@@ -313,7 +313,7 @@ personality_service.py — единый сервис осознанности л
 
 Объединяет 4 механизма:
   1. Mood Mirroring       — зеркалит энергетику сообщения
-  2. Personality Feedback — адаптирует стиль по реакции Сократа
+  2. Personality Feedback — адаптирует стиль по реакции пользователя
   3. Thematic Depth       — углубляется в повторяющиеся темы
   4. Emotional Memory     — паттерны настроения по времени/дням
 
@@ -347,7 +347,7 @@ async def update_feedback(user_id: int, llm) -> None:
         if len(history) < _MIN_MESSAGES_FOR_FEEDBACK:
             return
 
-        # Считаем длины ответов RaYa и длины следующих сообщений Сократа
+        # Считаем длины ответов RaYa и длины следующих сообщений пользователя
         pairs = []
         for i in range(len(history) - 1):
             msg  = history[i]
@@ -362,16 +362,16 @@ async def update_feedback(user_id: int, llm) -> None:
         if not pairs:
             return
 
-        # Простая эвристика: если Сократ отвечает длинно — ему нравится диалог
+        # Простая эвристика: если пользователь отвечает длинно — ему нравится диалог
         long_pairs  = [p for p in pairs if p["raya_len"] > 300]
         avg_sokrat_after_long  = sum(p["sokrat_len"] for p in long_pairs) / max(1, len(long_pairs))
         short_pairs = [p for p in pairs if p["raya_len"] <= 300]
         avg_sokrat_after_short = sum(p["sokrat_len"] for p in short_pairs) / max(1, len(short_pairs))
 
         if avg_sokrat_after_short > avg_sokrat_after_long * 1.3:
-            style_pref = "короткие ответы — Сократ охотнее продолжает диалог"
+            style_pref = "короткие ответы — пользователь охотнее продолжает диалог"
         elif avg_sokrat_after_long > avg_sokrat_after_short * 1.3:
-            style_pref = "развёрнутые ответы — Сократ вовлекается сильнее"
+            style_pref = "развёрнутые ответы — пользователь вовлекается сильнее"
         else:
             style_pref = "нейтрально — длина ответа не влияет"
 
@@ -534,7 +534,7 @@ def mood_context(moods: list[tuple[str, str, str]]) -> str:
     neg_count  = sum(1 for m in mood_list if m in negative)
     pos_count  = sum(1 for m in mood_list if m in positive)
 
-    lines = [f"Последние настроения Сократа: {', '.join(mood_list)}."]
+    lines = [f"Последние настроения пользователя: {', '.join(mood_list)}."]
 
     if neg_count >= 3:
         lines.append(
@@ -542,7 +542,7 @@ def mood_context(moods: list[tuple[str, str, str]]) -> str:
             "будь внимательнее, не грузи лишним, можешь мягко спросить как дела."
         )
     elif pos_count >= 3:
-        lines.append("Сократ в хорошем настроении — можно быть энергичнее и живее.")
+        lines.append("Пользователь в хорошем настроении — можно быть энергичнее и живее.")
     elif mood_list and mood_list[0] == "усталость":
         lines.append("Сейчас он устал — отвечай короче и по делу, без лишних вопросов.")
     elif mood_list and mood_list[0] == "стресс":

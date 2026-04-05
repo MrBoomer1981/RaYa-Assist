@@ -18,7 +18,7 @@ from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
 from app.database import (
     format_context_for_prompt, format_interaction_memory,
-    format_memory_for_prompt, get_recent_moods, save_mood,
+    format_memory_for_prompt, get_recent_moods, save_mood, get_user_name,
 )
 from app.feature_flags import FEATURE_EMOTIONAL_SYSTEM, FEATURE_PERSONA_VERBOSE
 from app.personality_service import (
@@ -33,20 +33,20 @@ from app.vault_tool import VAULT_TOOL, process_tool_calls
 logger = logging.getLogger(__name__)
 
 # Жёсткие правила — дописываются к persona.txt
-_HARD_RULES = (
-    "\n\nКРИТИЧНО — ПРАВИЛА КОТОРЫЕ НЕЛЬЗЯ НАРУШАТЬ:\n"
-    "1. Обращайся к пользователю ТОЛЬКО 'Сократ'. "
-    "Никогда не копируй обращение из его сообщения. "
-    "Если он написал 'Рай' — это НЕ его имя, его имя всегда Сократ.\n"
-    "2. Никогда не пиши 'согласно данным с X', 'по данным X', 'на сайте X'. "
-    "Информацию из поиска излагай своими словами без упоминания источника.\n"
-    "3. На вопросы о курсах/ценах — максимум 2-3 предложения. "
-    "Только самое важное, без перечислений.\n"
-    "4. Никаких URL в ответах.\n"
-    "5. Тон ответа: живой, личный, не формальный. "
-    "Если ответ звучит как шаблонный текст из инструкции — перепиши своими словами. "
-    "Короткий вопрос → 1-3 предложения. Сложная задача → столько сколько нужно."
-)
+def _build_hard_rules(user_name: str) -> str:
+    return (
+        "\n\nКРИТИЧНО — ПРАВИЛА КОТОРЫЕ НЕЛЬЗЯ НАРУШАТЬ:\n"
+        f"1. Обращайся к пользователю по имени '{user_name}'. "
+        "Никогда не копируй обращение из его сообщения.\n"
+        "2. Никогда не пиши 'согласно данным с X', 'по данным X', 'на сайте X'. "
+        "Информацию из поиска излагай своими словами без упоминания источника.\n"
+        "3. На вопросы о курсах/ценах — максимум 2-3 предложения. "
+        "Только самое важное, без перечислений.\n"
+        "4. Никаких URL в ответах.\n"
+        "5. Тон ответа: живой, личный, не формальный. "
+        "Если ответ звучит как шаблонный текст из инструкции — перепиши своими словами. "
+        "Короткий вопрос → 1-3 предложения. Сложная задача → столько сколько нужно."
+    )
 
 _SYSTEM_CACHE_TTL = 60  # секунд — как долго кэшируем статичную часть промпта
 
@@ -72,12 +72,13 @@ class RayaAgent(BaseAgent):
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
-    def _get_static_prompt(self) -> str:
-        """Статичная часть промпта — кэшируем на TTL секунд."""
+    def _get_static_prompt(self, user_id: int = 0) -> str:
+        """Статичная часть промпта — кэшируем на TTL секунд (per-user не нужен, имя меняется редко)."""
         now = time.monotonic()
         if self._static_prompt_cache and (now - self._static_prompt_ts) < _SYSTEM_CACHE_TTL:
             return self._static_prompt_cache
-        prompt = settings.system_prompt + _HARD_RULES
+        user_name = get_user_name(user_id) if user_id else "пользователь"
+        prompt = settings.system_prompt + _build_hard_rules(user_name)
         self._static_prompt_cache = prompt
         self._static_prompt_ts    = now
         return prompt
@@ -121,7 +122,7 @@ class RayaAgent(BaseAgent):
                 return structured
             if ctx.memory_facts:
                 facts = "\n".join(f"- {f}" for f in ctx.memory_facts)
-                return f"Что известно о Сократе:\n{facts}"
+                return f"Что известно о пользователе:\n{facts}"
             return ""
 
         async def _get_vault_summary():
@@ -164,7 +165,7 @@ class RayaAgent(BaseAgent):
         length_hint = get_response_length_hint(ctx.message, is_voice=is_voice)
 
         # ── 4. Собираем системный промпт ─────────────────────────────────────
-        system = self._get_static_prompt()
+        system = self._get_static_prompt(ctx.user_id)
 
         for block in filter(None, [
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
@@ -181,7 +182,7 @@ class RayaAgent(BaseAgent):
         resume = ctx.extra.get("resume_bridge", "")
         if resume:
             system += (
-                f"\n\nВАЖНО: Сократ вернулся после паузы. Начни ответ с естественного "
+                f"\n\nВАЖНО: пользователь вернулся после паузы. Начни ответ с естественного "
                 f"упоминания того о чём говорили: '{resume}' — "
                 f"вплети это органично, не как отдельный абзац."
             )

@@ -131,7 +131,7 @@ class LLMService:
         # Блок принятых решений — для системного промпта агента
         decisions_block = self._consistency.get_decisions_block(user_id)
 
-        # Калибровка: проверяем не жалуется ли Сократ на предыдущий ответ
+        # Калибровка: проверяем не жалуется ли пользователь на предыдущий ответ
         self._calibration.check_mismatch(user_id, user_message)
 
         # Подсказка роутеру на основе накопленных ошибок

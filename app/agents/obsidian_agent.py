@@ -26,18 +26,18 @@ from app.utils import strip_json
 logger = logging.getLogger(__name__)
 
 _SYSTEM = """\
-Ты RaYa — ведёшь Obsidian vault Сократа.
+Ты RaYa — ведёшь Obsidian vault пользователя.
 
 Правила:
 - Дневник — личные переживания, события дня. Один файл на день. НЕ в базе знаний.
 - Zettelkasten — одна атомарная идея/концепция/факт. С тегами и [[ссылками]].
   Если похожая карточка уже есть — дополни её, не создавай дубль.
 - Заметки — структурированная информация которую не нужно атомизировать.
-- Планы — краткосрочные (≤2 нед) или долгосрочные. Сократ говорит куда.
+- Планы — краткосрочные (≤2 нед) или долгосрочные. Пользователь говорит куда.
 - Задачи — матрица Эйзенхауэра (Q1-Q4).
 
 При поиске через интернет — сохраняй найденное в Zettelkasten автоматически.
-Обращайся только "Сократ".\
+Обращайся к пользователю по имени.\
 """
 
 # ── Классификатор ─────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ class ObsidianAgent(BaseAgent):
     async def _classify(self, ctx: AgentContext) -> dict:
         history_lines = []
         for msg in (ctx.history or [])[-6:]:
-            role = "Сократ" if msg.__class__.__name__ == "HumanMessage" else "RaYa"
+            role = "Пользователь" if msg.__class__.__name__ == "HumanMessage" else "RaYa"
             history_lines.append(f"{role}: {msg.content[:80]}")
 
         prompt = _CLASSIFY_PROMPT.format(
@@ -141,7 +141,7 @@ class ObsidianAgent(BaseAgent):
     async def _execute(self, ctx: AgentContext) -> AgentResult:
         if not vault_available():
             return AgentResult(success=False, agent_name=self.agent_name,
-                content="Сократ, Obsidian vault недоступен. Проверь OBSIDIAN_VAULT_PATH.")
+                content="Obsidian vault недоступен. Проверь OBSIDIAN_VAULT_PATH.")
 
         classified = await self._classify(ctx)
         action     = classified.get("action", "none")
@@ -168,7 +168,7 @@ class ObsidianAgent(BaseAgent):
         except Exception as e:
             logger.exception("ObsidianAgent error action=%s", action)
             return AgentResult(success=False, agent_name=self.agent_name,
-                content=f"Сократ, ошибка vault: {e}")
+                content=f"Ошибка vault: {e}")
 
     # ── Дневник ────────────────────────────────────────────────────────────────
 
@@ -260,7 +260,7 @@ class ObsidianAgent(BaseAgent):
         # Если горизонт не определён — спрашиваем
         if horizon == "unknown":
             return AgentResult(success=True, agent_name=self.agent_name,
-                content="Сократ, куда сохранить план — в краткосрочные (≤2 недели) или долгосрочные?")
+                content="Куда сохранить план — в краткосрочные (≤2 недели) или долгосрочные?")
 
         prompt = _PLAN_PROMPT.format(text=content[:2000], horizon=horizon)
         resp   = await self._llm.ainvoke([HumanMessage(content=prompt)])
@@ -292,7 +292,7 @@ class ObsidianAgent(BaseAgent):
 
         if not groups or not any(g.get("tasks") for g in groups):
             return AgentResult(success=False, agent_name=self.agent_name,
-                content="Сократ, не смогла разобрать задачи.")
+                content="Не смогла разобрать задачи.")
 
         reply_lines = ["Задачи добавлены по матрице Эйзенхауэра:\n"]
         for group in groups:
@@ -325,7 +325,7 @@ class ObsidianAgent(BaseAgent):
 
         if not results:
             return AgentResult(success=True, agent_name=self.agent_name,
-                content=f"Сократ, по запросу «{content}» ничего не нашла в vault.")
+                content=f"По запросу «{content}» ничего не нашла в vault.")
 
         search_type = "семантически" if sem_results else "по тексту"
         lines = [f"Нашла {len(results)} совпадений {search_type} по «{content}»:\n"]
@@ -341,7 +341,7 @@ class ObsidianAgent(BaseAgent):
         text = read_note(content)
         if not text:
             return AgentResult(success=True, agent_name=self.agent_name,
-                content=f"Сократ, «{content}» не нашла.")
+                content=f"«{content}» не нашла.")
         preview = text[:2000] + ("\n\n_... (обрезано)_" if len(text) > 2000 else "")
         return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content=preview)
@@ -358,7 +358,7 @@ class ObsidianAgent(BaseAgent):
         files = list_files(folder)
         if not files:
             return AgentResult(success=True, agent_name=self.agent_name,
-                content=f"Сократ, в «{label}» пока пусто.")
+                content=f"В «{label}» пока пусто.")
         lines = [f"📁 {label} ({len(files)}):\n"]
         for f in files[:20]:
             lines.append(f"• {f.split('/')[-1].replace('.md','')}")
@@ -388,7 +388,7 @@ class ObsidianAgent(BaseAgent):
         deleted = result.get("deleted", [])
         if not deleted:
             return AgentResult(success=True, agent_name=self.agent_name,
-                content="Сократ, vault чист — лишних файлов нет. 👍")
+                content="Vault чист — лишних файлов нет. 👍")
         return AgentResult(success=True, agent_name=self.agent_name, needs_critic=False,
             content=f"Почистила vault. 🗑️ Удалено {len(deleted)}:\n" +
                     "\n".join(f"• {n}" for n in deleted))

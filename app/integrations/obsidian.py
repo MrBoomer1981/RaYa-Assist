@@ -529,7 +529,7 @@ def format_all_tasks() -> str:
         lines.append("")
         total += len(active)
     if not lines:
-        return "Сократ, задач нет. Всё чисто 👍"
+        return "Задач нет. Всё чисто 👍"
     return f"📋 Задачи ({total} активных):\n\n" + "\n".join(lines).strip()
 
 

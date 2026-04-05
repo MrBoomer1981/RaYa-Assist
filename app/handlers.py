@@ -17,7 +17,8 @@ from aiogram.types import BufferedInputFile, Message
 from app.config import settings
 from app.database import (
     clear_history, clear_memory, load_memory,
-    save_reminder, get_active_reminders, get_memory_by_category, DB_PATH,
+    save_reminder, get_active_reminders, get_memory_by_category,
+    upsert_user, get_user_name, DB_PATH,
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
@@ -35,7 +36,7 @@ from app.utils import RECUR_RU
 
 def _build_help_text() -> str:
     lines = [
-        "🤖 Я твой личный ИИ-ассистент RaYa, Сократ.\n",
+        "🤖 Я твой личный ИИ-ассистент RaYa.\n",
         "Что умею:",
         "• Отвечать на вопросы на любом языке",
         "• Помнить факты о тебе между сессиями",
@@ -95,7 +96,7 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
             )
             recur_note = f"\n🔁 {RECUR_RU.get(recurrence, recurrence)}" if recurrence else ""
             await message.answer(
-                f"⏰ Записала, Сократ. Напомню: {result.reminder['text']}\n"
+                f"⏰ Записала. Напомню: {result.reminder['text']}\n"
                 f"Время (UTC): {remind_str}{recur_note} (#{rid})"
             )
         except Exception:
@@ -114,7 +115,10 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
     async def cmd_start(message: Message) -> None:
         if not message.from_user:
             return
-        await message.answer("Привет, Сократ. Я RaYa — чем могу помочь?")
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+        name = u.first_name or "друг"
+        await message.answer(f"Привет, {name}! Я RaYa — чем могу помочь?")
 
     @dp.message(Command("help"))
     async def cmd_help(message: Message) -> None:
@@ -134,14 +138,14 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         if decisions:
             lines.append("\n✅ Принятые решения:")
             lines.extend(f"  • {k}: {v}" for k, v in decisions[:8])
-        await message.answer("\n".join(lines) if lines else "🧠 Пока ничего о тебе не знаю, Сократ.")
+        await message.answer("\n".join(lines) if lines else "🧠 Пока ничего о тебе не знаю.")
 
     @dp.message(Command("forget"))
     async def cmd_forget(message: Message) -> None:
         if not message.from_user:
             return
         clear_memory(message.from_user.id)
-        await message.answer("🗑️ Память удалена. Начинаем заново, Сократ.")
+        await message.answer("🗑️ Память удалена. Начинаем заново.")
 
     @dp.message(Command("clear"))
     async def cmd_clear(message: Message) -> None:
@@ -149,7 +153,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         clear_history(message.from_user.id)
         llm._consistency.clear_session(message.from_user.id)
-        await message.answer("🗑️ История очищена. Память сохранена, Сократ.")
+        await message.answer("🗑️ История очищена. Память сохранена.")
 
     @dp.message(Command("reminders"))
     async def cmd_reminders(message: Message) -> None:
@@ -157,7 +161,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         items = get_active_reminders(message.from_user.id)
         if not items:
-            await message.answer("⏰ Активных напоминаний нет, Сократ.")
+            await message.answer("⏰ Активных напоминаний нет.")
             return
         lines = ["⏰ Активные напоминания:\n"]
         for rid, text, remind_at in items:
@@ -193,6 +197,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
     async def handle_voice(message: Message) -> None:
         if not message.from_user or not message.voice:
             return
+        upsert_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
         if message.voice.file_size and message.voice.file_size > _MAX_FILE_BYTES:
             await message.answer("⚠️ Голосовое слишком длинное (макс. 20 МБ).")
             return
@@ -300,6 +305,8 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
     async def handle_message(message: Message) -> None:
         if not message.text or not message.from_user:
             return
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
         await bot.send_chat_action(message.chat.id, "typing")
         try:
             bridge = await llm.get_resume_phrase(message.from_user.id)

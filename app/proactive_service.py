@@ -20,7 +20,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from app.config import settings
-from app.database import DB_PATH, get_active_tasks, get_top_interactions, load_history, load_memory, save_messages
+from app.database import DB_PATH, get_active_tasks, get_top_interactions, get_user_name, load_history, load_memory, save_messages
 from app.database import _conn  # для прямых SQL запросов
 
 # ── Временные константы (секунды) ────────────────────────────────────────────
@@ -71,7 +71,7 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
                     + timedelta(hours=_MOSCOW_UTC_OFFSET)).strftime("%H:%M")
 
         msg = await _gen(llm, (
-            f"Сократ, через ~30 минут (в {msk_time}) у тебя напоминание: «{text}». "
+            f"Через ~30 минут (в {msk_time}) у пользователя напоминание: «{text}». "
             f"Напомни об этом коротко и по-человечески — одно предложение."
         ))
         if msg:
@@ -125,7 +125,7 @@ async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
         task = new_tasks[0]
         when = "сегодня" if not task.get("overdue") else "просрочена"
         msg  = await _gen(llm, (
-            f"У Сократа задача {when}: «{task['text']}». "
+            f"У пользователя задача {when}: «{task['text']}». "
             f"Напомни коротко — одно предложение, без занудства."
         ))
         if msg:
@@ -141,7 +141,7 @@ async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
 
 async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime | None) -> tuple[bool, datetime | None]:
     """
-    Если Сократ не писал 2+ дня — RaYa пишет особое сообщение.
+    Если пользователь не писал 2+ дня — RaYa пишет особое сообщение.
     Не чаще раза в 2 дня.
     Возвращает (отправлено, новое_время_последнего_сообщения).
     """
@@ -161,7 +161,7 @@ async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime 
             return False, last_absence_msg
 
         msg = await _gen(llm, (
-            "Сократ не писал уже больше двух дней. Напиши ему короткое живое сообщение — "
+            "Пользователь не писал уже больше двух дней. Напиши ему короткое живое сообщение — "
             "не 'как дела?', а что-то более конкретное и тёплое. "
             "Можешь упомянуть что заметила его отсутствие. Одно-два предложения."
         ))
@@ -202,7 +202,7 @@ async def check_idea_followup(user_id: int, bot, llm, sent_ids: set) -> bool:
             return False
 
         msg = await _gen(llm, (
-            f"Несколько дней назад Сократ записал в дневник: «{entry[:200]}». "
+            f"Несколько дней назад пользователь записал в дневник: «{entry[:200]}». "
             f"Придумай короткий follow-up — вопрос или наблюдение по этой теме. "
             f"Одно предложение, живо и без занудства."
         ))
@@ -247,7 +247,7 @@ async def check_activity_suggestion(
             return False, last_suggestion
 
         msg = await _gen(llm, (
-            f"Сократ часто возвращается к теме «{top_topic}» ({top_summary}). "
+            f"Пользователь часто возвращается к теме «{top_topic}» ({top_summary}). "
             f"Предложи ему что-то конкретное и полезное по этой теме — "
             f"статью, идею, следующий шаг. Одно предложение, без предисловий."
         ))
@@ -269,7 +269,7 @@ async def _gen(llm, prompt: str) -> str | None:
         system = settings.system_prompt + (
             "\n\nКРИТИЧНО: Это проактивное сообщение — ты пишешь первой. "
             "Максимум 1-2 предложения. Никаких списков. Живо и по-человечески. "
-            "Обращайся только 'Сократ'."
+            f"Обращайся к пользователю по имени."
         )
         response = await llm.ainvoke([
             SystemMessage(content=system),
@@ -603,7 +603,7 @@ class ProactiveService:
             if result.success and result.content:
                 await self._bot.send_message(
                     chat_id=user_id,
-                    text=f"🌅 *Доброе утро, Сократ*\n\n{result.content}",
+                    text=f"🌅 *Доброе утро, {get_user_name(user_id)}*\n\n{result.content}",
                     parse_mode="Markdown",
                 )
                 save_messages(user_id, "[утренний дайджест]", result.content)
@@ -637,14 +637,14 @@ def get_last_message_time(user_id: int) -> datetime | None:
 
 
 _INITIATIVE_PROMPTS = [
-    "Сократ давно не писал. Напиши ему короткое живое сообщение — спроси как дела, "
+    "Пользователь давно не писал. Напиши ему короткое живое сообщение — спроси как дела, "
     "поделись чем-то интересным из мира технологий или просто дай знать что ты здесь. "
     "Максимум 2-3 предложения. Без формальностей.",
 
-    "Сократ долго молчит. Напиши ему что-нибудь — короткую мысль, интересный факт "
+    "Пользователь долго молчит. Напиши ему что-нибудь — короткую мысль, интересный факт "
     "или просто напомни что ты рядом. Живо и по-человечески, 1-2 предложения.",
 
-    "Сократ давно не выходил на связь. Напиши тёплое короткое сообщение. "
+    "Пользователь давно не выходил на связь. Напиши тёплое короткое сообщение. "
     "Можешь упомянуть что-то из его последних разговоров или задач. 1-2 предложения.",
 ]
 
@@ -657,7 +657,8 @@ async def generate_initiative_message(user_id: int, llm) -> str:
 
         context = ""
         if facts:
-            context += f"Что RaYa знает о Сократе: {'; '.join(facts[:3])}\n"
+            user_name = get_user_name(user_id)
+        context += f"Что RaYa знает о {user_name}: {'; '.join(facts[:3])}\n"
         # Читаем задачи из Obsidian если доступен
         try:
             from app.integrations.obsidian import get_all_tasks, vault_available
@@ -678,14 +679,14 @@ async def generate_initiative_message(user_id: int, llm) -> str:
         prompt = next(_initiative_cycle)
 
         response = await llm.ainvoke([
-            SystemMessage(content="Ты RaYa — личный ассистент и друг Сократа. Обращайся только 'Сократ'."),
+            SystemMessage(content=f"Ты RaYa — личный ассистент и друг пользователя. Обращайся к нему по имени '{get_user_name(user_id)}'."),
             HumanMessage(content=prompt + "\n\n" + context),
         ])
         return str(response.content).strip()
 
     except Exception:
         logger.exception("generate_initiative_message: ошибка")
-        return "Сократ, давно не слышала тебя. Всё хорошо?"
+        return f"{get_user_name(user_id)}, давно не слышала тебя. Всё хорошо?"
 
 
 # ══════════════════════════════════════════════════════════

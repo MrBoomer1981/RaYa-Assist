@@ -23,40 +23,46 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _migrate(con: sqlite3.Connection) -> None:
-    """Идемпотентные ALTER TABLE миграции — запускаются один раз при старте."""
+    """Идемпотентные ALTER TABLE миграции — запускаются при каждом старте."""
     # reminders: добавить recurrence если нет
     rem_cols = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
     if "recurrence" not in rem_cols:
         con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
 
-    # tasks: если таблица существует но колонка text отсутствует — пересоздаём
-    # (старые версии могли использовать 'title' или другое имя)
+    # tasks: надёжная починка — всегда пересоздаём через tmp если нет колонки text
     task_cols = {row[1] for row in con.execute("PRAGMA table_info(tasks)").fetchall()}
     if task_cols and "text" not in task_cols:
-        # Определяем имя старой текстовой колонки
-        old_text_col = next(
-            (c for c in task_cols if c not in ("id", "user_id", "priority", "due_date", "done", "created_at")),
-            None
-        )
-        if old_text_col:
-            con.execute(f"ALTER TABLE tasks RENAME COLUMN {old_text_col} TO text")
-        else:
-            # Нет подходящей колонки — пересоздаём таблицу
-            con.executescript("""
-                CREATE TABLE IF NOT EXISTS tasks_new (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id    INTEGER NOT NULL,
-                    text       TEXT    NOT NULL,
-                    priority   INTEGER NOT NULL DEFAULT 2,
-                    due_date   TEXT    DEFAULT '',
-                    done       INTEGER NOT NULL DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
-                    SELECT id, user_id, '', priority, due_date, done, created_at FROM tasks;
-                DROP TABLE tasks;
-                ALTER TABLE tasks_new RENAME TO tasks;
-            """)
+        # Найти старую текстовую колонку (не системная)
+        system_cols = {"id", "user_id", "priority", "due_date", "done", "created_at"}
+        old_col = next((c for c in task_cols if c not in system_cols), None)
+        src_col = old_col if old_col else "''"
+        con.executescript(f"""
+            CREATE TABLE IF NOT EXISTS tasks_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL,
+                text       TEXT    NOT NULL DEFAULT '',
+                priority   INTEGER NOT NULL DEFAULT 2,
+                due_date   TEXT    DEFAULT '',
+                done       INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
+                SELECT id, user_id, {src_col}, priority, due_date, done, created_at FROM tasks;
+            DROP TABLE tasks;
+            ALTER TABLE tasks_new RENAME TO tasks;
+            CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, done);
+        """)
+
+    # users: таблица профилей пользователей
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id     INTEGER PRIMARY KEY,
+            first_name  TEXT    DEFAULT '',
+            last_name   TEXT    DEFAULT '',
+            username    TEXT    DEFAULT '',
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
 
 
 @contextmanager
@@ -539,7 +545,7 @@ def format_memory_for_prompt(user_id: int) -> str:
         return ""
 
     labels = {
-        "facts":       "О Сократе",
+        "facts":       "О пользователе",
         "interests":   "Интересы",
         "projects":    "Проекты",
         "skills":      "Навыки",
@@ -548,7 +554,7 @@ def format_memory_for_prompt(user_id: int) -> str:
         "context":     "Сейчас работает над",
     }
 
-    lines = ["📋 Что RaYa знает о Сократе:"]
+    lines = ["📋 Что RaYa знает о пользователе:"]
     for category, entries in memory.items():
         if not entries:
             continue
@@ -631,7 +637,7 @@ def format_context_for_prompt(user_id: int) -> str:
     if ctx["topic"]:
         lines.append(f"  Тема: {ctx['topic']}")
     if ctx["user_goal"]:
-        lines.append(f"  Цель Сократа: {ctx['user_goal']}")
+        lines.append(f"  Цель пользователя: {ctx['user_goal']}")
     if ctx["open_threads"]:
         threads = "; ".join(ctx["open_threads"][:3])
         lines.append(f"  Незавершённые темы: {threads}")
@@ -683,7 +689,7 @@ def format_interaction_memory(user_id: int) -> str:
     if not rows:
         return ""
 
-    lines = ["🔁 Темы которые Сократ поднимал раньше:"]
+    lines = ["🔁 Темы которые пользователь поднимал раньше:"]
     for topic, summary, freq in rows:
         times = "несколько раз" if freq >= 3 else "уже обсуждали"
         lines.append(f"  • {topic} ({times}): {summary}")
@@ -784,6 +790,31 @@ def get_all_known_users() -> list[int]:
             "SELECT DISTINCT user_id FROM history ORDER BY user_id"
         ).fetchall()
     return [r[0] for r in rows]
+
+
+def upsert_user(user_id: int, first_name: str = "", last_name: str = "", username: str = "") -> None:
+    """Сохраняет или обновляет профиль пользователя."""
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO users (user_id, first_name, last_name, username, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                first_name = excluded.first_name,
+                last_name  = excluded.last_name,
+                username   = excluded.username,
+                updated_at = CURRENT_TIMESTAMP
+        """, (user_id, first_name, last_name, username))
+
+
+def get_user_name(user_id: int) -> str:
+    """Возвращает имя пользователя. Если не найдено — возвращает 'пользователь'."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT first_name FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    if row and row[0]:
+        return row[0]
+    return "пользователь"
 
 
 def save_memory(user_id: int, facts: list[str]) -> None:
