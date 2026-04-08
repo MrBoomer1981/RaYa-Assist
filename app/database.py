@@ -86,10 +86,11 @@ def _migrate() -> None:
         """)
         # ALTER TABLE для колонок которые могли отсутствовать в ранних версиях
         user_cols = {row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()}
+        # CURRENT_TIMESTAMP нельзя использовать как DEFAULT в ALTER TABLE в SQLite
         for col, typedef in [
             ("last_name", "TEXT DEFAULT ''"),
             ("username",  "TEXT DEFAULT ''"),
-            ("updated_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
+            ("updated_at", "TEXT DEFAULT ''"),
         ]:
             if col not in user_cols:
                 con.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
