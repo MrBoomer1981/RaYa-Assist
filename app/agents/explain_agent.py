@@ -116,19 +116,18 @@ class ExplainAgent(BaseAgent):
 
         logger.info("💡 ExplainAgent: режим '%s' | user_id=%s", mode, ctx.user_id)
 
-        # Если план — предлагаем сохранить задачи в Obsidian
+        # Если план — сохраняем шаги как задачи в БД
         metadata = {"mode": mode}
         if mode == "plan":
             tasks = re.findall(r"^\s*[-•\d+\.]\s*(.+)$", reply, re.MULTILINE)
-            if tasks:
+            if tasks and len(tasks) >= 2:
                 try:
-                    from app.integrations.obsidian import add_tasks, vault_available
-                    if vault_available() and len(tasks) >= 2:
-                        add_tasks(tasks[:10], quadrant="q2")
-                        reply += "\n\n_Шаги плана добавлены в Obsidian (Q2)._"
-                        metadata["tasks_added"] = len(tasks[:10])
+                    from app.database import save_task
+                    for t in tasks[:10]:
+                        save_task(ctx.user_id, t.strip(), 2, "")
+                    metadata["tasks_added"] = len(tasks[:10])
                 except Exception:
-                    logger.debug("explain: не удалось сохранить план в Obsidian")
+                    logger.debug("explain: не удалось сохранить план в БД")
 
         return AgentResult(
             success=True,

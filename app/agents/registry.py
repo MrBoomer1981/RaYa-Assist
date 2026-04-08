@@ -73,9 +73,9 @@ AGENTS: dict[str, AgentInfo] = {
     "todo": AgentInfo(
         name="todo", title="Todo Agent",
         description=(
-            "Управляет задачами через Obsidian (матрица Эйзенхауэра). "
+            "Управляет задачами (матрица Эйзенхауэра). "
             "Добавляет, показывает, выполняет, удаляет задачи. "
-            "Obsidian — единственный источник правды."
+            "База данных — единственный источник правды."
         ),
         keywords=(
             "задача", "задачи", "todo", "список задач",
@@ -86,22 +86,7 @@ AGENTS: dict[str, AgentInfo] = {
         # enabled=True (default)  # re-enabled
     ),
 
-    "obsidian": AgentInfo(
-        name="obsidian", title="Obsidian Agent",
-        description=(
-            "Сохраняет в Obsidian vault: дневник, заметки, Zettelkasten. "
-            "Сама определяет куда что записать. "
-            "Ищет и читает существующие заметки."
-        ),
-        keywords=(
-            "obsidian", "vault", "zettel", "база знаний",
-            "запомни", "сохрани", "запиши", "отметь", "зафиксируй",
-            "заметк", "создай заметку", "запиши в дневник",
-            "найди в obsidian", "что я писал", "список заметок",
-            "статистика vault", "почисти vault",
-        ),
-        # enabled=True (default)  # re-enabled
-    ),
+
 
     "text": AgentInfo(
         name="text", title="Text Agent",

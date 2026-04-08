@@ -60,7 +60,6 @@ class Core:
 
         web_server = self._build_web_server(svc.llm)
 
-        webdav_runner = await self._start_webdav()
         try:
             await asyncio.gather(
                 dp.start_polling(svc.bot, drop_pending_updates=True),
@@ -69,8 +68,7 @@ class Core:
         finally:
             svc.proactive.stop()
             await svc.bot.session.close()
-            if webdav_runner:
-                await webdav_runner.cleanup()
+
             logger.info("🛑 RaYa остановлена")
 
     # ── Инициализация ─────────────────────────────────────────────────────────
@@ -116,42 +114,4 @@ class Core:
         )
         return uvicorn.Server(web_config)
 
-    async def _sync_tasks(self, svc) -> None:
-        """Синхронизирует задачи БД с Obsidian vault."""
-        try:
-            from app.integrations.obsidian import sync_tasks_to_db, vault_available
-            from app.database import get_all_known_users
-            if vault_available():
-                known_users = get_all_known_users()
-                if settings.telegram_user_id:
-                    users = [settings.telegram_user_id]
-                elif known_users:
-                    users = known_users
-                else:
-                    logger.info("🔄 Sync tasks: нет пользователей, пропускаем")
-                    return
-                for uid in users:
-                    result = sync_tasks_to_db(uid)
-                    logger.info("🔄 Задачи синхронизированы для user_id=%s: %s", uid, result)
-        except Exception:
-            logger.warning("Sync tasks: ошибка при старте", exc_info=True)
 
-    async def _start_webdav(self):
-        """Запускает WebDAV сервер если задан WEBDAV_PASSWORD."""
-        try:
-            from app.webdav_server import start_webdav_server
-            return await start_webdav_server()
-        except Exception:
-            logger.exception("WebDAV: ошибка запуска (не критично)")
-            return None
-
-    def _log_startup(self, svc: Services) -> None:
-        from app.agents.registry import get_enabled_agents
-        agent_names = [a.name for a in get_enabled_agents()]
-        logger.info(
-            "🤖 RaYa запущена | модель: %s | поиск: %s | агентов: %d (%s)",
-            settings.model_name,
-            "вкл" if settings.search_enabled else "выкл",
-            len(agent_names),
-            ", ".join(agent_names),
-        )

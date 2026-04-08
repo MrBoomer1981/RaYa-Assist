@@ -113,7 +113,6 @@ class ResearchAgent(BaseAgent):
         resp = await self._llm.ainvoke(messages)
         logger.info("🔬 ResearchAgent: режим '%s' | user_id=%s", mode, ctx.user_id)
 
-        await _auto_save_zettel(self._llm, ctx.message, str(resp.content), bool(search_block))
 
 
         return AgentResult(
@@ -125,48 +124,3 @@ class ResearchAgent(BaseAgent):
         )
 
 
-# ── Автосохранение результатов поиска в Zettelkasten ─────────────────────────
-
-async def _auto_save_zettel(llm, query: str, result: str, has_search: bool) -> None:
-    """Сохраняет найденное в Zettelkasten. Дополняет существующее если похоже."""
-    if not has_search:
-        return
-    try:
-        import json as _j
-        from app.integrations.obsidian import (
-            add_zettel, list_zettel_titles, update_zettel, vault_available,
-        )
-        from app.utils import strip_json
-        from langchain_core.messages import HumanMessage as _HM
-
-        if not vault_available():
-            return
-
-        titles       = list_zettel_titles()
-        existing_str = "\n".join(f"- {e['id']}: {e['title']}" for e in titles[-15:]) or "нет"
-
-        dedup_q = (
-            "Информация по запросу: " + query[:200] + "\n\n"
-            "Существующие карточки:\n" + existing_str + "\n\n"
-            "Это новая тема или дополнение к существующей карточке?\n"
-            'JSON: {"decision":"new|update","existing_id":"ID или пусто"}'
-        )
-        dr    = await llm.ainvoke([_HM(content=dedup_q)])
-        dedup = _j.loads(strip_json(str(dr.content)))
-
-        if dedup.get("decision") == "update" and dedup.get("existing_id"):
-            update_zettel(dedup["existing_id"], result[:600])
-        else:
-            zettel_q = (
-                "Создай атомарную Zettelkasten карточку.\n"
-                "Запрос: " + query[:200] + "\n"
-                "Найденное: " + result[:500] + "\n\n"
-                'JSON: {"title":"название 5-8 слов","content":"суть 2-4 предл","tags":["тег1","тег2"]}'
-            )
-            zr = await llm.ainvoke([_HM(content=zettel_q)])
-            zd = _j.loads(strip_json(str(zr.content)))
-            add_zettel(zd.get("title", query[:50]), zd.get("content", result[:400]),
-                       zd.get("tags", []))
-    except Exception:
-        import logging
-        logging.getLogger(__name__).debug("_auto_save_zettel failed", exc_info=True)

@@ -221,31 +221,18 @@ async def _get_weather() -> str:
 
 async def _get_tasks(user_id: int) -> str:
     try:
-        from app.integrations.obsidian import get_all_tasks, vault_available
         from app.database import get_active_tasks
-        lines = []
-        if vault_available():
-            all_tasks = get_all_tasks()
-            q1 = [t["text"] for t in all_tasks["q1"]["tasks"] if not t["done"]]
-            q2 = [t["text"] for t in all_tasks["q2"]["tasks"] if not t["done"]]
-            if q1:
-                lines.append("**Срочно:**")
-                for t in q1[:3]:
-                    lines.append(f"• {t}")
-            if q2:
-                lines.append("**Важно:**")
-                for t in q2[:3]:
-                    lines.append(f"• {t}")
-            total = sum(len([t for t in d["tasks"] if not t["done"]]) for d in all_tasks.values())
-            if total > 6:
-                lines.append(f"_...и ещё {total - 6} задач_")
-        else:
-            db_tasks = get_active_tasks(user_id)
-            if db_tasks:
-                lines.append("**Задачи:**")
-                for t in db_tasks[:4]:
-                    lines.append(f"• {t[1]}")
-        return "\n".join(lines) + "\n" if lines else ""
+        db_tasks = get_active_tasks(user_id)
+        if not db_tasks:
+            return ""
+        emoji = {1: "🔴", 2: "🟡", 3: "🟠"}
+        lines = ["**Задачи на сегодня:**"]
+        for t in db_tasks[:5]:
+            e = emoji.get(t[2], "🟡")
+            lines.append(f"{e} {t[1]}")
+        if len(db_tasks) > 5:
+            lines.append(f"_...и ещё {len(db_tasks) - 5} задач_")
+        return "\n".join(lines) + "\n"
     except Exception as e:
         logger.warning("Задачи: %s", e)
         return ""

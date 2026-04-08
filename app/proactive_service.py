@@ -89,18 +89,16 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
 async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
     """
     Напоминает о задачах с дедлайном сегодня/завтра.
-    Читает из Obsidian vault. Фоллбек — БД.
+    Читает задачи из БД.
     """
     try:
         overdue = []
         try:
-            from app.integrations.obsidian import get_overdue_tasks, vault_available
-            if vault_available():
-                overdue = get_overdue_tasks(days_threshold=1)
+            _dummy = None
         except Exception:
             pass
 
-        # Фоллбек на БД если vault недоступен
+        # Читаем задачи из БД
         if not overdue:
             today    = _now_msk().date()
             tomorrow = today + timedelta(days=1)
@@ -661,18 +659,9 @@ async def generate_initiative_message(user_id: int, llm) -> str:
         context += f"Что RaYa знает о {user_name}: {'; '.join(facts[:3])}\n"
         # Читаем задачи из Obsidian если доступен
         try:
-            from app.integrations.obsidian import get_all_tasks, vault_available
-            if vault_available():
-                all_tasks = get_all_tasks()
-                active = []
-                for q_data in all_tasks.values():
-                    active.extend([t["text"] for t in q_data["tasks"] if not t["done"]])
-                if active:
-                    context += f"Его активные задачи: {', '.join(active[:3])}\n"
-            else:
-                tasks = get_active_tasks(user_id)
-                if tasks:
-                    context += f"Его активные задачи: {', '.join(t[1] for t in tasks[:3])}\n"
+            tasks = get_active_tasks(user_id)
+            if tasks:
+                context += f"Активные задачи: {', '.join(t[1] for t in tasks[:3])}\n"
         except Exception:
             pass
 

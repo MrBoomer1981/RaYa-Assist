@@ -294,64 +294,9 @@ def create_app(llm_service) -> FastAPI:
             "utc_time": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
-    # ── WebDAV (Obsidian Remotely Save) ───────────────────────────────────────
 
-    try:
-        from app.webdav_server import _dispatch
-        methods = ["GET", "PUT", "DELETE", "PROPFIND", "MKCOL", "MOVE", "COPY", "PROPPATCH", "OPTIONS", "HEAD"]
-        app.add_route("/webdav",             _dispatch, methods=methods)
-        app.add_route("/webdav/",            _dispatch, methods=methods)
-        app.add_route("/webdav/{path:path}", _dispatch, methods=methods)
-        logger.info("WebDAV смонтирован на /webdav (основной порт)")
-    except Exception:
-        logger.warning("WebDAV не смонтирован")
 
-    # ── Очистка vault ─────────────────────────────────────────────────────────
 
-    @app.delete("/api/vault/cleanup")
-    async def vault_cleanup(token: str = Query(default="")):
-        """Удаляет все файлы из vault кроме папок созданных RaYa."""
-        _check_token(token)
-        import shutil
-        vault_base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
-        subdir     = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
-        vault      = vault_base / subdir if subdir else vault_base
-
-        if not vault.exists():
-            return {"ok": False, "error": "vault не найден"}
-
-        raya_folders = {"Дневник", "Заметки", "Задачи", "Zettelkasten", ".obsidian"}
-        deleted = []
-        for item in list(vault.iterdir()):
-            if item.name not in raya_folders:
-                if item.is_dir():
-                    shutil.rmtree(item)
-                else:
-                    item.unlink()
-                deleted.append(item.name)
-        return {"ok": True, "deleted": deleted, "count": len(deleted)}
-
-    @app.delete("/api/vault/file")
-    async def vault_delete_file(path: str = Query(default=""), token: str = Query(default="")):
-        """Удаляет конкретный файл из vault по relative path."""
-        _check_token(token)
-        import shutil
-        vault_base = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/data/obsidian_vault"))
-        subdir     = os.getenv("OBSIDIAN_VAULT_SUBDIR", "RaYa-Vault")
-        vault      = vault_base / subdir if subdir else vault_base
-
-        if not path:
-            raise HTTPException(status_code=400, detail="path обязателен")
-        target = (vault / path).resolve()
-        if not str(target).startswith(str(vault.resolve())):
-            raise HTTPException(status_code=403, detail="Forbidden")
-        if not target.exists():
-            raise HTTPException(status_code=404, detail="Файл не найден")
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
-        return {"ok": True, "deleted": path}
 
     @app.get("/api/features")
     async def features(token: str = Query(default="")):
@@ -360,130 +305,108 @@ def create_app(llm_service) -> FastAPI:
         from app.feature_flags import status as ff_status
         return ff_status()
 
-    # ── Задачи (Obsidian) ─────────────────────────────────────────────────────
+    # ── Задачи (SQLite) ───────────────────────────────────────────────────────
 
     @app.get("/api/tasks")
     async def get_tasks(token: str = Query(default="")):
-        """Все задачи из Obsidian по квадрантам."""
+        """Все активные задачи по квадрантам."""
         _check_token(token)
-        try:
-            from app.integrations.obsidian import get_all_tasks, vault_available
-            if not vault_available():
-                return {"q1": {"tasks": []}, "q2": {"tasks": []}, "q3": {"tasks": []}, "q4": {"tasks": []}}
-            return get_all_tasks()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        user_id = _get_user_id()
+        from app.database import get_active_tasks
+        tasks = get_active_tasks(user_id)
+        _PRIO = {1: "q1", 2: "q2", 3: "q3"}
+        result = {
+            "q1": {"title": "Срочно и важно",    "emoji": "🔴", "tasks": []},
+            "q2": {"title": "Важно, не срочно",  "emoji": "🟡", "tasks": []},
+            "q3": {"title": "Срочно, не важно",  "emoji": "🟠", "tasks": []},
+        }
+        for tid, text, prio, due in tasks:
+            q = _PRIO.get(prio, "q3")
+            result[q]["tasks"].append({"id": tid, "text": text, "due_date": due, "done": False})
+        return result
+
+    @app.post("/api/tasks")
+    async def create_task(body: dict, token: str = Query(default="")):
+        """Создать задачу."""
+        _check_token(token)
+        user_id = _get_user_id()
+        text = body.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="text обязателен")
+        from app.database import save_task
+        _Q_PRIO = {"q1": 1, "q2": 2, "q3": 3}
+        priority = _Q_PRIO.get(body.get("quadrant", "q2"), 2)
+        tid = save_task(user_id, text, priority, body.get("due_date", ""))
+        return {"id": tid, "ok": True}
 
     @app.post("/api/tasks/done")
     async def task_done(body: dict, token: str = Query(default="")):
-        """Отметить задачу выполненной."""
+        """Отметить задачу выполненной (по id или тексту)."""
         _check_token(token)
-        text = body.get("text", "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import mark_task_done_obsidian, vault_available
-        ok = mark_task_done_obsidian(text) if vault_available() else False
+        user_id = _get_user_id()
+        from app.database import get_active_tasks, mark_task_done
+        task_id = body.get("id")
+        text    = body.get("text", "").strip()
+        if task_id:
+            ok = mark_task_done(int(task_id), user_id)
+        elif text:
+            tasks = get_active_tasks(user_id)
+            ok = False
+            for t in tasks:
+                if text.lower() in t[1].lower():
+                    ok = mark_task_done(t[0], user_id)
+                    break
+        else:
+            raise HTTPException(status_code=400, detail="id или text обязателен")
         return {"ok": ok}
 
-    @app.post("/api/tasks/clear_done")
-    async def clear_done(token: str = Query(default="")):
-        """Удалить все выполненные задачи."""
+    @app.delete("/api/tasks/{task_id}")
+    async def delete_task_route(task_id: int, token: str = Query(default="")):
+        """Удалить задачу."""
         _check_token(token)
-        from app.integrations.obsidian import clear_done_tasks, vault_available
-        count = clear_done_tasks() if vault_available() else 0
-        return {"count": count}
-
-    @app.get("/api/tasks/week")
-    async def week_plan(token: str = Query(default="")):
-        """План задач на неделю."""
-        _check_token(token)
-        from app.integrations.obsidian import get_week_plan, vault_available
-        plan = get_week_plan() if vault_available() else "vault недоступен"
-        return {"plan": plan}
-
-    @app.post("/api/tasks/move")
-    async def move_task_api(body: dict, token: str = Query(default="")):
-        """Переместить задачу в другой квадрант."""
-        _check_token(token)
-        text   = body.get("text", "").strip()
-        target = body.get("target_quadrant", "q2")
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import move_task, vault_available
-        ok = move_task(text, target) if vault_available() else False
+        user_id = _get_user_id()
+        from app.database import delete_task
+        ok = delete_task(task_id, user_id)
         return {"ok": ok}
 
-    @app.post("/api/tasks/undo")
-    async def task_undo(body: dict, token: str = Query(default="")):
-        """Вернуть выполненную задачу в активные."""
+    @app.put("/api/tasks/{task_id}")
+    async def update_task_route(task_id: int, body: dict, token: str = Query(default="")):
+        """Обновить задачу (текст, приоритет, дедлайн)."""
         _check_token(token)
-        text = body.get("text", "").strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import undo_task, vault_available
-        ok = undo_task(text) if vault_available() else False
-        return {"ok": ok}
+        user_id = _get_user_id()
+        from app.database import get_active_tasks, delete_task, save_task
+        tasks = get_active_tasks(user_id)
+        task = next((t for t in tasks if t[0] == task_id), None)
+        if not task:
+            raise HTTPException(status_code=404, detail="Задача не найдена")
+        _Q_PRIO = {"q1": 1, "q2": 2, "q3": 3}
+        new_text = body.get("text", task[1])
+        new_prio = _Q_PRIO.get(body.get("quadrant"), task[2])
+        new_due  = body.get("due_date", task[3])
+        delete_task(task_id, user_id)
+        new_id = save_task(user_id, new_text, new_prio, new_due)
+        return {"id": new_id, "ok": True}
 
-    @app.post("/api/tasks/move_and_undo")
-    async def task_move_and_undo(body: dict, token: str = Query(default="")):
-        """Вернуть выполненную задачу в активные И переместить в новый квадрант."""
-        _check_token(token)
-        text = body.get("text", "").strip()
-        tq   = body.get("target_quadrant", "q2")
-        if not text:
-            raise HTTPException(status_code=400, detail="text обязателен")
-        from app.integrations.obsidian import move_task, undo_task, vault_available
-        if not vault_available():
-            return {"ok": False}
-        undo_task(text)
-        ok = move_task(text, tq)
-        return {"ok": ok}
-
-    # ── Поиск по vault ────────────────────────────────────────────────────────
+    # ── Поиск по истории ──────────────────────────────────────────────────────
 
     @app.get("/api/search")
-    async def vault_search(q: str = "", token: str = Query(default="")):
-        """Семантический поиск по vault."""
+    async def search_history(q: str = "", token: str = Query(default="")):
+        """Поиск по истории разговора."""
         _check_token(token)
         if not q:
             return {"results": []}
-        try:
-            from app.semantic_search import semantic_search
-            results = await semantic_search(q, top_k=8)
-            if not results:
-                from app.integrations.obsidian import search_vault
-                raw = search_vault(q)
-                results = [{"path": r["path"], "title": r["title"],
-                            "snippet": r["snippet"], "score": None} for r in raw]
-            return {"results": results}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.post("/api/search/index")
-    async def rebuild_index(token: str = Query(default="")):
-        """Пересобрать поисковый индекс."""
-        _check_token(token)
-        try:
-            from app.semantic_search import build_index
-            index = await build_index(force=True)
-            return {"ok": True, "indexed": len(index)}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.get("/api/vault/note")
-    async def get_vault_note(path: str = "", token: str = Query(default="")):
-        """Читает конкретную заметку из vault."""
-        _check_token(token)
-        if not path:
-            raise HTTPException(status_code=400, detail="path обязателен")
-        import re as _re
-        from app.integrations.obsidian import read_note, vault_available
-        if not vault_available():
-            return {"content": None}
-        content = read_note(path)
-        if content:
-            content = _re.sub(r"^---.*?---\n+", "", content, flags=_re.DOTALL).strip()
-        return {"content": content}
+        user_id = _get_user_id()
+        from app.database import load_history
+        history = load_history(user_id, limit=100)
+        q_lower = q.lower()
+        results = []
+        for msg in history:
+            if q_lower in msg.content.lower():
+                results.append({
+                    "role": "human" if msg.__class__.__name__ == "HumanMessage" else "ai",
+                    "snippet": msg.content[:300],
+                })
+        return {"results": results[:20]}
 
     # ── Календарь ─────────────────────────────────────────────────────────────
 
@@ -560,34 +483,16 @@ def create_app(llm_service) -> FastAPI:
 
     @app.post("/api/calendar/day_notes")
     async def calendar_day_notes(body: dict, token: str = Query(default="")):
-        """Сохраняет заметки дня в Obsidian vault."""
+        """Сохраняет заметки дня в дневник (БД)."""
         _check_token(token)
         date  = body.get("date", "")
-        notes = body.get("notes", "")
+        notes = body.get("notes", "").strip()
         if not date:
             raise HTTPException(status_code=400, detail="date обязателен")
-        try:
-            from app.integrations.obsidian import vault_available, _read, _write, _frontmatter
-            if vault_available():
-                y, m, d   = date.split("-")
-                dt        = datetime(int(y), int(m), int(d))
-                rel_path  = Path(f"Дневник/{dt.strftime('%Y-%m')}/{dt.strftime('%Y-%m-%d')}.md")
-                existing  = _read(rel_path)
-                if not existing:
-                    fm      = _frontmatter(["дневник", dt.strftime("%Y-%m")], {"date": date})
-                    content = f"{fm}\n\n# {d} {dt.strftime('%B')} {y}\n\n## Заметки\n\n{notes}\n"
-                elif "## Заметки" in existing:
-                    import re as _re
-                    content = _re.sub(
-                        r"## Заметки.*$",
-                        f"## Заметки\n\n{notes}",
-                        existing, flags=_re.DOTALL
-                    )
-                else:
-                    content = existing.rstrip() + f"\n\n## Заметки\n\n{notes}\n"
-                _write(rel_path, content)
-        except Exception:
-            logger.exception("calendar_day_notes: ошибка записи в vault")
+        if notes:
+            user_id = _get_user_id()
+            from app.database import save_diary_entry
+            save_diary_entry(user_id, f"[{date}] {notes}")
         return {"ok": True}
 
     logger.info("Веб-сервер создан")
