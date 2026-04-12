@@ -71,7 +71,7 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
                     + timedelta(hours=_MOSCOW_UTC_OFFSET)).strftime("%H:%M")
 
         msg = await _gen(llm, (
-            f"Через ~30 минут (в {msk_time}) у пользователя напоминание: «{text}». "
+            f"Через ~30 минут (в {msk_time}) у {get_user_name(user_id)} напоминание: «{text}». "
             f"Напомни об этом коротко и по-человечески — одно предложение."
         ))
         if msg:
@@ -123,7 +123,7 @@ async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
         task = new_tasks[0]
         when = "сегодня" if not task.get("overdue") else "просрочена"
         msg  = await _gen(llm, (
-            f"У пользователя задача {when}: «{task['text']}». "
+            f"У {get_user_name(user_id)} задача {when}: «{task['text']}». "
             f"Напомни коротко — одно предложение, без занудства."
         ))
         if msg:
@@ -139,7 +139,7 @@ async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
 
 async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime | None) -> tuple[bool, datetime | None]:
     """
-    Если пользователь не писал 2+ дня — RaYa пишет особое сообщение.
+    Если пользователь не писал 2+ дня — RaYa пишет сообщение по имени.
     Не чаще раза в 2 дня.
     Возвращает (отправлено, новое_время_последнего_сообщения).
     """
@@ -159,7 +159,7 @@ async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime 
             return False, last_absence_msg
 
         msg = await _gen(llm, (
-            "Пользователь не писал уже больше двух дней. Напиши ему короткое живое сообщение — "
+            f"{get_user_name(user_id)} не писал уже больше двух дней. Напиши ему короткое живое сообщение — "
             "не 'как дела?', а что-то более конкретное и тёплое. "
             "Можешь упомянуть что заметила его отсутствие. Одно-два предложения."
         ))
@@ -200,7 +200,7 @@ async def check_idea_followup(user_id: int, bot, llm, sent_ids: set) -> bool:
             return False
 
         msg = await _gen(llm, (
-            f"Несколько дней назад пользователь записал в дневник: «{entry[:200]}». "
+            f"Несколько дней назад {get_user_name(user_id)} записал в дневник: «{entry[:200]}». "
             f"Придумай короткий follow-up — вопрос или наблюдение по этой теме. "
             f"Одно предложение, живо и без занудства."
         ))
@@ -245,7 +245,7 @@ async def check_activity_suggestion(
             return False, last_suggestion
 
         msg = await _gen(llm, (
-            f"Пользователь часто возвращается к теме «{top_topic}» ({top_summary}). "
+            f"{get_user_name(user_id)} часто возвращается к теме «{top_topic}» ({top_summary}). "
             f"Предложи ему что-то конкретное и полезное по этой теме — "
             f"статью, идею, следующий шаг. Одно предложение, без предисловий."
         ))
@@ -635,14 +635,14 @@ def get_last_message_time(user_id: int) -> datetime | None:
 
 
 _INITIATIVE_PROMPTS = [
-    "Пользователь давно не писал. Напиши ему короткое живое сообщение — спроси как дела, "
+    "Пользователь давно не писал. Напиши ему живое сообщение — спроси как дела, "
     "поделись чем-то интересным из мира технологий или просто дай знать что ты здесь. "
     "Максимум 2-3 предложения. Без формальностей.",
 
-    "Пользователь долго молчит. Напиши ему что-нибудь — короткую мысль, интересный факт "
+    "Пользователь долго молчит. Напиши что-нибудь — мысль, интересный факт "
     "или просто напомни что ты рядом. Живо и по-человечески, 1-2 предложения.",
 
-    "Пользователь давно не выходил на связь. Напиши тёплое короткое сообщение. "
+    "Пользователь давно не выходил на связь. Напиши тёплое сообщение. "
     "Можешь упомянуть что-то из его последних разговоров или задач. 1-2 предложения.",
 ]
 

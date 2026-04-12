@@ -128,7 +128,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         u = message.from_user
         upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
-        name = u.first_name or "друг"
+        name = u.username or u.first_name or "друг"
         await message.answer(f"Привет, {name}! Я RaYa — чем могу помочь?")
 
     @dp.message(Command("help"))

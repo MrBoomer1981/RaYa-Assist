@@ -16,10 +16,11 @@ from app.database import load_memory, save_messages
 
 logger = logging.getLogger(__name__)
 
-# Семафор: не более 10 одновременных LLM-запросов.
-# Groq free tier: ~30 req/min, 10 concurrent не перегружает.
-# Остальные запросы ждут в очереди (FIFO).
-_LLM_SEMAPHORE = asyncio.Semaphore(10)
+# Семафор — ограничение параллельных LLM запросов.
+# Настраивается через env LLM_CONCURRENCY (default 10).
+# Groq free tier: ~30 RPM, 10 concurrent оптимально для 25+ users.
+_LLM_CONCURRENCY = int(__import__("os").getenv("LLM_CONCURRENCY", "10"))
+_LLM_SEMAPHORE = asyncio.Semaphore(_LLM_CONCURRENCY)
 
 _SEARCH_KEYWORDS: tuple[str, ...] = (
     "новост", "сейчас", "сегодня", "вчера", "курс", "цена", "погод",

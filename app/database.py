@@ -3,6 +3,7 @@ database.py — работа с SQLite.
 WAL-режим, connection-per-call через контекстный менеджер.
 """
 import logging
+import functools
 import sqlite3
 import calendar
 from contextlib import contextmanager
@@ -728,7 +729,7 @@ def format_interaction_memory(user_id: int) -> str:
     if not rows:
         return ""
 
-    lines = ["🔁 Темы которые пользователь поднимал раньше:"]
+    lines = ["🔁 Часто обсуждаемые темы:"]
     for topic, summary, freq in rows:
         times = "несколько раз" if freq >= 3 else "уже обсуждали"
         lines.append(f"  • {topic} ({times}): {summary}")
@@ -845,15 +846,34 @@ def upsert_user(user_id: int, first_name: str = "", last_name: str = "", usernam
         """, (user_id, first_name, last_name, username))
 
 
-def get_user_name(user_id: int) -> str:
-    """Возвращает имя пользователя. Если не найдено — возвращает 'пользователь'."""
+@functools.lru_cache(maxsize=256)
+def _cached_user_name(user_id: int) -> str:
+    """Кэшированная версия — не дёргаем БД на каждый запрос."""
     with _conn() as con:
         row = con.execute(
-            "SELECT first_name FROM users WHERE user_id = ?", (user_id,)
+            "SELECT first_name, username FROM users WHERE user_id = ?", (user_id,)
         ).fetchone()
-    if row and row[0]:
-        return row[0]
-    return "пользователь"
+    if row:
+        first_name, username = row
+        if username:
+            return username      # @handle — приоритет
+        if first_name:
+            return first_name
+    return "друг"
+
+
+def get_user_name(user_id: int) -> str:
+    """
+    Возвращает имя для обращения к пользователю.
+    Приоритет: @username → first_name → 'друг'.
+    Результат кэшируется в памяти (LRU 256).
+    """
+    return _cached_user_name(user_id)
+
+
+def invalidate_user_name_cache(user_id: int) -> None:
+    """Сбрасывает кэш имени после upsert_user."""
+    _cached_user_name.cache_clear()  # простой сброс — дёшево при 256 users
 
 
 def save_memory(user_id: int, facts: list[str]) -> None:

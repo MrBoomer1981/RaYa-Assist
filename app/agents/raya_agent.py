@@ -5,7 +5,7 @@ raya_agent.py — главный агент RaYa.
 - Параллельный сбор контекста через asyncio.gather
 - Кэш системного промпта (TTL 60с) — не пересобирать на каждый запрос
 - llm_with_tools создаётся один раз в __init__
-- Vault tasks summary встроен в контекст
+- Сводка активных задач встроена в контекст
 """
 import asyncio
 import logging
@@ -28,7 +28,6 @@ from app.personality_service import (
     mood_context, state_to_prompt, update_state,
 )
 from app.utils import build_reminder_prompt_block, clean_reminder_tag, parse_reminder
-from app.vault_tool import VAULT_TOOL, process_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +58,8 @@ class RayaAgent(BaseAgent):
         super().__init__()
         self._bg_tasks: set[asyncio.Task] = set()
         # Создаём llm_with_tools один раз — не bind_tools на каждый запрос
-        self._llm_tools = self._llm.bind_tools([VAULT_TOOL])
-        # Кэш статичной части системного промпта
-        self._static_prompt_cache: str | None = None
-        self._static_prompt_ts: float = 0.0
+        # Кэш системного промпта per-user (user_id -> (prompt, timestamp))
+        self._prompt_cache: dict[int, tuple[str, float]] = {}
 
     def _system_prompt(self) -> str:
         return settings.system_prompt
@@ -73,14 +70,18 @@ class RayaAgent(BaseAgent):
         task.add_done_callback(self._bg_tasks.discard)
 
     def _get_static_prompt(self, user_id: int = 0) -> str:
-        """Статичная часть промпта — кэшируем на TTL секунд (per-user не нужен, имя меняется редко)."""
+        """Системный промпт с именем — кэшируется per-user на TTL секунд."""
         now = time.monotonic()
-        if self._static_prompt_cache and (now - self._static_prompt_ts) < _SYSTEM_CACHE_TTL:
-            return self._static_prompt_cache
-        user_name = get_user_name(user_id) if user_id else "пользователь"
+        cached = self._prompt_cache.get(user_id)
+        if cached and (now - cached[1]) < _SYSTEM_CACHE_TTL:
+            return cached[0]
+        user_name = get_user_name(user_id) if user_id else "друг"
         prompt = settings.system_prompt + _build_hard_rules(user_name)
-        self._static_prompt_cache = prompt
-        self._static_prompt_ts    = now
+        self._prompt_cache[user_id] = (prompt, now)
+        # Не даём кэшу расти бесконечно
+        if len(self._prompt_cache) > 200:
+            oldest = min(self._prompt_cache, key=lambda k: self._prompt_cache[k][1])
+            del self._prompt_cache[oldest]
         return prompt
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
@@ -122,41 +123,33 @@ class RayaAgent(BaseAgent):
                 return structured
             if ctx.memory_facts:
                 facts = "\n".join(f"- {f}" for f in ctx.memory_facts)
-                return f"Что известно о пользователе:\n{facts}"
+                return f"Что известно о {get_user_name(ctx.user_id)}:\n{facts}"
             return ""
 
-        async def _get_vault_summary():
+        async def _get_tasks_summary():
             try:
-                from app.integrations.obsidian import (
-                    get_tasks_summary, get_overdue_tasks, vault_available
-                )
-                if not vault_available():
+                from app.database import get_active_tasks
+                tasks = get_active_tasks(ctx.user_id)
+                if not tasks:
                     return ""
-                parts = []
-                # Краткая сводка по квадрантам
-                summary = get_tasks_summary()
-                if summary and summary != "задач нет":
-                    parts.append(f"Задачи: {summary}")
-                # Просроченные и горящие — явно показываем
-                overdue = get_overdue_tasks(days_threshold=1)
-                if overdue:
-                    urgent = [t["text"] for t in overdue if t.get("overdue")]
-                    today  = [t["text"] for t in overdue if not t.get("overdue")]
-                    if urgent:
-                        parts.append("🔴 ПРОСРОЧЕНО: " + "; ".join(urgent[:3]))
-                    if today:
-                        parts.append("⏰ Сегодня дедлайн: " + "; ".join(today[:3]))
-                return "\n".join(parts) if parts else ""
+                emoji = {1: "🔴", 2: "🟡", 3: "🟠"}
+                urgent = [t for t in tasks if t[2] == 1]
+                total  = len(tasks)
+                parts  = []
+                if urgent:
+                    parts.append("🔴 Срочные: " + "; ".join(t[1] for t in urgent[:3]))
+                parts.append(f"Всего задач: {total}")
+                return "\n".join(parts)
             except Exception:
                 return ""
 
         # Запускаем всё параллельно
         (
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
-            interaction_ctx, observation_ctx, memory_ctx, vault_summary
+            interaction_ctx, observation_ctx, memory_ctx, tasks_summary
         ) = await asyncio.gather(
             _get_moods(), _get_conv(), _get_personality(), _get_state(),
-            _get_interaction(), _get_observation(), _get_memory(), _get_vault_summary()
+            _get_interaction(), _get_observation(), _get_memory(), _get_tasks_summary()
         )
 
         # ── 3. Синхронные вычисления (быстрые) ───────────────────────────────
@@ -170,7 +163,7 @@ class RayaAgent(BaseAgent):
         for block in filter(None, [
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
             opinion_ctx, interaction_ctx, observation_ctx, memory_ctx,
-            vault_summary, tone_hint, length_hint,
+            tasks_summary, tone_hint, length_hint,
         ]):
             system += f"\n\n{block}"
 
@@ -182,7 +175,7 @@ class RayaAgent(BaseAgent):
         resume = ctx.extra.get("resume_bridge", "")
         if resume:
             system += (
-                f"\n\nВАЖНО: пользователь вернулся после паузы. Начни ответ с естественного "
+                f"\n\nВАЖНО: {get_user_name(ctx.user_id)} вернулся после паузы. Начни ответ с естественного "
                 f"упоминания того о чём говорили: '{resume}' — "
                 f"вплети это органично, не как отдельный абзац."
             )
@@ -200,24 +193,9 @@ class RayaAgent(BaseAgent):
             HumanMessage(content=content),
         ]
 
-        # ── 6. Вызов модели с vault tool ──────────────────────────────────────
-        response   = await self._llm_tools.ainvoke(messages)
-        raw        = str(response.content) if response.content else ""
-        tool_calls = getattr(response, "tool_calls", []) or []
-        vault_results: list[str] = []
-
-        if tool_calls:
-            from langchain_core.messages import ToolMessage as _TM
-            results = await process_tool_calls(tool_calls, ctx.user_id)
-            vault_results = [r["result"] for r in results]
-            tool_msgs = [
-                _TM(content=r["result"], tool_call_id=r["tool_call_id"])
-                for r in results
-            ]
-            final = await self._llm.ainvoke(messages + [response] + tool_msgs)
-            raw   = str(final.content)
-            for r in results:
-                logger.info("🔧 vault: %s", r["result"][:80])
+        # ── 6. Вызов модели ───────────────────────────────────────────────────
+        response = await self._llm.ainvoke(messages)
+        raw      = str(response.content) if response.content else ""
 
         # ── 7. Постобработка ──────────────────────────────────────────────────
         emotion, raw_clean = extract_emotion_tag(raw)
@@ -235,7 +213,6 @@ class RayaAgent(BaseAgent):
                 "reminder":  reminder,
                 "emotion":   emotion,
                 "task_type": task_type,
-                "vault_ops": vault_results,
             },
         )
 
