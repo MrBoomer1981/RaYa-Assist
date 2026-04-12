@@ -33,23 +33,30 @@ def _detect_mode(message: str) -> str:
 
 
 _SYSTEM_RESEARCH = """\
-Ты RaYa — исследователь в команде ИИ-ассистента.
+Ты RaYa — исследователь.
 
-Задача: глубокое исследование темы из нескольких углов.
-- Собери ключевые факты и точки зрения
-- Укажи противоречия и спорные моменты
-- Дай синтез: что точно известно, что под вопросом
-- Используй данные из поиска если они есть
+КРИТИЧНО:
+- Если в контексте есть [Данные из поиска] — они ПРИОРИТЕТНЫ над твоими внутренними знаниями
+- Если видишь дату получения данных — укажи её в ответе
+- Если поиска нет — явно предупреди что данные могут быть устаревшими
+
+Задача:
+- Синтезируй информацию из нескольких источников
+- Укажи что точно известно, что спорно, что неизвестно
+- Для событий/миссий/проектов — всегда указывай актуальность
 - Обращайся к пользователю по имени.\
 """
 
 _SYSTEM_FACT = """\
 Ты RaYa — верификатор фактов.
 
-Задача: честная проверка утверждения.
-- Аргументы ЗА (с источниками если есть)
+КРИТИЧНО: [Данные из поиска] — ПРИОРИТЕТНЫ над внутренними знаниями.
+
+Задача:
+- Аргументы ЗА (со ссылкой на источник из поиска если есть)
 - Аргументы ПРОТИВ
 - Вердикт: [Подтверждено] / [Вероятно] / [Спорно] / [Опровергнуто]
+- Укажи насколько свежие данные
 - Не делай выводов сверх данных
 - Обращайся к пользователю по имени.\
 """
@@ -57,12 +64,13 @@ _SYSTEM_FACT = """\
 _SYSTEM_SCIENCE = """\
 Ты RaYa — научный аналитик.
 
+КРИТИЧНО: [Данные из поиска] — ПРИОРИТЕТНЫ над внутренними знаниями.
+
 Правила:
 - Разделяй факты и интерпретации
 - Степень достоверности: [Подтверждено] / [Вероятно] / [Спорно] / [Опровергнуто]
-- Ссылайся на источники из контекста поиска
+- Опирайся на данные из поиска, указывай их дату
 - Признавай когда данных недостаточно
-- Указывай дату данных если может устареть
 - Обращайся к пользователю по имени.\
 """
 
@@ -71,6 +79,31 @@ _SYSTEMS = {
     "fact_check": _SYSTEM_FACT,
     "science":    _SYSTEM_SCIENCE,
 }
+
+
+def _build_search_queries(message: str, mode: str) -> list[str]:
+    """
+    Строит несколько поисковых запросов для одной темы.
+    Разные углы = лучше покрытие = более точный ответ.
+    """
+    base = message.strip()
+    if mode == "science":
+        return [
+            base,
+            f"{base} research study",
+            f"{base} scientific evidence",
+        ]
+    # research mode — добавляем актуальность и разные формулировки
+    from datetime import datetime
+    year = datetime.utcnow().year
+    queries = [base, f"{base} {year}"]
+    # Если похоже на событие/миссию — добавляем "latest update"
+    event_kw = ("миссия", "запуск", "артемид", "artemis", "spacex", "starship",
+                 "mission", "launch", "program", "status")
+    if any(kw in base.lower() for kw in event_kw):
+        queries.append(f"{base} latest update {year}")
+        queries.append(f"{base} news {year}")
+    return queries[:4]  # не более 4 запросов
 
 
 class ResearchAgent(BaseAgent):
@@ -84,19 +117,35 @@ class ResearchAgent(BaseAgent):
         mode   = _detect_mode(ctx.message)
         system = _SYSTEMS[mode]
 
-        # Поиск если доступен
+        # ── Поиск: максимально агрессивный для research агента ────────────────
         search_block = ""
         if ctx.search_results:
-            search_block = f"\n\n[Данные из поиска]:\n{ctx.search_results[:2000]}"
-        elif settings.search_enabled:
+            # Уже есть результаты от llm_service — используем, но дополняем
+            search_block = f"\n\n[Данные из поиска]:\n{ctx.search_results[:3000]}"
+        
+        if settings.search_enabled and not search_block:
             try:
                 from app.search_service import SearchService
-                svc     = SearchService()
-                results = await svc.search(ctx.message)
-                if results:
-                    search_block = f"\n\n[Данные из поиска]:\n{results[:2000]}"
+                svc = SearchService()
+
+                if mode == "fact_check":
+                    # Для проверки фактов — специализированный метод
+                    raw = await svc.fact_check(ctx.message)
+                    if raw:
+                        search_block = f"\n\n[Данные из поиска]:\n{raw[:4000]}"
+                else:
+                    # Для research/science — несколько параллельных запросов
+                    queries = _build_search_queries(ctx.message, mode)
+                    results = await svc.multi_search(queries, max_per_query=4)
+                    if results:
+                        formatted = svc._format_raw(results, 600)
+                        search_block = f"\n\n[Данные из поиска]:\n{formatted[:4000]}"
             except Exception:
                 logger.debug("research: поиск недоступен", exc_info=True)
+        
+        # Если после всего search_block пустой — явно скажем LLM что нет данных
+        if not search_block:
+            search_block = "\n\n[Поиск недоступен или не дал результатов. Отвечай на основе знаний, явно указав что данные могут быть устаревшими.]"
 
         history_msgs = strip_history(ctx.history, limit=4)
         facts_block  = ""
@@ -111,9 +160,8 @@ class ResearchAgent(BaseAgent):
         ]
 
         resp = await self._llm.ainvoke(messages)
-        logger.info("🔬 ResearchAgent: режим '%s' | user_id=%s", mode, ctx.user_id)
-
-
+        logger.info("🔬 ResearchAgent: режим '%s' | user_id=%s | поиск: %s",
+                    mode, ctx.user_id, "да" if "[Данные из поиска]" in search_block else "нет")
 
         return AgentResult(
             success=True,

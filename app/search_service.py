@@ -27,21 +27,33 @@ _DEEP_SNIPPET = 800   # для глубокого поиска / research
 
 # Ключевые слова — если встречаются в запросе, добавляем год
 _TIME_SENSITIVE_KW = (
+    # Время и актуальность
     "курс", "цена", "стоимость", "погода", "новост", "сейчас", "сегодня",
     "актуальн", "последн", "вышел", "вышла", "выпустил", "обновлен",
     "версия", "релиз", "price", "rate", "news", "today", "latest", "current",
+    # События и миссии
+    "запуск", "миссия", "полёт", "полет", "старт", "дата", "когда",
+    "статус", "результат", "итог", "произошло", "случилось",
+    "launch", "mission", "status", "schedule", "update",
+    # Конкретные проекты (часто спрашивают об их статусе)
+    "артемид", "artemis", "spacex", "starship", "falcon",
+    "chatgpt", "gpt", "gemini", "claude", "openai", "anthropic",
 )
 
 
 def _enrich_query(query: str) -> str:
     """
-    Добавляет год к запросу если тема чувствительна ко времени.
+    Обогащает запрос для получения свежих результатов:
+    - Добавляет год если тема чувствительна ко времени
+    - Для event-запросов добавляет "latest" если на английском
     'курс доллара' → 'курс доллара 2026'
-    Заставляет поисковик ранжировать свежие результаты выше архивных.
+    'Artemis 2' → 'Artemis 2 2026'
     """
     q_lower = query.lower()
     year = str(datetime.utcnow().year)
-    if year in query or str(int(year) - 1) in query:
+    prev_year = str(int(year) - 1)
+    # Уже содержит год — не дублируем
+    if year in query or prev_year in query:
         return query
     if any(kw in q_lower for kw in _TIME_SENSITIVE_KW):
         return f"{query} {year}"
@@ -95,7 +107,8 @@ class _SearchCache:
             del self._store[k]
 
 
-_cache = _SearchCache(ttl_sec=600)
+_cache      = _SearchCache(ttl_sec=600)    # обычные запросы — 10 мин
+_cache_news = _SearchCache(ttl_sec=120)   # новости/события — 2 мин
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -157,20 +170,29 @@ class SearchService:
 
     # ── Публичный API ─────────────────────────────────────────────────────────
 
+    def _is_event_query(self, query: str) -> bool:
+        """Новостные/событийные запросы кэшируем короче."""
+        q = query.lower()
+        event_kw = ("новост", "запуск", "миссия", "статус", "artemis", "spacex",
+                    "news", "launch", "latest", "update", "today", "сегодня")
+        return any(kw in q for kw in event_kw)
+
     async def search(self, query: str, max_results: int = 3) -> str:
         """
         Базовый поиск → форматированный текст с меткой свежести.
         Порядок: кэш → Tavily → DDG.
+        Событийные запросы кэшируются 2 мин вместо 10.
         """
         enriched = _enrich_query(query)
+        cache_store = _cache_news if self._is_event_query(enriched) else _cache
 
-        cached = _cache.get(enriched, "basic")
+        cached = cache_store.get(enriched, "basic")
         if cached is not None:
             return cached
 
         results = await self._search_with_fallback(enriched, max_results, depth="basic")
         text = _freshness_header() + self._format(results, _SNIPPET_LEN)
-        _cache.set(enriched, text, "basic")
+        cache_store.set(enriched, text, "basic")
         return text
 
     async def deep_search(self, query: str, max_results: int = 5) -> list[dict]:
