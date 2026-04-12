@@ -1,13 +1,10 @@
-# RaYa — Personal AI Manager
+# RaYa — Personal AI Assistant
 
-> "AI, который реально заставляет тебя делать задачи"
-
-Персональный Telegram-бот + веб-интерфейс на мультиагентной архитектуре.
-Хранит задачи, события, заметки и знания — связывает их через Obsidian vault.
+Telegram-бот + веб-интерфейс на мультиагентной архитектуре.  
+Помнит контекст разговора, управляет задачами и напоминаниями, анализирует файлы и изображения.
 
 **Деплой:** Railway.app  
-**Веб:** `https://<your-app>.up.railway.app?token=<WEB_TOKEN>`  
-**WebDAV:** `https://<your-app>.up.railway.app/webdav`
+**Бот:** публичный — любой может написать
 
 ---
 
@@ -16,16 +13,15 @@
 | Компонент | Технология |
 |---|---|
 | LLM (основная) | Groq — `llama-3.3-70b-versatile` |
-| LLM (роутер) | Groq — `llama-3.1-8b-instant` (T=0) |
-| Embeddings | Groq — `nomic-embed-text-v1_5` |
-| Vision | Groq — `llama-4-scout-17b-16e-instruct` |
-| Speech-to-Text | Groq Whisper — `whisper-large-v3-turbo` |
-| Image Generation | Hugging Face — `FLUX.1-schnell` |
+| LLM (роутер) | Groq — `llama-3.1-8b-instant` |
+| Speech-to-Text | Groq Whisper — через VoiceService |
+| Vision | Groq Vision — через VisionService |
+| Image Generation | Hugging Face FLUX.1-schnell |
+| TTS | gTTS |
 | Telegram | aiogram 3.17.0 |
 | Database | SQLite WAL — Railway Volume `/data/database.db` |
 | Web | FastAPI + uvicorn |
-| Поиск | Tavily API |
-| Vault sync | WebDAV встроен в FastAPI |
+| Поиск | Tavily API (опционально) |
 | Хостинг | Railway.app |
 
 ---
@@ -35,252 +31,112 @@
 ```
 Сообщение пользователя
         │
-   Router (keyword match → LLM fallback)
+   AccessMiddleware (допуск)
+   Rate Limiting (1 req/3s per user)
+        │
+   Handlers (handlers.py)
+        │
+   LLMService → Router (keyword match → LLM fallback)
         │
    Orchestrator
         │
-   ┌────┴──────────────────────────────────────┐
-   ▼    ▼      ▼        ▼      ▼     ▼    ▼   ▼
- raya  code  image  research  todo  obs  text  ideas
-  │                                            ▲
-  └── vault tool (19 операций, tool use API) ──┤
-                                               │
-                                           explain
-                                           morning
-                                           critic ←── needs_critic
+   raya / code / image / research / todo / text / ideas / explain
+                                                          │
+                                                     critic (если нужен)
 ```
 
-### Агенты (11 активных)
+### Агенты (10 активных)
 
-| Агент | Что делает | Ключевые слова |
+| Агент | Что делает | Триггеры |
 |---|---|---|
-| **raya** | Главный fallback + vault tool use | всё остальное |
-| **code** | Python/JS/SQL/bash — пишет, отлаживает | код, баг, функция |
-| **image** | Генерация FLUX.1-schnell | нарисуй, картинку |
-| **research** | Tavily + auto-save в Zettelkasten | исследуй, найди, проверь |
-| **todo** | Матрица Эйзенхауэра, fuzzy match | задача, список, сделать |
-| **obsidian** | Дневник, заметки, Zettelkasten, планы | запомни, запиши, zettel |
-| **text** | Редактирование, перевод, письма | перепиши, переведи |
+| **raya** | Главный fallback — общий диалог, поиск | всё остальное |
+| **code** | Python/JS/SQL/bash — пишет, отлаживает | код, баг, функция, скрипт |
+| **image** | Генерация через FLUX.1-schnell | нарисуй, картинку |
+| **research** | Tavily + fact-check | исследуй, проверь факт |
+| **todo** | Задачи: добавить, показать, выполнить | задача, список, дедлайн |
+| **text** | Резюме, редактура, перевод, письма | перепиши, переведи |
 | **ideas** | Брейнсторм, SCAMPER | идеи, придумай |
-| **explain** | Объяснение + планирование с дедлайнами | объясни, план |
-| **morning** | Дайджест: погода + задачи + цитата + новости | (авто в 6:45 МСК) |
-| **critic** | Финальная проверка качества | (только программно) |
+| **explain** | Объяснения + планы с шагами | объясни, план, как сделать |
+| **morning** | Утренний дайджест (авто 6:45 МСК) | только автоматически |
+| **critic** | Финальная проверка качества | только программно |
 
 ---
 
-## Obsidian Vault
-
-**Единственный источник правды** для задач и знаний.  
-Синхронизируется через WebDAV ↔ Remotely Save на Mac.
-
-```
-/data/obsidian_vault/RaYa-Vault/
-├── Задачи/
-│   ├── Q1.md  — 🔴 Срочно и важно
-│   ├── Q2.md  — 🟡 Важно, не срочно
-│   ├── Q3.md  — 🟠 Срочно, не важно
-│   └── Q4.md  — ⚪ Не срочно, не важно
-├── Дневник/YYYY-MM/YYYY-MM-DD.md  ← daily notes (НЕ в графе знаний)
-├── Заметки/                        ← структурированные заметки
-├── Zettelkasten/                   ← база знаний, граф [[ссылок]]
-└── Планы/
-    ├── Краткосрочные/
-    └── Долгосрочные/
-```
-
-**Задачи:**
-- fuzzy match при отметке выполненными
-- drag & drop между квадрантами в UI
-- кнопка ↩ для возврата выполненных в активные
-- дедлайны в формате `до ДД.ММ` — подсвечиваются в UI
-- синхронизация БД ↔ Obsidian при старте
-
-**База знаний (Zettelkasten):**
-- атомарные карточки с тегами и [[ссылками]]
-- dedup по схожести слов — не создаёт дубли
-- research_agent автоматически сохраняет найденное
-
----
-
-## Веб-интерфейс
-
-Главный экран — **Календарь** с месячным и дневным видом.
-
-### Панели
-
-| Панель | Что внутри |
-|---|---|
-| 📅 Календарь | Месячный вид, кликнуть на день → расписание + заметки |
-| 💬 Чат | Диалог с RaYa, голосовые, markdown |
-| ◈ Задачи | Матрица Эйзенхауэра, drag&drop, undo |
-| **Дополнительно** | Память, Дневник, Напоминания, Поиск |
-
-### Aside (правая панель)
-- **Контекст** — текущая тема разговора, цель, задачи
-- **Неделя** — план задач на 7 дней
-
----
-
-## Календарь
-
-События хранятся в SQLite (`events`). При создании записываются в Obsidian Daily Note (односторонняя запись, без синхронизации обратно).
-
-**Через Telegram:** "добавь встречу с врачом в пятницу в 14:00"  
-**Через UI:** клик на день → клик на слот → модалка события
-
----
-
-## Утренний дайджест (6:45 МСК)
-
-Без LLM вызовов — быстро и предсказуемо:
-
-1. **Погода** — точные данные с wttr.in (макс/мин, влажность, совет что надеть)
-2. **Задачи** — Q1 первые, потом Q2 из Obsidian
-3. **Цитата** — 30 живых цитат (не корпоративные банальности)
-4. **Философия** — 3 случайных из 26 глубоких вопросов (не банальности)
-5. **Дайджест дня** — параллельный поиск по 4 случайным темам:
-   - 🤖 AI и технологии
-   - 💼 Бизнес и стартапы
-   - 🔬 Наука
-   - 🌍 Мировые события
-   - 🧠 Психология и продуктивность
-
----
-
-## Semantic Search
-
-Семантический поиск по Obsidian vault через Groq embeddings.
-
-- Модель: `nomic-embed-text-v1_5` (бесплатно)
-- Индекс: `vault_index.json` на Railway Volume (инкрементальный)
-- Кэш: 3600 сек в памяти
-- Порог релевантности: cosine > 0.3
-- Атомарная запись индекса (защита от crash)
-- Пересборка: `POST /api/search/index?token=sokrat`
-
----
-
-## Проактивность
-
-| Триггер | Статус | Когда |
-|---|---|---|
-| Утренний дайджест | ✅ ON | 6:45 МСК |
-| Дедлайны задач | ✅ ON | раз в час |
-| Напоминания | ✅ ON | каждую минуту |
-| Тишина > 4ч | 🔴 OFF | — |
-| Idea follow-up | 🔴 OFF | — |
-| Activity suggestion | 🔴 OFF | — |
-
-Проактивное состояние сохраняется в `proactive_state.json` — переживает рестарты Railway.
-
----
-
-## Feature Flags
-
-Управляются через Railway Variables (1=ON, 0=OFF):
-
-```env
-FEATURE_IMAGE_AGENT=1          # генерация изображений
-FEATURE_IDEAS_AGENT=1          # брейнсторм
-FEATURE_MORNING_DIGEST=1       # утренний дайджест
-FEATURE_TASK_DEADLINES=1       # напоминания о дедлайнах
-FEATURE_REMINDER_WARNING=1     # напоминания
-FEATURE_PROACTIVE_SILENCE=0    # писать первой при тишине
-FEATURE_PROACTIVE_IDEA=0       # follow-up идей из дневника
-FEATURE_PROACTIVE_ACTIVITY=0   # предлагать продолжить тему
-FEATURE_PERSONA_VERBOSE=1      # personality mirroring
-FEATURE_EMOTIONAL_SYSTEM=1     # mood tracking
-```
-
----
-
-## Надёжность
-
-- **SQLite WAL** + retry при SQLITE_BUSY (5 попыток, exponential backoff)
-- **File lock** при записи в vault (threading.Lock per-файл)
-- **Атомарная запись** vault файлов (tmp → rename)
-- **WebDAV auth** — пустой WEBDAV_PASSWORD = 401 (безопасный дефолт)
-- **timing-safe** сравнение паролей (hmac.compare_digest)
-- **Proactive state** персистентен между рестартами
-
----
-
-## API Endpoints (41)
-
-```
-GET/DELETE  /api/history
-POST        /api/chat
-GET/DELETE  /api/memory
-GET         /api/context
-GET         /api/diary
-GET/POST    /api/reminders
-DELETE      /api/reminders/{id}
-POST        /api/voice
-GET         /api/status
-GET         /api/features
-GET         /api/search
-POST        /api/search/index
-GET         /api/tasks
-POST        /api/tasks/done
-POST        /api/tasks/undo
-POST        /api/tasks/move
-POST        /api/tasks/move_and_undo
-POST        /api/tasks/clear_done
-GET         /api/tasks/week
-GET         /api/calendar/month
-GET         /api/calendar/day
-GET/POST    /api/calendar/events
-PUT/DELETE  /api/calendar/events/{id}
-GET         /api/calendar/upcoming
-POST        /api/calendar/day_notes
-GET         /api/vault/note
-DELETE      /api/vault/cleanup
-DELETE      /api/vault/file
-```
-
----
-
-## База данных (SQLite)
+## База данных (SQLite WAL)
 
 | Таблица | Содержимое |
 |---|---|
-| `history` | История переписки |
-| `user_memory` | Долгосрочные факты |
-| `structured_memory` | Структурированная память по категориям |
-| `reminders` | Напоминания |
-| `diary` | Записи дневника (через БД) |
-| `tasks` | Задачи (зеркало Obsidian, для напоминаний) |
+| `history` | История переписки (role: human/ai) |
+| `user_memory` | Простые факты (legacy) |
+| `structured_memory` | Категоризованная память (факты, интересы, проекты, цели) |
+| `interaction_memory` | Топ-темы и паттерны разговора |
+| `conversation_context` | Текущая тема, цель, незавершённые треды |
+| `reminders` | Напоминания с поддержкой повторений (daily/weekly/weekday/monthly) |
+| `diary` | Записи дневника с настроением |
+| `tasks` | Задачи |
 | `mood_log` | Трекинг настроения |
-| `interaction_memory` | Топ-темы, паттерны общения |
-| `conversation_context` | Текущая тема, цель разговора |
 | `events` | События календаря |
-| `users` | Профили пользователей (имя, username) |
+| `users` | Профили пользователей |
+
+---
+
+## Telegram команды
+
+| Команда | Что делает |
+|---|---|
+| `/start` | Приветствие, регистрация |
+| `/help` | Список возможностей |
+| `/memory` | Что бот знает о тебе |
+| `/forget` | Удалить всю память |
+| `/clear` | Очистить историю (память сохраняется) |
+| `/reminders` | Список активных напоминаний |
+
+Бот также принимает: голосовые сообщения (Whisper), фото (Vision), PDF и Word документы.
+
+---
+
+## Веб-интерфейс (FastAPI)
+
+Доступен по адресу деплоя. Защита через `?token=YOUR_WEB_TOKEN`.
+
+Основные эндпоинты: `/api/chat`, `/api/history`, `/api/memory`, `/api/reminders`, `/api/context`, `/api/diary`, `/api/voice`, `/api/tasks`, `/api/calendar/...`, `/api/search`, `/api/status`, `/api/features`.
+
+---
+
+## Проактивные функции
+
+| Триггер | Когда | Флаг |
+|---|---|---|
+| Утренний дайджест | 6:45 МСК | `FEATURE_MORNING_DIGEST` |
+| Дедлайны задач | Раз в час | `FEATURE_TASK_DEADLINES` |
+| Напоминание за 30 мин | Каждую минуту | `FEATURE_REMINDER_WARNING` |
+| Тишина > 4ч | Каждые 4ч | `FEATURE_PROACTIVE_SILENCE` |
+| Follow-up идей из дневника | Раз в 12ч | `FEATURE_PROACTIVE_IDEA` |
+| Предложения по паттернам | Раз в 24ч | `FEATURE_PROACTIVE_ACTIVITY` |
+
+Состояние сохраняется в `proactive_state.json` — переживает рестарты Railway.
 
 ---
 
 ## Railway Variables
 
-```env
+```
 # Обязательные
-TELEGRAM_TOKEN=
 GROQ_API_KEY=
+TELEGRAM_TOKEN=
 
-# Доступ: оставь пустым — доступ для всех; или укажи через запятую
-ALLOWED_USER_IDS=
+# Рекомендуемые
+TELEGRAM_USER_ID=       # твой user_id (написать /start, смотреть логи)
+WEB_TOKEN=              # токен для веб-интерфейса
 
-# Опционально: если не задан — используется первый пользователь из БД
-# TELEGRAM_USER_ID=
-
-# Vault
-OBSIDIAN_VAULT_PATH=/data/obsidian_vault
-OBSIDIAN_VAULT_SUBDIR=RaYa-Vault
-WEBDAV_USER=raya
-WEBDAV_PASSWORD=
+# Доступ (пусто = публичный бот)
+ALLOWED_USER_IDS=       # пример: 123456789,987654321
 
 # Опциональные
-TAVILY_API_KEY=
-HF_TOKEN=
-WEB_TOKEN=<your_secret_token>
+TAVILY_API_KEY=         # поиск в интернете
+HF_TOKEN=               # генерация изображений
+
+# Можно не трогать (дефолты)
 MODEL_NAME=llama-3.3-70b-versatile
 ROUTER_MODEL=llama-3.1-8b-instant
 TEMPERATURE=0.7
@@ -290,58 +146,67 @@ DB_PATH=/data/database.db
 
 ---
 
+## Feature Flags
+
+```
+FEATURE_IMAGE_AGENT=1
+FEATURE_IDEAS_AGENT=1
+FEATURE_MORNING_DIGEST=1
+FEATURE_TASK_DEADLINES=1
+FEATURE_REMINDER_WARNING=1
+FEATURE_PROACTIVE_SILENCE=0
+FEATURE_PROACTIVE_IDEA=0
+FEATURE_PROACTIVE_ACTIVITY=0
+FEATURE_PERSONA_VERBOSE=1
+FEATURE_EMOTIONAL_SYSTEM=1
+```
+
+---
+
 ## Структура проекта
 
 ```
 RaYa-Assist/
 ├── main.py
-├── persona.txt                    ← личность RaYa
-├── audit.py                       ← проверка перед деплоем
-├── README.md                      ← этот файл
+├── persona.txt                 ← системный промпт / личность бота
+├── audit.py                    ← проверка перед деплоем
 ├── requirements.txt
 ├── Procfile
-├── runtime.txt
 ├── nixpacks.toml
 └── app/
-    ├── config.py
-    ├── core.py                    ← инициализация, startup
-    ├── database.py                ← SQLite, все таблицы
-    ├── handlers.py                ← Telegram обработчики
-    ├── llm_service.py             ← точка входа LLM
-    ├── llm_pipeline.py            ← tone control, memory extraction
-    ├── search_service.py          ← Tavily
-    ├── semantic_search.py         ← Groq embeddings, vector index
-    ├── calendar_service.py        ← события, daily notes
-    ├── vault_tool.py              ← 26 vault операций (tool use)
-    ├── feature_flags.py           ← включение/отключение функций
-    ├── personality_service.py     ← mood, state, personality
-    ├── proactive_service.py       ← фоновые триггеры
-    ├── voice_service.py
-    ├── vision_service.py
-    ├── document_service.py
-    ├── web_server.py              ← FastAPI + WebDAV
-    ├── webdav_server.py
-    ├── middleware.py
+    ├── config.py               ← pydantic-settings
+    ├── core.py                 ← инициализация сервисов
+    ├── database.py             ← SQLite WAL, все таблицы
+    ├── handlers.py             ← Telegram хендлеры + rate limiting
+    ├── middleware.py           ← AccessMiddleware
+    ├── llm_service.py          ← точка входа LLM
+    ├── llm_pipeline.py         ← Memory/Context/ToneController
+    ├── proactive_service.py    ← фоновые триггеры + планировщик
+    ├── search_service.py       ← Tavily
+    ├── voice_service.py        ← Whisper
+    ├── vision_service.py       ← анализ изображений
+    ├── tts_service.py          ← gTTS
+    ├── document_service.py     ← PDF + Word
+    ├── calendar_service.py
+    ├── personality_service.py
+    ├── feature_flags.py
     ├── utils.py
-    ├── agents/
-    │   ├── registry.py
-    │   ├── router.py
-    │   ├── orchestrator.py
-    │   ├── base_agent.py
-    │   ├── raya_agent.py
-    │   ├── code_agent.py
-    │   ├── image_agent.py
-    │   ├── research_agent.py
-    │   ├── todo_agent.py
-    │   ├── obsidian_agent.py
-    │   ├── text_agent.py
-    │   ├── ideas_agent.py
-    │   ├── explain_agent.py
-    │   ├── morning_agent.py
-    │   └── critic_agent.py
-    └── integrations/
-        ├── base.py
-        └── obsidian.py            ← все vault операции
+    ├── web_server.py           ← FastAPI
+    └── agents/
+        ├── registry.py         ← реестр + keyword matching
+        ├── router.py           ← двухуровневый роутинг
+        ├── orchestrator.py     ← координатор
+        ├── base_agent.py       ← AgentContext / AgentResult
+        ├── raya_agent.py
+        ├── code_agent.py
+        ├── image_agent.py
+        ├── research_agent.py
+        ├── todo_agent.py
+        ├── text_agent.py
+        ├── ideas_agent.py
+        ├── explain_agent.py
+        ├── morning_agent.py
+        └── critic_agent.py
 ```
 
 ---
@@ -349,36 +214,20 @@ RaYa-Assist/
 ## Деплой
 
 ```bash
-# Проверка перед push
-python3 audit.py
-
-# Деплой
-git add -A
-git commit -m "feat: ..."
-git push
+python3 audit.py   # проверка перед push
+git add -A && git commit -m "..." && git push origin main
 ```
 
-После первого деплоя с новым vault — пересобрать semantic index:
-```
-POST https://raya-assist-production.up.railway.app/api/search/index?token=sokrat
-```
+Railway подхватывает push автоматически.
 
 ---
 
-## Changelog
+## Надёжность при 25+ пользователях
 
-| Дата | Изменение |
-|---|---|
-| 2026-03 | Семантический поиск (Groq embeddings) |
-| 2026-03 | Календарь — месячный вид, дневное расписание, Obsidian daily notes |
-| 2026-03 | Матрица Эйзенхауэра — drag&drop, undo, дедлайны в UI |
-| 2026-03 | Vault tool use — RaYa сама управляет vault через Anthropic tool use |
-| 2026-03 | WebDAV auth hardened (пустой пароль → 401, hmac.compare_digest) |
-| 2026-03 | SQLite: retry при SQLITE_BUSY, file lock в obsidian.py |
-| 2026-03 | Morning digest: новости через Tavily (4 темы параллельно), 30 цитат, 26 вопросов |
-| 2026-03 | Proactive state persistence (переживает рестарты) |
-| 2026-03 | Persona переработана — RaYa как менеджер который не даёт слиться |
-| 2026-04 | Multi-user: имена из Telegram, `users` таблица, убрана привязка к одному пользователю |
-| 2026-04 | `_migrate()` теперь вызывается при старте — надёжная починка схемы БД |
-| 2026-04 | `_get_user_id()` в web_server — fallback на первого пользователя из БД |
-| 2026-03 | Feature flags — 10 флагов через Railway Variables |
+- **Rate limiting** — 1 запрос / 3 сек на пользователя
+- **Глобальный семафор** — не более 20 параллельных LLM-запросов
+- **SQLite WAL** — множественные читатели не блокируют запись
+- **busy_timeout 15s** — при конкурентных запросах ждёт вместо падения
+- **Retry с exponential backoff** — 5 попыток при `SQLITE_BUSY`
+- **LRU-кэш** имён пользователей — не дёргаем БД на каждый запрос
+- **Lazy init агентов** — создаются только при первом обращении

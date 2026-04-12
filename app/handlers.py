@@ -3,6 +3,11 @@ handlers.py — все Telegram хендлеры и команды.
 
 Регистрируются через register(dp, bot, services).
 Не содержит бизнес-логики — только роутинг и форматирование ответов.
+
+Оптимизировано для 25+ одновременных пользователей:
+  - Rate limiting: не более 1 запроса в 3 сек на пользователя
+  - Глобальный семафор: не более 20 параллельных LLM-запросов
+  - typing-индикатор не блокирует очередь
 """
 import asyncio
 import logging
@@ -30,17 +35,27 @@ logger = logging.getLogger(__name__)
 
 _MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 МБ
 
-
-async def _keep_typing(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> None:
-    """Посылает typing каждые 4 сек пока stop_event не установлен."""
-    while not stop_event.is_set():
-        try:
-            await bot.send_chat_action(chat_id, "typing")
-        except Exception:
-            pass
-        await asyncio.sleep(4)
-
 from app.utils import RECUR_RU
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# Защита от спама: 1 запрос / 3 сек на пользователя
+_RATE_LIMIT_SEC = 3.0
+_last_request: dict[int, float] = {}
+
+# Глобальный семафор: не более 20 параллельных LLM-запросов
+# При 25+ пользователях это предотвращает перегрузку Groq API
+_LLM_SEMAPHORE = asyncio.Semaphore(20)
+
+
+def _is_rate_limited(user_id: int) -> bool:
+    """Возвращает True если пользователь пишет слишком часто."""
+    import time
+    now = time.monotonic()
+    last = _last_request.get(user_id, 0.0)
+    if now - last < _RATE_LIMIT_SEC:
+        return True
+    _last_request[user_id] = now
+    return False
 
 
 # ── Вспомогательные ───────────────────────────────────────────────────────────
@@ -56,6 +71,7 @@ def _build_help_text() -> str:
         "• Анализировать фотографии и изображения 🖼️",
         "• Читать и анализировать PDF и Word документы 📄",
         "• Ставить напоминания (в том числе повторяющиеся) ⏰",
+        "• Управлять задачами и дедлайнами 📋",
     ]
     if settings.search_enabled:
         lines.append("• Искать и исследовать информацию 🔍")
@@ -65,9 +81,19 @@ def _build_help_text() -> str:
         "/memory    — что знаю о тебе",
         "/forget    — удалить память",
         "/clear     — очистить историю разговора",
-        "/debug_time — диагностика времени",
+        "/help      — это сообщение",
     ]
     return "\n".join(lines)
+
+
+async def _keep_typing(bot: Bot, chat_id: int, stop: asyncio.Event) -> None:
+    """Периодически отправляет typing пока stop не установлен."""
+    while not stop.is_set():
+        try:
+            await bot.send_chat_action(chat_id, "typing")
+        except Exception:
+            break
+        await asyncio.sleep(4)
 
 
 async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
@@ -128,7 +154,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         u = message.from_user
         upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
-        name = u.username or u.first_name or "друг"
+        name = get_user_name(u.id)
         await message.answer(f"Привет, {name}! Я RaYa — чем могу помочь?")
 
     @dp.message(Command("help"))
@@ -148,7 +174,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         decisions = get_memory_by_category(user_id, "decisions")
         if decisions:
             lines.append("\n✅ Принятые решения:")
-            lines.extend(f"  • {k}: {v}" for k, v in decisions[:8])
+            lines.extend(f"  • {k}: {v}" for k, v in list(decisions.items())[:8])
         await message.answer("\n".join(lines) if lines else "🧠 Пока ничего о тебе не знаю.")
 
     @dp.message(Command("forget"))
@@ -180,38 +206,23 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         lines.append("\nЧтобы удалить — напиши 'отмени напоминание [номер]'")
         await message.answer("\n".join(lines))
 
-    @dp.message(Command("debug_time"))
-    async def cmd_debug_time(message: Message) -> None:
-        if not message.from_user:
-            return
-        import sqlite3
-        now_utc = datetime.utcnow()
-        conn = sqlite3.connect(str(DB_PATH))
-        rows = conn.execute(
-            "SELECT id, text, remind_at, done FROM reminders "
-            "WHERE user_id = ? ORDER BY id DESC LIMIT 5",
-            (message.from_user.id,),
-        ).fetchall()
-        conn.close()
-        lines = [f"🕐 Сейчас UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n"]
-        if rows:
-            lines.append("Последние напоминания:")
-            for rid, text, rat, done in rows:
-                lines.append(f"[{rid}] {rat} — {text} ({'✅' if done else '⏳'})")
-        else:
-            lines.append("Напоминаний нет.")
-        await message.answer("\n".join(lines))
-
     # ── Медиа ─────────────────────────────────────────────────────────────────
 
     @dp.message(lambda m: m.voice is not None)
     async def handle_voice(message: Message) -> None:
         if not message.from_user or not message.voice:
             return
-        upsert_user(message.from_user.id, message.from_user.first_name or "", message.from_user.last_name or "", message.from_user.username or "")
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+
+        if _is_rate_limited(u.id):
+            await message.answer("⏳ Не так быстро — подожди секунду.")
+            return
+
         if message.voice.file_size and message.voice.file_size > _MAX_FILE_BYTES:
             await message.answer("⚠️ Голосовое слишком длинное (макс. 20 МБ).")
             return
+
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         try:
@@ -224,10 +235,11 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
                 await message.answer("⚠️ Не смог распознать голос. Попробуй ещё раз.")
                 return
             await message.answer(f"🎤 Распознано: {text}")
-            result = await llm.chat(message.from_user.id, text)
+            async with _LLM_SEMAPHORE:
+                result = await llm.chat(u.id, text)
             await _handle_chat_result(message, result, bot)
         except Exception:
-            logger.exception("Ошибка LLM voice user_id=%s", message.from_user.id)
+            logger.exception("Ошибка LLM voice user_id=%s", u.id)
             await message.answer("⚠️ Произошла ошибка.")
         finally:
             stop_typing.set()
@@ -237,28 +249,50 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
     async def handle_photo(message: Message) -> None:
         if not message.from_user or not message.photo:
             return
-        await bot.send_chat_action(message.chat.id, "typing")
-        best = message.photo[-1]
-        if best.file_size and best.file_size > _MAX_FILE_BYTES:
-            await message.answer("⚠️ Фото слишком большое (макс. 20 МБ).")
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+
+        if _is_rate_limited(u.id):
+            await message.answer("⏳ Не так быстро — подожди секунду.")
             return
-        image_bytes = await _download_bytes(bot, best.file_id)
-        if not image_bytes:
-            await message.answer("⚠️ Не удалось скачать фото.")
-            return
-        user_prompt = message.caption or ""
-        result = await vision.analyze(image_bytes, user_prompt)
-        if not result:
-            await message.answer("⚠️ Не смог проанализировать изображение.")
-            return
-        note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
-        llm.save_photo_exchange(message.from_user.id, f"[Фото{note}]", result)
-        await message.answer(f"🖼️ {result}")
+
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
+        try:
+            best = message.photo[-1]
+            if best.file_size and best.file_size > _MAX_FILE_BYTES:
+                await message.answer("⚠️ Фото слишком большое (макс. 20 МБ).")
+                return
+            image_bytes = await _download_bytes(bot, best.file_id)
+            if not image_bytes:
+                await message.answer("⚠️ Не удалось скачать фото.")
+                return
+            user_prompt = message.caption or ""
+            result = await vision.analyze(image_bytes, user_prompt)
+            if not result:
+                await message.answer("⚠️ Не смог проанализировать изображение.")
+                return
+            note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
+            llm.save_photo_exchange(u.id, f"[Фото{note}]", result)
+            await message.answer(f"🖼️ {result}")
+        except Exception:
+            logger.exception("Ошибка vision user_id=%s", u.id)
+            await message.answer("⚠️ Произошла ошибка при анализе фото.")
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
 
     @dp.message(lambda m: m.document is not None)
     async def handle_document(message: Message) -> None:
         if not message.from_user or not message.document:
             return
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+
+        if _is_rate_limited(u.id):
+            await message.answer("⏳ Не так быстро — подожди секунду.")
+            return
+
         doc      = message.document
         filename = doc.file_name or "документ"
         suffix   = Path(filename).suffix.lower()
@@ -271,14 +305,16 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         if doc.file_size and doc.file_size > _MAX_FILE_BYTES:
             await message.answer("⚠️ Файл слишком большой (макс. 20 МБ).")
             return
-        await bot.send_chat_action(message.chat.id, "typing")
+
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         await message.answer(f"📄 Читаю {filename}...")
-        file_bytes = await _download_bytes(bot, doc.file_id)
-        if not file_bytes:
-            await message.answer("⚠️ Не удалось скачать файл.")
-            return
         tmp_path: Path | None = None
         try:
+            file_bytes = await _download_bytes(bot, doc.file_id)
+            if not file_bytes:
+                await message.answer("⚠️ Не удалось скачать файл.")
+                return
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(file_bytes)
                 tmp_path = Path(tmp.name)
@@ -297,19 +333,20 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             if doc_result.truncated:
                 info.append("⚠️ Текст обрезан до лимита.")
             await message.answer("\n".join(info))
-            await bot.send_chat_action(message.chat.id, "typing")
-            try:
+            async with _LLM_SEMAPHORE:
                 reply = await llm.chat_with_document(
-                    user_id=message.from_user.id,
+                    user_id=u.id,
                     doc_text=doc_result.text,
                     user_question=message.caption or "",
                     doc_name=filename,
                 )
-                await message.answer(reply)
-            except Exception:
-                logger.exception("Ошибка LLM doc user_id=%s", message.from_user.id)
-                await message.answer("⚠️ Ошибка при анализе. Попробуй ещё раз.")
+            await message.answer(reply)
+        except Exception:
+            logger.exception("Ошибка LLM doc user_id=%s", u.id)
+            await message.answer("⚠️ Ошибка при анализе. Попробуй ещё раз.")
         finally:
+            stop_typing.set()
+            typing_task.cancel()
             if tmp_path:
                 tmp_path.unlink(missing_ok=True)
 
@@ -321,18 +358,25 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         u = message.from_user
         upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+
+        # Rate limiting — защита от спама
+        if _is_rate_limited(u.id):
+            await message.answer("⏳ Не так быстро — подожди секунду.")
+            return
+
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         try:
-            bridge = await llm.get_resume_phrase(message.from_user.id)
-            result = await llm.chat(
-                message.from_user.id,
-                message.text,
-                resume_bridge=bridge,
-            )
+            bridge = await llm.get_resume_phrase(u.id)
+            async with _LLM_SEMAPHORE:
+                result = await llm.chat(
+                    u.id,
+                    message.text,
+                    resume_bridge=bridge,
+                )
             await _handle_chat_result(message, result, bot)
         except Exception:
-            logger.exception("Ошибка user_id=%s", message.from_user.id)
+            logger.exception("Ошибка user_id=%s", u.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear")
         finally:
             stop_typing.set()
