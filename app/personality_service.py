@@ -650,3 +650,129 @@ def get_response_length_hint(message: str, is_voice: bool = False) -> str:
 
 
 # ── Тишина / инициатива ───────────────────────────────────────────────────────
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Недостающие функции — были удалены при рефакторинге, вызовы остались
+# ══════════════════════════════════════════════════════════════════════════════
+
+# MOODS и _DETECT_PROMPT — нужны для detect_mood()
+MOODS = [
+    "радость", "энтузиазм", "нейтрально", "усталость",
+    "стресс", "грусть", "раздражение", "тревога",
+]
+
+_DETECT_PROMPT = """\
+Определи настроение пользователя по сообщению одним словом из списка:
+радость, энтузиазм, нейтрально, усталость, стресс, грусть, раздражение, тревога
+
+Сообщение: {message}
+
+Верни ТОЛЬКО одно слово из списка."""
+
+
+# get_state() — нужна для update_state()
+def get_state(user_id: int) -> "RaYaState":
+    """Возвращает текущее состояние пользователя, создаёт если нет."""
+    if user_id not in _states:
+        _states[user_id] = RaYaState()
+    return _states[user_id]
+
+
+# ── Hint-функции для build_personality_block() ────────────────────────────────
+
+def get_mirror_hint(message: str) -> str:
+    """Зеркалит энергетику сообщения."""
+    msg_lower = message.lower()
+    if any(w in msg_lower for w in _STRESS_SIGNALS):
+        return "Пользователь звучит напряжённо — будь внимательной и поддерживающей."
+    if any(w in msg_lower for w in _POSITIVE_SIGNALS):
+        return "Пользователь в хорошем расположении — можно быть живее."
+    if "?" in message and len(message) < 40:
+        return "Короткий вопрос — отвечай лаконично."
+    return ""
+
+
+def get_feedback_hint(user_id: int) -> str:
+    """Возвращает подсказку на основе стилевых предпочтений из памяти."""
+    try:
+        feedback = get_memory_by_category(user_id, _FEEDBACK_CATEGORY)
+        if not feedback:
+            return ""
+        pref = feedback.get("длина_ответов", "")
+        if "короткие" in pref:
+            return "По предыдущим разговорам — пользователю нравятся краткие ответы."
+        if "развёрнутые" in pref:
+            return "По предыдущим разговорам — пользователь предпочитает подробные ответы."
+    except Exception:
+        pass
+    return ""
+
+
+def get_depth_hint(user_id: int) -> str:
+    """Возвращает подсказку если есть повторяющиеся темы."""
+    try:
+        interactions = get_top_interactions(user_id, limit=3)
+        for topic, summary, freq in interactions:
+            if freq >= _TOPIC_THRESHOLD:
+                return f"Пользователь часто возвращается к теме «{topic}» — можешь ссылаться на прошлые разговоры."
+    except Exception:
+        pass
+    return ""
+
+
+def get_emotional_hint(user_id: int) -> str:
+    """Возвращает подсказку на основе эмоциональных паттернов."""
+    try:
+        patterns = get_memory_by_category(user_id, _MOOD_CATEGORY)
+        stress_pattern = patterns.get("стресс_паттерн", "")
+        if stress_pattern:
+            return f"Эмоциональный паттерн: {stress_pattern}."
+    except Exception:
+        pass
+    return ""
+
+
+def get_observation_hint(user_id: int, message: str) -> str:
+    """Комбинирует наблюдения: повторы + паттерны."""
+    return build_observation_block(user_id, message)
+
+
+# ── Вспомогательные для build_observation_block() ────────────────────────────
+
+def get_repeat_observation(user_id: int, message: str) -> str:
+    """
+    Проверяет не повторяет ли пользователь вопрос из истории.
+    Возвращает подсказку если похожий вопрос уже был.
+    """
+    try:
+        history = load_history(user_id, limit=_HISTORY_DEPTH)
+        human_msgs = [
+            m.content for m in history
+            if m.__class__.__name__ == "HumanMessage"
+        ]
+        for prev in human_msgs[:-1]:  # последнее — текущее, пропускаем
+            if _simple_similarity(message, prev) >= _SIMILARITY_THRESHOLD:
+                return (
+                    "Похоже, пользователь уже спрашивал об этом. "
+                    "Если прошлый ответ не помог — попробуй другой подход или спроси что именно неясно."
+                )
+    except Exception:
+        pass
+    return ""
+
+
+def get_pattern_observation(user_id: int) -> str:
+    """
+    Наблюдение по паттернам активности.
+    Запускается редко (каждые 12 сообщений).
+    """
+    try:
+        now_msk_hour = (datetime.utcnow().hour + _MSK_OFFSET) % 24
+        if 22 <= now_msk_hour or now_msk_hour < 6:
+            return "Поздний вечер/ночь — пользователь, возможно, устал. Отвечай по делу, без лишнего."
+        if 6 <= now_msk_hour < 9:
+            return "Раннее утро — пользователь только просыпается. Бодро и кратко."
+    except Exception:
+        pass
+    return ""
