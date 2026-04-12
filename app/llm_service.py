@@ -1,14 +1,21 @@
 """
 llm_service.py — сервис обработки сообщений.
 Делегирует оркестратору, сохраняет историю, извлекает факты в фоне.
+
+Поиск:
+  - LLM-классификатор (router_model, T=0) решает нужен ли поиск
+    и формулирует оптимальный поисковый запрос
+  - Классификатор запускается параллельно с подготовкой контекста
+  - Результат кэшируется в SearchService (TTL 10 мин)
 """
 import asyncio
+import json
 import logging
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
 
 from app.config import settings
@@ -22,11 +29,39 @@ logger = logging.getLogger(__name__)
 _LLM_CONCURRENCY = int(__import__("os").getenv("LLM_CONCURRENCY", "10"))
 _LLM_SEMAPHORE = asyncio.Semaphore(_LLM_CONCURRENCY)
 
-_SEARCH_KEYWORDS: tuple[str, ...] = (
-    "новост", "сейчас", "сегодня", "вчера", "курс", "цена", "погод",
-    "актуальн", "последн", "недавно", "2024", "2025", "2026",
-    "что происходит", "найди", "поищи", "узнай",
-)
+# Быстрый keyword pre-filter — отсекает явно неподходящие запросы
+# до вызова LLM-классификатора. Снижает расход токенов на ~70%.
+_SEARCH_NEVER: frozenset[str] = frozenset({
+    "/start", "/help", "/clear", "/memory", "/forget", "/reminders",
+})
+
+_SEARCH_CLASSIFIER_PROMPT = """\
+Ты решаешь нужен ли поиск в интернете для ответа на сообщение пользователя.
+
+Поиск нужен если:
+- вопрос требует актуальных данных (цены, курсы, новости, погода, события)
+- спрашивают о конкретном факте который мог измениться
+- просят найти, проверить или исследовать что-то в интернете
+
+Поиск НЕ нужен если:
+- общий разговор, мнение, рассуждение
+- задача по программированию, математике, логике
+- просьба написать текст, перевести, объяснить концепцию
+- личные вопросы, напоминания, задачи
+
+Сообщение: {message}
+
+Верни ТОЛЬКО JSON без markdown:
+{{"needs_search": true/false, "query": "оптимальный поисковый запрос или пустая строка"}}
+
+Примеры:
+- "какой курс доллара сейчас" → {{"needs_search": true, "query": "курс доллара рубль сегодня"}}
+- "напиши функцию на python" → {{"needs_search": false, "query": ""}}
+- "что такое квантовая запутанность" → {{"needs_search": false, "query": ""}}
+- "новости про openai сегодня" → {{"needs_search": true, "query": "OpenAI новости 2026"}}
+- "найди мне рецепт борща" → {{"needs_search": true, "query": "рецепт борща классический"}}
+- "как дела" → {{"needs_search": false, "query": ""}}\
+"""
 
 _MEMORY_EXTRACTION_PROMPT = """\
 Проанализируй сообщение пользователя и извлеки важные факты о нём.
@@ -60,6 +95,12 @@ class LLMService:
             model=settings.model_name,
             temperature=settings.temperature,
         )
+        # Лёгкая модель для классификатора поиска (быстро и дёшево)
+        self._router_llm = ChatGroq(
+            api_key=settings.groq_api_key,
+            model=settings.router_model,
+            temperature=0.0,
+        )
         self._search: Optional[Any] = None
         if settings.search_enabled:
             from app.search_service import SearchService
@@ -88,11 +129,37 @@ class LLMService:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    def _needs_search(self, message: str) -> bool:
+    async def _decide_search(self, message: str) -> tuple[bool, str]:
+        """
+        LLM-классификатор: нужен ли поиск и какой запрос отправить.
+        Использует лёгкую router_model (T=0) — ~0.2–0.3с.
+        Запускается параллельно с подготовкой контекста.
+
+        Возвращает (needs_search, optimized_query).
+        При любой ошибке — безопасный fallback (False, "").
+        """
         if not self._search:
-            return False
-        msg_lower = message.lower()
-        return any(kw in msg_lower for kw in _SEARCH_KEYWORDS)
+            return False, ""
+
+        # Быстрый pre-filter — команды точно не требуют поиска
+        if message.strip() in _SEARCH_NEVER or message.startswith("/"):
+            return False, ""
+
+        try:
+            prompt = _SEARCH_CLASSIFIER_PROMPT.format(message=message[:400])
+            response = await self._router_llm.ainvoke([HumanMessage(content=prompt)])
+            raw = str(response.content).strip()
+            # Убираем markdown если модель добавила
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            data = json.loads(raw)
+            needs = bool(data.get("needs_search", False))
+            query = str(data.get("query", "")).strip() or message
+            logger.debug("search_classifier: needs=%s query='%s'", needs, query[:60])
+            return needs, query
+        except (json.JSONDecodeError, KeyError, Exception) as e:
+            logger.debug("search_classifier fallback (err: %s)", e)
+            # Безопасный fallback — не ломаем ответ из-за ошибки классификатора
+            return False, ""
 
     def _get_orchestrator(self):
         """Ленивая инициализация оркестратора."""
@@ -130,20 +197,11 @@ class LLMService:
         # Миграция старых фактов → structured_memory (один раз, фоново)
         self._run_background(self._memory.migrate_old_memory(user_id))
 
-        # Поиск параллельно пока роутер думает
-        search_task: Optional[asyncio.Task[str]] = None
-        if self._needs_search(user_message) and self._search is not None:
-            search_task = asyncio.create_task(self._search.search(user_message))
-
-        search_results = ""
-        if search_task is not None:
-            try:
-                search_results = await search_task
-                if search_results:
-                    logger.info("user_id=%s | поиск добавлен в контекст", user_id)
-            except Exception:
-                logger.exception("user_id=%s | ошибка поиска", user_id)
-                search_task.cancel()
+        # LLM-классификатор запускаем сразу как задачу —
+        # пока он думает, мы синхронно готовим decisions_block и calibration_hint
+        search_task: asyncio.Task | None = None
+        if self._search:
+            search_task = asyncio.create_task(self._decide_search(user_message))
 
         # Блок принятых решений — для системного промпта агента
         decisions_block = self._consistency.get_decisions_block(user_id)
@@ -153,6 +211,23 @@ class LLMService:
 
         # Подсказка роутеру на основе накопленных ошибок
         calibration_hint = self._calibration.get_hint(user_message)
+
+        # Ждём решения классификатора и запускаем поиск если нужен
+        # (к этому моменту классификатор уже отработал пока мы готовили контекст)
+        search_results = ""
+        if search_task is not None:
+            try:
+                needs_search, optimized_query = await search_task
+                if needs_search and self._search:
+                    raw = await self._search.search(optimized_query)
+                    if raw:
+                        search_results = raw
+                        logger.info(
+                            "user_id=%s | поиск добавлен в контекст (query='%s')",
+                            user_id, optimized_query[:60],
+                        )
+            except Exception:
+                logger.exception("user_id=%s | ошибка поиска", user_id)
 
         agent_result = await self._get_orchestrator().run(
             user_id=user_id,
