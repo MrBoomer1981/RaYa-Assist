@@ -5,19 +5,52 @@ search_service.py — поиск в интернете.
   1. TTL-кэш (10 мин) — срезает повторные запросы при 25+ пользователях
   2. Tavily — основной движок (платный, качественный)
   3. DuckDuckGo — бесплатный fallback при ошибке Tavily или исчерпании квоты
+
+Свежесть данных:
+  - _enrich_query() добавляет год к time-sensitive запросам
+  - _freshness_header() добавляет временную метку к результатам
+  - LLM видит «Данные получены: 12.04.2026 16:40 UTC» и не путает с архивными данными
 """
 import asyncio
 import hashlib
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_SNIPPET_LEN  = 500   # символов на один результат (базовый поиск)
+_SNIPPET_LEN  = 500   # символов на один результат
 _DEEP_SNIPPET = 800   # для глубокого поиска / research
+
+# Ключевые слова — если встречаются в запросе, добавляем год
+_TIME_SENSITIVE_KW = (
+    "курс", "цена", "стоимость", "погода", "новост", "сейчас", "сегодня",
+    "актуальн", "последн", "вышел", "вышла", "выпустил", "обновлен",
+    "версия", "релиз", "price", "rate", "news", "today", "latest", "current",
+)
+
+
+def _enrich_query(query: str) -> str:
+    """
+    Добавляет год к запросу если тема чувствительна ко времени.
+    'курс доллара' → 'курс доллара 2026'
+    Заставляет поисковик ранжировать свежие результаты выше архивных.
+    """
+    q_lower = query.lower()
+    year = str(datetime.utcnow().year)
+    if year in query or str(int(year) - 1) in query:
+        return query
+    if any(kw in q_lower for kw in _TIME_SENSITIVE_KW):
+        return f"{query} {year}"
+    return query
+
+
+def _freshness_header() -> str:
+    """Временная метка получения данных — добавляется в начало результатов."""
+    return f"[Данные получены: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC]\n"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -26,14 +59,12 @@ _DEEP_SNIPPET = 800   # для глубокого поиска / research
 
 class _SearchCache:
     """
-    In-memory кэш поисковых результатов с TTL.
-    При 25+ пользователях один популярный запрос (курс валют, погода)
-    может прийти десятки раз за 10 минут — кэш срезает 60–80% реальных вызовов.
+    In-memory кэш с TTL. При 25+ пользователях популярные запросы
+    (курс валют, погода) приходят десятки раз — кэш срезает 60–80% вызовов.
     """
-
     def __init__(self, ttl_sec: int = 600) -> None:
         self._ttl   = ttl_sec
-        self._store: dict[str, tuple[float, Any]] = {}  # key → (expires_at, value)
+        self._store: dict[str, tuple[float, Any]] = {}
 
     def _key(self, query: str, mode: str = "basic") -> str:
         raw = f"{mode}:{query.strip().lower()}"
@@ -53,21 +84,18 @@ class _SearchCache:
 
     def set(self, query: str, value: Any, mode: str = "basic") -> None:
         if not value:
-            return  # не кэшируем пустые результаты
+            return
         k = self._key(query, mode)
         self._store[k] = (time.monotonic() + self._ttl, value)
 
     def evict_expired(self) -> None:
-        """Вызывается периодически для очистки устаревших записей."""
         now = time.monotonic()
         expired = [k for k, (exp, _) in self._store.items() if now > exp]
         for k in expired:
             del self._store[k]
-        if expired:
-            logger.debug("search cache: удалено %d устаревших записей", len(expired))
 
 
-_cache = _SearchCache(ttl_sec=600)  # 10 минут
+_cache = _SearchCache(ttl_sec=600)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,12 +106,11 @@ async def _ddg_search(query: str, max_results: int = 3) -> list[dict]:
     """
     Бесплатный поиск через DuckDuckGo.
     Запускается в thread-pool чтобы не блокировать event loop.
-    Возвращает список {title, content, url} или [] при ошибке.
     """
     try:
         from duckduckgo_search import DDGS
 
-        def _sync_search():
+        def _sync():
             results = []
             with DDGS() as ddgs:
                 for r in ddgs.text(query, max_results=max_results):
@@ -91,20 +118,20 @@ async def _ddg_search(query: str, max_results: int = 3) -> list[dict]:
                         "title":   r.get("title", ""),
                         "content": r.get("body",  "")[:_SNIPPET_LEN],
                         "url":     r.get("href",  ""),
-                        "score":   0.5,  # DuckDuckGo не даёт score
+                        "score":   0.5,
                     })
             return results
 
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, _sync_search)
-        logger.info("🦆 DuckDuckGo fallback: %d результатов для '%s'", len(results), query[:50])
+        results = await loop.run_in_executor(None, _sync)
+        logger.info("🦆 DuckDuckGo: %d результатов для '%s'", len(results), query[:50])
         return results
 
     except ImportError:
         logger.warning("duckduckgo-search не установлен — добавь в requirements.txt")
         return []
     except Exception as e:
-        logger.warning("DDG search error: %s", e)
+        logger.warning("DDG error: %s", e)
         return []
 
 
@@ -114,62 +141,65 @@ async def _ddg_search(query: str, max_results: int = 3) -> list[dict]:
 
 class SearchService:
     """
-    Поиск с тремя слоями:
-      cache → Tavily → DuckDuckGo fallback
+    Поиск с тремя слоями: кэш → Tavily → DuckDuckGo.
+    Автоматически обогащает запросы датой и добавляет метку свежести.
     """
 
     def __init__(self) -> None:
-        self._tavily_ok = True  # флаг: Tavily ещё работает
+        self._tavily_ok = True
         try:
             from tavily import AsyncTavilyClient
             self._client = AsyncTavilyClient(api_key=settings.tavily_api_key)
         except Exception:
-            logger.warning("Tavily недоступен — будет использован только DDG")
-            self._client = None
+            logger.warning("Tavily недоступен — только DDG")
+            self._client    = None
             self._tavily_ok = False
 
     # ── Публичный API ─────────────────────────────────────────────────────────
 
     async def search(self, query: str, max_results: int = 3) -> str:
         """
-        Базовый поиск → форматированный текст.
+        Базовый поиск → форматированный текст с меткой свежести.
         Порядок: кэш → Tavily → DDG.
         """
-        # 1. Кэш
-        cached = _cache.get(query, "basic")
+        enriched = _enrich_query(query)
+
+        cached = _cache.get(enriched, "basic")
         if cached is not None:
             return cached
 
-        results = await self._search_with_fallback(query, max_results, depth="basic")
-        text = self._format(results, _SNIPPET_LEN)
-        _cache.set(query, text, "basic")
+        results = await self._search_with_fallback(enriched, max_results, depth="basic")
+        text = _freshness_header() + self._format(results, _SNIPPET_LEN)
+        _cache.set(enriched, text, "basic")
         return text
 
     async def deep_search(self, query: str, max_results: int = 5) -> list[dict]:
         """
         Глубокий поиск → сырые результаты (для ResearchAgent).
-        Порядок: кэш → Tavily advanced → DDG.
         """
-        cached = _cache.get(query, "deep")
+        enriched = _enrich_query(query)
+
+        cached = _cache.get(enriched, "deep")
         if cached is not None:
             return cached
 
-        results = await self._search_with_fallback(query, max_results, depth="advanced")
-        _cache.set(query, results, "deep")
+        results = await self._search_with_fallback(enriched, max_results, depth="advanced")
+        _cache.set(enriched, results, "deep")
         return results
 
     async def multi_search(self, queries: list[str], max_per_query: int = 3) -> list[dict]:
         """
         Параллельно выполняет несколько запросов, дедуплицирует результаты.
+        Каждый запрос обогащается датой независимо.
         """
         if not queries:
             return []
 
-        tasks = [self.deep_search(q, max_per_query) for q in queries[:5]]
+        tasks   = [self.deep_search(q, max_per_query) for q in queries[:5]]
         batches = await asyncio.gather(*tasks, return_exceptions=True)
 
         seen_urls: set[str] = set()
-        merged: list[dict] = []
+        merged: list[dict]  = []
         for batch in batches:
             if isinstance(batch, Exception):
                 continue
@@ -184,38 +214,33 @@ class SearchService:
 
     async def fact_check(self, claim: str) -> str:
         """Ищет подтверждение и опровержение утверждения."""
-        queries  = [claim, f"опровержение {claim}"]
-        results  = await self.multi_search(queries, max_per_query=3)
-        return self._format_raw(results, _DEEP_SNIPPET)
+        queries = [claim, f"опровержение {claim}"]
+        results = await self.multi_search(queries, max_per_query=3)
+        return _freshness_header() + self._format_raw(results, _DEEP_SNIPPET)
 
-    # ── Внутренняя логика: Tavily → DDG ──────────────────────────────────────
+    # ── Tavily → DDG ──────────────────────────────────────────────────────────
 
     async def _search_with_fallback(
         self, query: str, max_results: int, depth: str
     ) -> list[dict]:
-        """Пробует Tavily, при ошибке падает на DDG."""
-
-        # Пробуем Tavily если он доступен
         if self._client and self._tavily_ok:
             try:
                 results = await self._tavily_search(query, max_results, depth)
                 if results:
                     return results
             except Exception as e:
-                err_str = str(e).lower()
-                if "429" in err_str or "quota" in err_str or "limit" in err_str:
-                    logger.warning("⚠️ Tavily лимит исчерпан — переключаемся на DDG")
-                    self._tavily_ok = False  # больше не пробуем Tavily
+                err = str(e).lower()
+                if "429" in err or "quota" in err or "limit" in err:
+                    logger.warning("⚠️ Tavily лимит — переключаемся на DDG")
+                    self._tavily_ok = False
                 else:
                     logger.warning("Tavily error: %s — fallback DDG", e)
 
-        # DDG fallback
         return await _ddg_search(query, max_results)
 
     async def _tavily_search(
         self, query: str, max_results: int, depth: str
     ) -> list[dict]:
-        """Запрос к Tavily API."""
         response = await self._client.search(
             query=query,
             max_results=max_results,
@@ -253,7 +278,6 @@ class SearchService:
 
     @staticmethod
     def _format_raw(results: list[dict], snippet_len: int) -> str:
-        """Форматирование с URL — для research_agent."""
         parts = []
         for r in results:
             title   = r.get("title",   "").strip()

@@ -47,6 +47,26 @@ def _build_hard_rules(user_name: str) -> str:
         "Короткий вопрос → 1-3 предложения. Сложная задача → столько сколько нужно."
     )
 
+
+def _build_date_block(now_utc: datetime) -> str:
+    """
+    Явно сообщает LLM текущую дату и время.
+    Без этого модель может опираться на данные из обучения
+    вместо свежих результатов поиска.
+    """
+    msk = now_utc.hour + 3  # МСК = UTC+3
+    days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                 "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+    day_name = days_ru[now_utc.weekday()]
+    month    = months_ru[now_utc.month - 1]
+    return (
+        f"📅 Сейчас: {day_name}, {now_utc.day} {month} {now_utc.year} г., "
+        f"{msk % 24:02d}:{now_utc.minute:02d} МСК.\n"
+        "Используй эту дату как точку отсчёта. Если в поиске есть более свежие данные — "
+        "доверяй им, а не своим знаниям из обучения."
+    )
+
 _SYSTEM_CACHE_TTL = 60  # секунд — как долго кэшируем статичную часть промпта
 
 
@@ -182,10 +202,21 @@ class RayaAgent(BaseAgent):
 
         system += build_reminder_prompt_block(now_utc)
 
+        # Текущая дата — критично для свежести ответов
+        system += f"\n\n{_build_date_block(now_utc)}"
+
         # ── 5. Сообщение ──────────────────────────────────────────────────────
         content = ctx.message
         if ctx.search_results:
-            content = f"{ctx.message}\n\n[Контекст из поиска:]\n{ctx.search_results}"
+            # Если результаты уже содержат метку времени (от нашего SearchService) —
+            # не дублируем. Иначе добавляем пометку что данные актуальны.
+            search_block = ctx.search_results
+            if "[Данные получены:" not in search_block:
+                search_block = (
+                    f"[Данные из интернета, получены только что — используй их как актуальные]\n"
+                    f"{search_block}"
+                )
+            content = f"{ctx.message}\n\n[Актуальная информация из поиска:]\n{search_block}"
 
         messages = [
             SystemMessage(content=system),
