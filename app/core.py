@@ -53,8 +53,6 @@ class Core:
 
         self._log_startup(svc)
         svc.proactive.start()
-        # Синхронизируем БД задач с Obsidian при старте
-        asyncio.create_task(self._sync_tasks(svc))
 
         dp = self._build_dispatcher(svc)
 
@@ -114,4 +112,14 @@ class Core:
         )
         return uvicorn.Server(web_config)
 
-
+    def _log_startup(self, svc: Services) -> None:
+        """Логирует информацию о запуске."""
+        from app.agents.registry import get_enabled_agents
+        agents = [a.name for a in get_enabled_agents()]
+        logger.info(
+            "🤖 RaYa запущена | модель: %s | поиск: %s | агентов: %d (%s)",
+            settings.model_name,
+            "вкл" if settings.search_enabled else "выкл",
+            len(agents),
+            ", ".join(agents),
+        )
