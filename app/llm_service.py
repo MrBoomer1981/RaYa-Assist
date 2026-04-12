@@ -16,6 +16,11 @@ from app.database import load_memory, save_messages
 
 logger = logging.getLogger(__name__)
 
+# Семафор: не более 10 одновременных LLM-запросов.
+# Groq free tier: ~30 req/min, 10 concurrent не перегружает.
+# Остальные запросы ждут в очереди (FIFO).
+_LLM_SEMAPHORE = asyncio.Semaphore(10)
+
 _SEARCH_KEYWORDS: tuple[str, ...] = (
     "новост", "сейчас", "сегодня", "вчера", "курс", "цена", "погод",
     "актуальн", "последн", "недавно", "2024", "2025", "2026",
@@ -100,6 +105,17 @@ class LLMService:
     # ── Основной метод ────────────────────────────────────────────────────────
 
     async def chat(
+        self,
+        user_id: int,
+        user_message: str,
+        is_voice: bool = False,
+        resume_bridge: str | None = None,
+    ) -> ChatResult:
+        """Точка входа с rate-limiting — не более 10 одновременных LLM-запросов."""
+        async with _LLM_SEMAPHORE:
+            return await self._chat_inner(user_id, user_message, is_voice, resume_bridge)
+
+    async def _chat_inner(
         self,
         user_id: int,
         user_message: str,

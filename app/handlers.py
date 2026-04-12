@@ -4,6 +4,7 @@ handlers.py — все Telegram хендлеры и команды.
 Регистрируются через register(dp, bot, services).
 Не содержит бизнес-логики — только роутинг и форматирование ответов.
 """
+import asyncio
 import logging
 import tempfile
 import sqlite3
@@ -28,6 +29,16 @@ from app.vision_service import VisionService
 logger = logging.getLogger(__name__)
 
 _MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 МБ
+
+
+async def _keep_typing(bot: Bot, chat_id: int, stop_event: asyncio.Event) -> None:
+    """Посылает typing каждые 4 сек пока stop_event не установлен."""
+    while not stop_event.is_set():
+        try:
+            await bot.send_chat_action(chat_id, "typing")
+        except Exception:
+            pass
+        await asyncio.sleep(4)
 
 from app.utils import RECUR_RU
 
@@ -201,23 +212,26 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         if message.voice.file_size and message.voice.file_size > _MAX_FILE_BYTES:
             await message.answer("⚠️ Голосовое слишком длинное (макс. 20 МБ).")
             return
-        await bot.send_chat_action(message.chat.id, "typing")
-        audio = await _download_bytes(bot, message.voice.file_id)
-        if not audio:
-            await message.answer("⚠️ Не удалось скачать аудио.")
-            return
-        text = await voice.transcribe(audio)
-        if not text:
-            await message.answer("⚠️ Не смог распознать голос. Попробуй ещё раз.")
-            return
-        await message.answer(f"🎤 Распознано: {text}")
-        await bot.send_chat_action(message.chat.id, "typing")
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         try:
+            audio = await _download_bytes(bot, message.voice.file_id)
+            if not audio:
+                await message.answer("⚠️ Не удалось скачать аудио.")
+                return
+            text = await voice.transcribe(audio)
+            if not text:
+                await message.answer("⚠️ Не смог распознать голос. Попробуй ещё раз.")
+                return
+            await message.answer(f"🎤 Распознано: {text}")
             result = await llm.chat(message.from_user.id, text)
             await _handle_chat_result(message, result, bot)
         except Exception:
             logger.exception("Ошибка LLM voice user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка.")
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
 
     @dp.message(lambda m: m.photo is not None)
     async def handle_photo(message: Message) -> None:
@@ -307,7 +321,8 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         u = message.from_user
         upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
-        await bot.send_chat_action(message.chat.id, "typing")
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         try:
             bridge = await llm.get_resume_phrase(message.from_user.id)
             result = await llm.chat(
@@ -319,3 +334,6 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         except Exception:
             logger.exception("Ошибка user_id=%s", message.from_user.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear")
+        finally:
+            stop_typing.set()
+            typing_task.cancel()

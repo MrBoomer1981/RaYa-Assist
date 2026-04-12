@@ -119,7 +119,9 @@ def _conn() -> Generator[sqlite3.Connection, None, None]:
             con.execute("PRAGMA journal_mode=WAL")
             con.execute("PRAGMA synchronous=NORMAL")
             con.execute("PRAGMA foreign_keys=ON")
-            con.execute("PRAGMA busy_timeout=5000")  # ms
+            con.execute("PRAGMA busy_timeout=15000")  # 15s — для 25+ конкурентных пользователей
+            con.execute("PRAGMA cache_size=-8000")    # 8MB page cache
+            con.execute("PRAGMA temp_store=MEMORY")
             try:
                 yield con
                 con.commit()

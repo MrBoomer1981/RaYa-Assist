@@ -8,7 +8,6 @@ main.py просто вызывает Core().start() — больше ничег
 """
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 
 from aiogram import Bot, Dispatcher
@@ -56,17 +55,11 @@ class Core:
 
         dp = self._build_dispatcher(svc)
 
-        web_server = self._build_web_server(svc.llm)
-
         try:
-            await asyncio.gather(
-                dp.start_polling(svc.bot, drop_pending_updates=True),
-                web_server.serve(),
-            )
+            await dp.start_polling(svc.bot, drop_pending_updates=True)
         finally:
             svc.proactive.stop()
             await svc.bot.session.close()
-
             logger.info("🛑 RaYa остановлена")
 
     # ── Инициализация ─────────────────────────────────────────────────────────
@@ -101,16 +94,6 @@ class Core:
         register(dp, svc.bot, svc.llm, svc.voice, svc.vision)
         return dp
 
-    def _build_web_server(self, llm: "LLMService"):
-        import uvicorn
-        from app.web_server import create_app
-
-        web_app    = create_app(llm)
-        web_port   = int(os.getenv("PORT", "8000"))
-        web_config = uvicorn.Config(
-            web_app, host="0.0.0.0", port=web_port, log_level="warning"
-        )
-        return uvicorn.Server(web_config)
 
     def _log_startup(self, svc: Services) -> None:
         """Логирует информацию о запуске."""
@@ -123,3 +106,5 @@ class Core:
             len(agents),
             ", ".join(agents),
         )
+
+
