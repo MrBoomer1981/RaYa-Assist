@@ -13,6 +13,7 @@ search_service.py — поиск в интернете.
 """
 import asyncio
 import hashlib
+import json
 import logging
 import time
 from datetime import datetime
@@ -39,6 +40,42 @@ _TIME_SENSITIVE_KW = (
     "артемид", "artemis", "spacex", "starship", "falcon",
     "chatgpt", "gpt", "gemini", "claude", "openai", "anthropic",
 )
+
+
+# Темы где английский поиск даёт лучше результаты
+_INTERNATIONAL_KW = (
+    "nasa", "spacex", "artemis", "артемид", "starship", "falcon",
+    "openai", "chatgpt", "anthropic", "claude", "gemini", "gpt",
+    "илон маск", "elon musk", "apple", "google", "microsoft",
+    "tesla", "youtube", "twitter", "instagram", "tiktok",
+    "who", "воз", "imf", "мвф", "un ", "оон",
+    "olympics", "олимпиад", "world cup", "чм ", "чемпионат мира",
+    "nobel", "нобел",
+)
+
+_RUSSIAN_TO_ENGLISH: dict[str, str] = {
+    "артемида": "artemis",
+    "роскосмос": "roscosmos",
+    "луна": "moon",
+    "марс": "mars",
+    "космос": "space",
+    "запуск": "launch",
+    "миссия": "mission",
+}
+
+
+def _is_international(query: str) -> bool:
+    """Тема международная — английский поиск будет точнее."""
+    q = query.lower()
+    return any(kw in q for kw in _INTERNATIONAL_KW)
+
+
+def _translate_key_terms(query: str) -> str:
+    """Заменяет ключевые русские термины английскими для лучшего поиска."""
+    result = query
+    for ru, en in _RUSSIAN_TO_ENGLISH.items():
+        result = result.replace(ru, en)
+    return result
 
 
 def _enrich_query(query: str) -> str:
@@ -242,6 +279,124 @@ class SearchService:
 
     # ── Tavily → DDG ──────────────────────────────────────────────────────────
 
+    async def iterative_search(
+        self,
+        query: str,
+        max_results: int = 5,
+        max_iterations: int = 2,
+    ) -> str:
+        """
+        Итеративный поиск: если первый раунд даёт мало релевантного контента,
+        LLM (router_model) переформулирует запрос и ищет снова.
+
+        Алгоритм:
+          1. Поиск по исходному запросу
+          2. Быстрая оценка релевантности (router_model, ~0.2с)
+          3. Если релевантность низкая — переформулировать + 2-й поиск
+          4. Объединить результаты обоих раундов
+
+        Используется research_agent и raya_agent для сложных запросов.
+        """
+        enriched = _enrich_query(query)
+        cache_store = _cache_news if self._is_event_query(enriched) else _cache
+        cache_key = f"iterative:{enriched}"
+
+        cached = cache_store.get(cache_key, "iter")
+        if cached is not None:
+            return cached
+
+        # ── Раунд 1 ───────────────────────────────────────────────────────────
+        results = await self._search_with_fallback(enriched, max_results, depth="advanced")
+        
+        if not results:
+            return _freshness_header() + "[Поиск не дал результатов]"
+
+        # ── Оценка релевантности ──────────────────────────────────────────────
+        round2_results: list[dict] = []
+        if max_iterations > 1 and self._should_retry(query, results):
+            refined_query = await self._refine_query(query, results)
+            if refined_query and refined_query.lower() != enriched.lower():
+                logger.info(
+                    "🔄 Iterative search: round 2 | original='%s' refined='%s'",
+                    query[:50], refined_query[:50],
+                )
+                round2_results = await self._search_with_fallback(
+                    refined_query, max_results, depth="advanced"
+                )
+
+        # ── Объединить и дедуплицировать ──────────────────────────────────────
+        seen_urls: set[str] = set()
+        merged: list[dict] = []
+        for r in results + round2_results:
+            url = r.get("url", "")
+            if url not in seen_urls:
+                seen_urls.add(url)
+                merged.append(r)
+
+        merged.sort(key=lambda x: x.get("score", 0), reverse=True)
+        text = _freshness_header() + self._format_raw(merged[:8], _DEEP_SNIPPET)
+
+        cache_store.set(cache_key, text, "iter")
+        return text
+
+    def _should_retry(self, query: str, results: list[dict]) -> bool:
+        """
+        Эвристика: стоит ли делать второй раунд поиска.
+        Retry если: мало результатов ИЛИ суммарный контент короткий.
+        """
+        if len(results) < 2:
+            return True
+        total_content = sum(len(r.get("content", "")) for r in results)
+        if total_content < 400:
+            return True
+        # Проверяем что ключевые слова из запроса встречаются в результатах
+        query_words = set(query.lower().split())
+        query_words -= {"что", "как", "где", "когда", "почему", "кто", "the", "a", "is"}
+        if not query_words:
+            return False
+        all_content = " ".join(r.get("content", "").lower() for r in results)
+        matched = sum(1 for w in query_words if w in all_content)
+        coverage = matched / len(query_words) if query_words else 1.0
+        should = coverage < 0.4  # менее 40% слов запроса найдено в результатах
+        if should:
+            logger.debug("iterative: low coverage %.0f%% → retry", coverage * 100)
+        return should
+
+    async def _refine_query(self, original: str, results: list[dict]) -> str:
+        """
+        Просит router_model переформулировать запрос на основе того
+        что нашли в первом раунде — точнее попасть во втором.
+        """
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_groq import ChatGroq
+
+            snippets = "\n".join(
+                f"- {r.get('title', '')}: {r.get('content', '')[:150]}"
+                for r in results[:3]
+            )
+            prompt = (
+                f"Оригинальный запрос: {original}\n\n"
+                f"Найденные результаты (нерелевантные или неполные):\n{snippets}\n\n"
+                "Придумай ОДИН альтернативный поисковый запрос который найдёт более точную информацию.\n"
+                "Можно использовать английский если тема международная.\n"
+                "Ответь ТОЛЬКО запросом, без пояснений."
+            )
+            llm = ChatGroq(
+                api_key=settings.groq_api_key,
+                model=settings.router_model,
+                temperature=0.2,
+            )
+            response = await llm.ainvoke([
+                SystemMessage(content="Ты эксперт по поисковым запросам. Отвечаешь только самим запросом."),
+                HumanMessage(content=prompt),
+            ])
+            refined = str(response.content).strip().strip('"').strip("'")
+            return refined[:200]  # защита от слишком длинных запросов
+        except Exception as e:
+            logger.debug("_refine_query error: %s", e)
+            return ""
+
     async def _search_with_fallback(
         self, query: str, max_results: int, depth: str
     ) -> list[dict]:
@@ -270,16 +425,31 @@ class SearchService:
             include_raw_content=False,
         )
         snippet = _DEEP_SNIPPET if depth == "advanced" else _SNIPPET_LEN
-        return [
-            {
-                "title":   r.get("title", ""),
-                "content": r.get("content", "")[:snippet],
-                "url":     r.get("url", ""),
-                "score":   r.get("score", 0.0),
-            }
-            for r in response.get("results", [])
-            if r.get("content")
-        ]
+        results = []
+        for r in response.get("results", []):
+            if not r.get("content"):
+                continue
+            score = float(r.get("score", 0.0))
+            # Буст за свежесть: если в тексте/заголовке есть текущий год — +0.15
+            current_year = str(datetime.utcnow().year)
+            text_combined = (r.get("title", "") + r.get("content", "")).lower()
+            if current_year in text_combined:
+                score += 0.15
+            # Штраф за старые года (2+ лет назад)
+            for old_year in range(2020, datetime.utcnow().year - 1):
+                if str(old_year) in text_combined and current_year not in text_combined:
+                    score -= 0.1
+                    break
+            results.append({
+                "title":        r.get("title", ""),
+                "content":      r.get("content", "")[:snippet],
+                "url":          r.get("url", ""),
+                "score":        score,
+                "published":    r.get("published_date", ""),
+            })
+        # Сортируем по итоговому score
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results
 
     # ── Форматирование ────────────────────────────────────────────────────────
 
@@ -302,14 +472,20 @@ class SearchService:
     def _format_raw(results: list[dict], snippet_len: int) -> str:
         parts = []
         for r in results:
-            title   = r.get("title",   "").strip()
-            content = r.get("content", "").strip()[:snippet_len]
-            url     = r.get("url",     "").strip()
+            title     = r.get("title",     "").strip()
+            content   = r.get("content",   "").strip()[:snippet_len]
+            url       = r.get("url",       "").strip()
+            published = r.get("published", "").strip()
             if not content:
                 continue
             chunk = []
-            if title:   chunk.append(f"[{title}]")
+            header = f"[{title}]" if title else ""
+            if published:
+                header += f" ({published})"
+            if header:
+                chunk.append(header)
             chunk.append(content)
-            if url:     chunk.append(f"Источник: {url}")
+            if url:
+                chunk.append(f"Источник: {url}")
             parts.append("\n".join(chunk))
         return "\n\n".join(parts)

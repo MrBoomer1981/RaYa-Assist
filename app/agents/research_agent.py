@@ -84,26 +84,46 @@ _SYSTEMS = {
 def _build_search_queries(message: str, mode: str) -> list[str]:
     """
     Строит несколько поисковых запросов для одной темы.
-    Разные углы = лучше покрытие = более точный ответ.
+    - Разные углы = лучше покрытие
+    - Для международных тем — добавляет английский вариант
+    - Для науки — academic-формат
     """
+    from datetime import datetime
+    from app.search_service import _is_international, _translate_key_terms
+
     base = message.strip()
+    year = datetime.utcnow().year
+    queries = [base]
+
     if mode == "science":
-        return [
-            base,
-            f"{base} research study",
+        queries += [
+            f"{base} research study {year}",
             f"{base} scientific evidence",
         ]
-    # research mode — добавляем актуальность и разные формулировки
-    from datetime import datetime
-    year = datetime.utcnow().year
-    queries = [base, f"{base} {year}"]
-    # Если похоже на событие/миссию — добавляем "latest update"
+        if _is_international(base):
+            en = _translate_key_terms(base)
+            queries.append(f"{en} research {year}")
+        return queries[:4]
+
+    # research mode
+    queries.append(f"{base} {year}")
+
     event_kw = ("миссия", "запуск", "артемид", "artemis", "spacex", "starship",
-                 "mission", "launch", "program", "status")
-    if any(kw in base.lower() for kw in event_kw):
+                 "mission", "launch", "program", "status", "полёт", "старт")
+    is_event = any(kw in base.lower() for kw in event_kw)
+
+    if is_event:
         queries.append(f"{base} latest update {year}")
-        queries.append(f"{base} news {year}")
-    return queries[:4]  # не более 4 запросов
+
+    # Международная тема — добавляем английский вариант
+    if _is_international(base):
+        en = _translate_key_terms(base)
+        if en.lower() != base.lower():
+            queries.append(f"{en} {year}")
+            if is_event:
+                queries.append(f"{en} latest news {year}")
+
+    return queries[:5]  # не более 5 запросов
 
 
 class ResearchAgent(BaseAgent):
@@ -129,17 +149,26 @@ class ResearchAgent(BaseAgent):
                 svc = SearchService()
 
                 if mode == "fact_check":
-                    # Для проверки фактов — специализированный метод
+                    # fact_check: оба направления (за и против)
                     raw = await svc.fact_check(ctx.message)
                     if raw:
                         search_block = f"\n\n[Данные из поиска]:\n{raw[:4000]}"
                 else:
-                    # Для research/science — несколько параллельных запросов
-                    queries = _build_search_queries(ctx.message, mode)
-                    results = await svc.multi_search(queries, max_per_query=4)
-                    if results:
-                        formatted = svc._format_raw(results, 600)
-                        search_block = f"\n\n[Данные из поиска]:\n{formatted[:4000]}"
+                    # research/science: итеративный поиск с переформулированием
+                    # Раунд 1: iterative_search по основному запросу
+                    raw = await svc.iterative_search(
+                        ctx.message, max_results=5, max_iterations=2
+                    )
+                    if raw and "[Поиск не дал результатов]" not in raw:
+                        search_block = f"\n\n[Данные из поиска]:\n{raw[:4000]}"
+                    
+                    # Раунд 2: дополнительные углы через multi_search
+                    extra_queries = _build_search_queries(ctx.message, mode)
+                    if len(extra_queries) > 1:
+                        extra = await svc.multi_search(extra_queries[1:], max_per_query=3)
+                        if extra:
+                            extra_text = svc._format_raw(extra, 400)
+                            search_block += f"\n\n[Дополнительные источники]:\n{extra_text[:2000]}"
             except Exception:
                 logger.debug("research: поиск недоступен", exc_info=True)
         
