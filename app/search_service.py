@@ -277,7 +277,191 @@ class SearchService:
         results = await self.multi_search(queries, max_per_query=3)
         return _freshness_header() + self._format_raw(results, _DEEP_SNIPPET)
 
+    async def news_search(self, query: str, max_results: int = 5) -> str:
+        """
+        #4 Специализированный поиск новостей через Tavily topic=news.
+        Приоритизирует свежие новостные публикации над статичным контентом.
+        Используется когда запрос явно про события/новости.
+        """
+        enriched = _enrich_query(query)
+
+        cached = _cache_news.get(enriched, "news")
+        if cached is not None:
+            return cached
+
+        results: list[dict] = []
+        if self._client and self._tavily_ok:
+            try:
+                results = await self._tavily_search(
+                    enriched, max_results, depth="advanced", topic="news"
+                )
+            except Exception as e:
+                logger.warning("news_search Tavily error: %s → DDG fallback", e)
+
+        if not results:
+            results = await _ddg_search(enriched, max_results)
+
+        text = _freshness_header() + self._format_raw(results, _DEEP_SNIPPET)
+        _cache_news.set(enriched, text, "news")
+        return text
+
+    async def academic_search(self, query: str, max_results: int = 4) -> str:
+        """
+        #4 Специализированный поиск по академическим источникам.
+        Добавляет site-hints к запросу чтобы ранжировать научные сайты выше.
+        Используется research_agent в режиме science.
+        """
+        # Для академических запросов ищем на английском
+        from app.search_service import _translate_key_terms, _is_international
+        en_query = _translate_key_terms(query)
+        year = datetime.utcnow().year
+
+        # Два запроса: обычный + academic-форматированный
+        queries = [
+            f"{en_query} site:arxiv.org OR site:pubmed.ncbi.nlm.nih.gov OR site:nature.com {year}",
+            f"{en_query} research study {year}",
+        ]
+
+        all_results: list[dict] = []
+        for q in queries:
+            r = await self._search_with_fallback(q, max_results, depth="advanced")
+            all_results.extend(r)
+
+        # Дедупликация по URL
+        seen: set[str] = set()
+        merged = []
+        for r in all_results:
+            url = r.get("url", "")
+            if url not in seen:
+                seen.add(url)
+                merged.append(r)
+
+        merged.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return _freshness_header() + self._format_raw(merged[:6], _DEEP_SNIPPET)
+
     # ── Tavily → DDG ──────────────────────────────────────────────────────────
+
+    async def smart_search(
+        self,
+        query: str,
+        mode: str = "research",
+        max_results: int = 5,
+    ) -> str:
+        """
+        #6 Главный метод умного поиска: Search → Evaluate → Refine → Enrich.
+
+        Полный pipeline:
+          1. Выбирает специализированный метод по режиму (news / academic / general)
+          2. Iterative search с авто-переформулированием если результаты нерелевантны
+          3. Оценка финального качества через LLM (router_model)
+          4. Full-page fetch топ-1 если нужно больше контекста
+          5. Возвращает обогащённый текст с меткой свежести
+
+        Используется research_agent вместо прямого вызова multi_search/iterative_search.
+        """
+        enriched_q = _enrich_query(query)
+        cache_store = _cache_news if self._is_event_query(enriched_q) else _cache
+        cached = cache_store.get(f"smart:{enriched_q}", mode)
+        if cached:
+            return cached
+
+        # ── Шаг 1: выбор специализированного метода ──────────────────────────
+        is_news    = mode == "news" or self._is_event_query(enriched_q)
+        is_science = mode == "science"
+
+        if is_news:
+            raw_text = await self.news_search(query, max_results)
+            # Также парсим обратно в список для дальнейшей обработки
+            results = await self._search_with_fallback(
+                enriched_q, max_results, "advanced", topic="news"
+            )
+        elif is_science:
+            raw_text = await self.academic_search(query, max_results)
+            results = await self._search_with_fallback(enriched_q, max_results, "advanced")
+        else:
+            results = await self._search_with_fallback(enriched_q, max_results, "advanced")
+            raw_text = ""
+
+        # ── Шаг 2: итеративный поиск если результаты слабые ──────────────────
+        if self._should_retry(query, results):
+            refined_q = await self._refine_query(query, results)
+            if refined_q and refined_q.lower() != enriched_q.lower():
+                round2 = await self._search_with_fallback(
+                    refined_q, max_results, "advanced",
+                    topic="news" if is_news else "general",
+                )
+                # Объединяем и дедуплицируем
+                seen: set[str] = {r.get("url","") for r in results}
+                for r in round2:
+                    if r.get("url","") not in seen:
+                        results.append(r)
+                        seen.add(r.get("url",""))
+                logger.info("🔄 smart_search: round 2 refined='%s'", refined_q[:50])
+
+        if not results:
+            return _freshness_header() + "[Поиск не дал результатов]"
+
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+        # ── Шаг 3: LLM оценивает релевантность ───────────────────────────────
+        quality = await self._evaluate_results(query, results[:3])
+        if quality < 0.4 and not is_news:
+            # Последняя попытка: переключаемся на английский
+            from app.search_service import _translate_key_terms
+            en_q = _translate_key_terms(query) + f" {datetime.utcnow().year}"
+            if en_q.lower() != enriched_q.lower():
+                en_results = await self._search_with_fallback(en_q, max_results, "advanced")
+                if en_results:
+                    results = (results + en_results)
+                    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+                    logger.info("🌐 smart_search: EN fallback, quality was %.2f", quality)
+
+        # ── Шаг 4: full-page fetch для топ-1 ─────────────────────────────────
+        results = await self.enrich_top_result(results[:8])
+
+        # ── Шаг 5: финальное форматирование ──────────────────────────────────
+        text = _freshness_header() + self._format_raw(results, _DEEP_SNIPPET)
+        cache_store.set(f"smart:{enriched_q}", text, mode)
+        return text
+
+    async def _evaluate_results(self, query: str, results: list[dict]) -> float:
+        """
+        #6 Быстрая LLM-оценка релевантности результатов поиска.
+        Возвращает float 0.0–1.0. Использует router_model (~0.2с).
+        При ошибке — оптимистично возвращает 0.7 (не блокируем pipeline).
+        """
+        if not results:
+            return 0.0
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_groq import ChatGroq
+
+            snippets = "\n".join(
+                f"[{i+1}] {r.get('title','')} — {r.get('content','')[:120]}"
+                for i, r in enumerate(results)
+            )
+            prompt = (
+                f"Вопрос: {query}\n\n"
+                f"Результаты поиска:\n{snippets}\n\n"
+                "Насколько эти результаты отвечают на вопрос? "
+                "Ответь ТОЛЬКО числом от 0.0 до 1.0 (0=совсем не релевантно, 1=идеально)."
+            )
+            llm = ChatGroq(
+                api_key=settings.groq_api_key,
+                model=settings.router_model,
+                temperature=0.0,
+            )
+            resp = await llm.ainvoke([
+                SystemMessage(content="Ты оцениваешь релевантность поисковых результатов. Отвечаешь только числом."),
+                HumanMessage(content=prompt),
+            ])
+            score = float(str(resp.content).strip().replace(",", "."))
+            score = max(0.0, min(1.0, score))
+            logger.debug("search quality score=%.2f for '%s'", score, query[:50])
+            return score
+        except Exception as e:
+            logger.debug("_evaluate_results error: %s", e)
+            return 0.7  # оптимистичный fallback
 
     async def iterative_search(
         self,
@@ -397,12 +581,85 @@ class SearchService:
             logger.debug("_refine_query error: %s", e)
             return ""
 
+    async def _fetch_full_page(self, url: str, timeout: int = 6) -> str:
+        """
+        #5 Скачивает и извлекает чистый текст страницы через httpx + trafilatura.
+        Используется для топ-1 результата чтобы дать LLM полный контекст статьи.
+        Возвращает до 3000 символов очищенного текста или "" при ошибке.
+        """
+        if not url or not url.startswith("http"):
+            return ""
+        try:
+            import httpx
+            try:
+                import trafilatura
+                has_trafilatura = True
+            except ImportError:
+                has_trafilatura = False
+
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; RaYaBot/1.0)"},
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return ""
+                html = resp.text
+
+            if has_trafilatura:
+                text = trafilatura.extract(
+                    html,
+                    include_comments=False,
+                    include_tables=False,
+                    no_fallback=False,
+                )
+            else:
+                # Fallback: грубая очистка тегов
+                import re
+                text = re.sub(r"<[^>]+>", " ", html)
+                text = re.sub(r"\s+", " ", text).strip()
+
+            if not text:
+                return ""
+
+            # Берём самый релевантный кусок — первые 3000 символов
+            return text[:3000].strip()
+
+        except Exception as e:
+            logger.debug("_fetch_full_page failed for %s: %s", url[:60], e)
+            return ""
+
+    async def enrich_top_result(self, results: list[dict]) -> list[dict]:
+        """
+        #5 Обогащает топ-1 результат полным текстом страницы.
+        Остальные результаты остаются со сниппетами.
+        Запускается только если сниппет топ-1 содержит менее 300 символов.
+        """
+        if not results:
+            return results
+
+        top = results[0]
+        if len(top.get("content", "")) >= 300:
+            return results  # сниппет достаточно длинный — не тратим время
+
+        full_text = await self._fetch_full_page(top.get("url", ""))
+        if full_text:
+            enriched = dict(top)
+            enriched["content"] = full_text
+            enriched["full_page"] = True
+            logger.info("📄 Full-page fetch: %s (%d chars)", top.get("url", "")[:60], len(full_text))
+            return [enriched] + results[1:]
+
+        return results
+
     async def _search_with_fallback(
-        self, query: str, max_results: int, depth: str
+        self, query: str, max_results: int, depth: str,
+        topic: str = "general",
     ) -> list[dict]:
         if self._client and self._tavily_ok:
             try:
-                results = await self._tavily_search(query, max_results, depth)
+                results = await self._tavily_search(query, max_results, depth, topic=topic)
                 if results:
                     return results
             except Exception as e:
@@ -416,14 +673,19 @@ class SearchService:
         return await _ddg_search(query, max_results)
 
     async def _tavily_search(
-        self, query: str, max_results: int, depth: str
+        self, query: str, max_results: int, depth: str,
+        topic: str = "general",
     ) -> list[dict]:
-        response = await self._client.search(
-            query=query,
-            max_results=max_results,
-            search_depth=depth,
-            include_raw_content=False,
-        )
+        kwargs: dict = {
+            "query":              query,
+            "max_results":        max_results,
+            "search_depth":       depth,
+            "include_raw_content": False,
+        }
+        # Tavily поддерживает topic="news" — приоритизирует свежие новостные сайты
+        if topic == "news":
+            kwargs["topic"] = "news"
+        response = await self._client.search(**kwargs)
         snippet = _DEEP_SNIPPET if depth == "advanced" else _SNIPPET_LEN
         results = []
         for r in response.get("results", []):

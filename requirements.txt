@@ -14,3 +14,4 @@ python-multipart
 gtts
 numpy
 duckduckgo-search
+trafilatura

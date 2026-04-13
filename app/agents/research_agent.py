@@ -154,21 +154,23 @@ class ResearchAgent(BaseAgent):
                     if raw:
                         search_block = f"\n\n[Данные из поиска]:\n{raw[:4000]}"
                 else:
-                    # research/science: итеративный поиск с переформулированием
-                    # Раунд 1: iterative_search по основному запросу
-                    raw = await svc.iterative_search(
-                        ctx.message, max_results=5, max_iterations=2
+                    # research/science: полный smart_search pipeline
+                    # Search → Evaluate → Refine → Full-page fetch
+                    raw = await svc.smart_search(
+                        ctx.message, mode=mode, max_results=5
                     )
                     if raw and "[Поиск не дал результатов]" not in raw:
-                        search_block = f"\n\n[Данные из поиска]:\n{raw[:4000]}"
-                    
-                    # Раунд 2: дополнительные углы через multi_search
-                    extra_queries = _build_search_queries(ctx.message, mode)
-                    if len(extra_queries) > 1:
-                        extra = await svc.multi_search(extra_queries[1:], max_per_query=3)
-                        if extra:
-                            extra_text = svc._format_raw(extra, 400)
-                            search_block += f"\n\n[Дополнительные источники]:\n{extra_text[:2000]}"
+                        search_block = f"\n\n[Данные из поиска]:\n{raw[:5000]}"
+
+                    # Дополнительные углы через multi_search для research
+                    if mode == "research":
+                        extra_queries = _build_search_queries(ctx.message, mode)
+                        extra_queries = [q for q in extra_queries[1:] if q != ctx.message]
+                        if extra_queries:
+                            extra = await svc.multi_search(extra_queries[:2], max_per_query=3)
+                            if extra:
+                                extra_text = svc._format_raw(extra, 400)
+                                search_block += f"\n\n[Дополнительные источники]:\n{extra_text[:2000]}"
             except Exception:
                 logger.debug("research: поиск недоступен", exc_info=True)
         

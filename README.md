@@ -266,3 +266,15 @@ Railway подхватывает push автоматически.
 - **`app/agents/research_agent.py`**
   - `_build_search_queries()` — для международных тем добавляет английский вариант запроса
   - `_execute()` — использует `iterative_search()` как основной метод + `multi_search()` для дополнительных углов
+
+### 2026-04-13 — Улучшения агента поиска #3: специализированные источники, full-page fetch, evaluate pipeline
+- **`app/search_service.py`**
+  - `news_search()` — специализированный поиск через Tavily `topic="news"`, TTL-кэш 2 мин. Приоритизирует свежие новостные публикации
+  - `academic_search()` — поиск с site-hints (`arxiv.org`, `pubmed`, `nature.com`), переключается на английский для международных тем
+  - `_tavily_search()` — принимает `topic` параметр, передаёт в Tavily API
+  - `_fetch_full_page()` — скачивает полный текст страницы через `httpx` + `trafilatura`, до 3000 символов. Fallback через regex-очистку если trafilatura недоступен
+  - `enrich_top_result()` — обогащает топ-1 результат полным текстом если сниппет < 300 символов
+  - `smart_search()` — главный pipeline: выбор метода по mode → iterative retry → LLM-оценка качества → EN-fallback если score < 0.4 → full-page fetch → форматирование
+  - `_evaluate_results()` — router_model оценивает релевантность топ-3 результатов (float 0.0–1.0). При score < 0.4 триггерится EN-поиск
+- **`app/agents/research_agent.py`** — использует `smart_search()` вместо `iterative_search()`. Контекст поиска увеличен до 5000 символов
+- **`requirements.txt`** — добавлен `trafilatura` для full-page fetch
