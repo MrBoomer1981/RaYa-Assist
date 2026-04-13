@@ -15,6 +15,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -105,6 +107,73 @@ def _freshness_header() -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # TTL-кэш
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _tfidf_vector(text: str) -> dict[str, float]:
+    """Строит TF-IDF вектор для текста (без внешних библиотек)."""
+    words = re.findall(r"[а-яёa-z]{3,}", text.lower())
+    if not words:
+        return {}
+    tf: dict[str, float] = {}
+    for w in words:
+        tf[w] = tf.get(w, 0) + 1
+    total = len(words)
+    return {w: c / total for w, c in tf.items()}
+
+
+def _cosine_sim(a: dict[str, float], b: dict[str, float]) -> float:
+    """Cosine similarity между двумя TF-IDF векторами."""
+    if not a or not b:
+        return 0.0
+    common = set(a) & set(b)
+    if not common:
+        return 0.0
+    dot = sum(a[k] * b[k] for k in common)
+    norm_a = math.sqrt(sum(v * v for v in a.values()))
+    norm_b = math.sqrt(sum(v * v for v in b.values()))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def semantic_deduplicate(
+    results: list[dict],
+    threshold: float = 0.72,
+) -> list[dict]:
+    """
+    #7 Семантическая дедупликация результатов поиска.
+
+    Убирает дубли по смыслу (не только по URL).
+    Три источника могут говорить одно и то же разными словами —
+    достаточно оставить один + упомянуть сколько подтверждают.
+
+    threshold=0.72 — хорошо отсекает парафразы, не трогает разные темы.
+    """
+    if len(results) <= 1:
+        return results
+
+    kept: list[dict] = []
+    vectors: list[dict[str, float]] = []
+
+    for r in results:
+        text = (r.get("title", "") + " " + r.get("content", ""))
+        vec = _tfidf_vector(text)
+        # Сравниваем с уже отобранными
+        is_dup = False
+        for i, kv in enumerate(vectors):
+            sim = _cosine_sim(vec, kv)
+            if sim >= threshold:
+                # Дубль — добавляем счётчик к оригиналу
+                kept[i]["confirmed_by"] = kept[i].get("confirmed_by", 1) + 1
+                is_dup = True
+                break
+        if not is_dup:
+            r_copy = dict(r)
+            r_copy["confirmed_by"] = 1
+            kept.append(r_copy)
+            vectors.append(vec)
+
+    return kept
+
 
 class _SearchCache:
     """
@@ -204,6 +273,14 @@ class SearchService:
             logger.warning("Tavily недоступен — только DDG")
             self._client    = None
             self._tavily_ok = False
+        # Чистим истёкшие записи knowledge cache при старте
+        try:
+            from app.database import kc_cleanup
+            removed = kc_cleanup()
+            if removed:
+                logger.info("🗑️  knowledge_cache: удалено %d истёкших записей", removed)
+        except Exception:
+            pass
 
     # ── Публичный API ─────────────────────────────────────────────────────────
 
@@ -360,6 +437,14 @@ class SearchService:
         Используется research_agent вместо прямого вызова multi_search/iterative_search.
         """
         enriched_q = _enrich_query(query)
+
+        # ── Шаг 0: проверяем persistent knowledge cache ───────────────────────
+        from app.database import kc_get, kc_set, kc_cleanup
+        kc_result = kc_get(query, mode)
+        if kc_result:
+            logger.info("📚 Knowledge cache HIT: '%s'", query[:50])
+            return kc_result
+
         cache_store = _cache_news if self._is_event_query(enriched_q) else _cache
         cached = cache_store.get(f"smart:{enriched_q}", mode)
         if cached:
@@ -403,6 +488,10 @@ class SearchService:
 
         results.sort(key=lambda x: x.get("score", 0), reverse=True)
 
+        # ── Шаг 2.5: семантическая дедупликация ──────────────────────────────
+        results = semantic_deduplicate(results, threshold=0.72)
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+
         # ── Шаг 3: LLM оценивает релевантность ───────────────────────────────
         quality = await self._evaluate_results(query, results[:3])
         if quality < 0.4 and not is_news:
@@ -419,9 +508,23 @@ class SearchService:
         # ── Шаг 4: full-page fetch для топ-1 ─────────────────────────────────
         results = await self.enrich_top_result(results[:8])
 
+        # ── Шаг 4.5: structured extraction для событийных запросов ───────────
+        structured_block = ""
+        if self._is_event_query(enriched_q) or mode in ("research", "news"):
+            structured_block = await self.extract_event_facts(query, results[:4])
+
         # ── Шаг 5: финальное форматирование ──────────────────────────────────
-        text = _freshness_header() + self._format_raw(results, _DEEP_SNIPPET)
+        raw_text = self._format_raw(results, _DEEP_SNIPPET)
+        if structured_block:
+            text = _freshness_header() + structured_block + "\n\n" + raw_text
+        else:
+            text = _freshness_header() + raw_text
         cache_store.set(f"smart:{enriched_q}", text, mode)
+
+        # Сохраняем в persistent cache: события — 2 ч, остальное — 24 ч
+        ttl = 2 if self._is_event_query(enriched_q) else 24
+        kc_set(query, text, mode, ttl_hours=ttl)
+
         return text
 
     async def _evaluate_results(self, query: str, results: list[dict]) -> float:
@@ -653,6 +756,75 @@ class SearchService:
 
         return results
 
+    async def extract_event_facts(
+        self, query: str, results: list[dict]
+    ) -> str:
+        """
+        #8 Структурированное извлечение фактов для событийных запросов.
+
+        Если запрос про событие/миссию/релиз — просим router_model
+        извлечь ключевые поля: дата, статус, участники, место.
+        Даёт LLM чёткие факты вместо пересказа сниппетов.
+        Используется только когда _is_event_query() == True.
+        """
+        if not results:
+            return ""
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_groq import ChatGroq
+
+            snippets = "\n\n".join(
+                f"[{r.get('title','')}]\n{r.get('content','')[:300]}"
+                for r in results[:4]
+            )
+
+            prompt = (
+                f"Вопрос: {query}\n\n"
+                f"Данные из поиска:\n{snippets}\n\n"
+                "Извлеки структурированные факты из текста выше. "
+                "Верни JSON с полями (оставь null если данных нет):\n"
+                '{"status": "текущий статус", '
+                '"date": "дата события или дедлайн", '
+                '"location": "место", '
+                '"participants": "участники/организации", '
+                '"key_facts": ["факт1", "факт2", "факт3"]}'
+            )
+            llm = ChatGroq(
+                api_key=settings.groq_api_key,
+                model=settings.router_model,
+                temperature=0.0,
+            )
+            resp = await llm.ainvoke([
+                SystemMessage(content="Ты извлекаешь структурированные факты из текста. Отвечаешь только JSON."),
+                HumanMessage(content=prompt),
+            ])
+            raw = str(resp.content).strip().strip("```json").strip("```").strip()
+            data = json.loads(raw)
+
+            # Форматируем в читаемый блок для LLM-агента
+            lines = ["[Структурированные факты]"]
+            if data.get("status"):
+                lines.append(f"Статус: {data['status']}")
+            if data.get("date"):
+                lines.append(f"Дата: {data['date']}")
+            if data.get("location"):
+                lines.append(f"Место: {data['location']}")
+            if data.get("participants"):
+                lines.append(f"Участники: {data['participants']}")
+            if data.get("key_facts"):
+                lines.append("Ключевые факты:")
+                for f in data["key_facts"]:
+                    if f:
+                        lines.append(f"  • {f}")
+
+            structured = "\n".join(lines)
+            logger.info("📋 Structured extraction: %d fields for '%s'", len(data), query[:50])
+            return structured
+
+        except Exception as e:
+            logger.debug("extract_event_facts error: %s", e)
+            return ""
+
     async def _search_with_fallback(
         self, query: str, max_results: int, depth: str,
         topic: str = "general",
@@ -734,16 +906,19 @@ class SearchService:
     def _format_raw(results: list[dict], snippet_len: int) -> str:
         parts = []
         for r in results:
-            title     = r.get("title",     "").strip()
-            content   = r.get("content",   "").strip()[:snippet_len]
-            url       = r.get("url",       "").strip()
-            published = r.get("published", "").strip()
+            title        = r.get("title",        "").strip()
+            content      = r.get("content",      "").strip()[:snippet_len]
+            url          = r.get("url",          "").strip()
+            published    = r.get("published",    "").strip()
+            confirmed_by = r.get("confirmed_by", 1)
             if not content:
                 continue
             chunk = []
             header = f"[{title}]" if title else ""
             if published:
                 header += f" ({published})"
+            if confirmed_by > 1:
+                header += f" ✓×{confirmed_by}"  # N источников говорят одно
             if header:
                 chunk.append(header)
             chunk.append(content)

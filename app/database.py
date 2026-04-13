@@ -248,6 +248,18 @@ def init_db() -> None:
                 last_summary TEXT    DEFAULT '',
                 updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS knowledge_cache (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_hash TEXT    NOT NULL UNIQUE,
+                query      TEXT    NOT NULL,
+                result     TEXT    NOT NULL,
+                mode       TEXT    DEFAULT 'research',
+                hits       INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_kc_hash    ON knowledge_cache(query_hash);
+            CREATE INDEX IF NOT EXISTS idx_kc_expires ON knowledge_cache(expires_at);
         """)
     logger.info("✅ База данных готова: %s", DB_PATH)
     _migrate()  # идемпотентные ALTER TABLE миграции
@@ -821,6 +833,76 @@ def get_upcoming_events(user_id: int, limit: int = 5) -> list[dict]:
     return [{"id": r[0], "date": r[1], "time_start": r[2] or "",
              "time_end": r[3] or "", "title": r[4],
              "description": r[5], "color": r[6]} for r in rows]
+
+
+# ── Knowledge Cache ──────────────────────────────────────────────────────────
+
+def kc_get(query: str, mode: str = "research") -> str | None:
+    """
+    #9 Читает результат из persistent knowledge cache.
+    Возвращает None если не найдено или истёк TTL.
+    Инкрементирует счётчик hits для аналитики.
+    """
+    import hashlib as _hl
+    q_hash = _hl.md5(f"{mode}:{query.strip().lower()}".encode()).hexdigest()
+    with _conn() as con:
+        row = con.execute(
+            """SELECT result, expires_at FROM knowledge_cache
+               WHERE query_hash = ? AND expires_at > datetime('now')""",
+            (q_hash,),
+        ).fetchone()
+        if row:
+            con.execute(
+                "UPDATE knowledge_cache SET hits = hits + 1 WHERE query_hash = ?",
+                (q_hash,),
+            )
+            return row[0]
+    return None
+
+
+def kc_set(query: str, result: str, mode: str = "research", ttl_hours: int = 24) -> None:
+    """
+    #9 Сохраняет результат поиска в persistent knowledge cache.
+    TTL по умолчанию 24 часа (для событийных — лучше использовать 1–2 ч).
+    """
+    if not result or len(result) < 50:
+        return
+    import hashlib as _hl
+    q_hash = _hl.md5(f"{mode}:{query.strip().lower()}".encode()).hexdigest()
+    with _conn() as con:
+        con.execute(
+            """INSERT INTO knowledge_cache (query_hash, query, result, mode, expires_at)
+               VALUES (?, ?, ?, ?, datetime('now', ?))
+               ON CONFLICT(query_hash) DO UPDATE SET
+                   result     = excluded.result,
+                   expires_at = excluded.expires_at""",
+            (q_hash, query[:500], result, mode, f"+{ttl_hours} hours"),
+        )
+
+
+def kc_cleanup() -> int:
+    """Удаляет истёкшие записи. Запускать периодически (напр. при старте)."""
+    with _conn() as con:
+        cur = con.execute("DELETE FROM knowledge_cache WHERE expires_at <= datetime('now')")
+        return cur.rowcount
+
+
+def kc_stats() -> dict:
+    """Статистика knowledge cache для мониторинга."""
+    with _conn() as con:
+        total = con.execute("SELECT COUNT(*) FROM knowledge_cache").fetchone()[0]
+        alive = con.execute(
+            "SELECT COUNT(*) FROM knowledge_cache WHERE expires_at > datetime('now')"
+        ).fetchone()[0]
+        top = con.execute(
+            "SELECT query, hits FROM knowledge_cache ORDER BY hits DESC LIMIT 5"
+        ).fetchall()
+    return {
+        "total": total,
+        "alive": alive,
+        "expired": total - alive,
+        "top_queries": [{"query": r[0][:60], "hits": r[1]} for r in top],
+    }
 
 
 def get_all_known_users() -> list[int]:

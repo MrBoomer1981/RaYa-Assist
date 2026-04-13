@@ -278,3 +278,16 @@ Railway подхватывает push автоматически.
   - `_evaluate_results()` — router_model оценивает релевантность топ-3 результатов (float 0.0–1.0). При score < 0.4 триггерится EN-поиск
 - **`app/agents/research_agent.py`** — использует `smart_search()` вместо `iterative_search()`. Контекст поиска увеличен до 5000 символов
 - **`requirements.txt`** — добавлен `trafilatura` для full-page fetch
+
+### 2026-04-13 — Улучшения агента поиска #4: semantic dedup, structured extraction, persistent cache
+- **`app/search_service.py`**
+  - `semantic_deduplicate()` — дедупликация по смыслу через TF-IDF + cosine similarity (без внешних API). Порог 0.72 — убирает парафразы, оставляет разные точки зрения. Дубли учитываются в поле `confirmed_by` (показывается как `✓×N` в результатах)
+  - `extract_event_facts()` — для событийных запросов (миссии, релизы, события) router_model извлекает структурированный JSON: статус, дата, место, участники, ключевые факты. Добавляется в начало контекста поиска перед сниппетами
+  - `smart_search()` — pipeline расширен: шаг 0 — persistent knowledge cache; шаг 2.5 — semantic dedup; шаг 4.5 — structured extraction
+  - `__init__()` — при старте чистит истёкшие записи knowledge cache
+- **`app/database.py`**
+  - Новая таблица `knowledge_cache` (query_hash, query, result, mode, hits, expires_at)
+  - `kc_get()` — читает из persistent cache, инкрементирует hits
+  - `kc_set()` — сохраняет результат; TTL: 2 ч для событий, 24 ч для остального
+  - `kc_cleanup()` — удаляет истёкшие записи
+  - `kc_stats()` — статистика: всего записей, активных, топ-5 по hits
