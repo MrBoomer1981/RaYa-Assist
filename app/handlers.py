@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BufferedInputFile, Message, CallbackQuery
+from app.settings_ui import handle_settings_callback, kb_main, text_main
 
 from app.config import settings
 from app.database import (
@@ -77,6 +78,7 @@ def _build_help_text() -> str:
         lines.append("• Искать и исследовать информацию 🔍")
     lines += [
         "\nКоманды:",
+        "/settings  — персональные настройки",
         "/reminders — активные напоминания",
         "/memory    — что знаю о тебе",
         "/forget    — удалить память",
@@ -207,6 +209,23 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         await message.answer("\n".join(lines))
 
     # ── Медиа ─────────────────────────────────────────────────────────────────
+
+    @dp.message(Command("settings"))
+    async def cmd_settings(message: Message) -> None:
+        if not message.from_user:
+            return
+        uid = message.from_user.id
+        await message.answer(
+            text_main(uid),
+            reply_markup=kb_main(uid),
+            parse_mode="Markdown",
+        )
+
+    @dp.callback_query(lambda c: c.data and c.data.startswith("s:"))
+    async def on_settings_callback(callback: CallbackQuery) -> None:
+        if not callback.from_user:
+            return
+        await handle_settings_callback(callback, callback.from_user.id)
 
     @dp.message(lambda m: m.voice is not None)
     async def handle_voice(message: Message) -> None:

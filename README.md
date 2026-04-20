@@ -245,49 +245,26 @@ Railway подхватывает push автоматически.
 - **LRU-кэш** имён пользователей — не дёргаем БД на каждый запрос
 - **Lazy init агентов** — создаются только при первом обращении
 
----
+### 2026-04-14 — Персональные настройки пользователя (/settings)
 
-## Changelog
+**Новые файлы:**
+- **`app/user_settings.py`** — схема 21 настройки в 6 разделах (`UserSettings` dataclass), DB-функции (`get_settings`, `save_settings`, `update_setting`, `reset_settings`), LRU-кэш (512 слотов)
+- **`app/settings_ui.py`** — полный inline-UI для Telegram: главное меню → раздел → настройка → изменить. Типы: bool (toggle), choice (выбор из списка), int_range (+/−). Callback data: `s:main`, `s:sec:{i}`, `s:set:{key}`, `s:val:{key}:{v}`, `s:inc:{key}:{delta}`, `s:rst`
 
-### 2026-04-13 — Улучшение агента поиска
-- **`app/llm_service.py`** — переписан промпт LLM-классификатора поиска. Добавлено правило «при сомнении — ИСКАТЬ». Новые примеры с миссиями/проектами (Артемида, SpaceX, GPT). Явные триггеры: "запуск", "миссия", "статус", "artemis"
-- **`app/search_service.py`** — расширен `_TIME_SENSITIVE_KW` (добавлены названия миссий и проектов). Раздельные TTL-кэши: обычные 10 мин, событийные/новостные 2 мин. Метод `_is_event_query()`
-- **`app/agents/research_agent.py`** — `_build_search_queries()` строит 2–4 параллельных запроса. Используется `multi_search()` вместо одного `search()`. Контекст поиска 2000 → 4000 символов. Если поиск пуст — LLM явно предупреждается об устаревших данных. Системные промпты: `[Данные из поиска]` = приоритет над знаниями модели
-- **`app/agents/raya_agent.py`** — жёсткие правила: обязательно использовать `[Данные из поиска]` как приоритетный источник; для событий указывать дату актуальности
+**Изменённые файлы:**
+- **`app/database.py`** — `init_db()` создаёт таблицу `user_settings` при старте
+- **`app/handlers.py`** — команда `/settings` открывает меню; callback `s:*` маршрутизируется в `settings_ui`
+- **`app/agents/raya_agent.py`** — `_build_hard_rules()` читает настройки пользователя: язык (`ru`/`en`), длина ответа (`short`/`medium`/`long`), стиль (`friendly`/`formal`/`concise`)
+- **`app/proactive_service.py`** — `check_all_triggers()` проверяет `us.reminder_warning`, `us.task_reminders` перед каждым триггером
+- **`app/feature_flags.py`** — добавлена `get_user_features(user_id)`: объединяет глобальные флаги с персональными настройками
 
-### 2026-04-13 — Улучшения агента поиска #2: iterative search, bilingual, freshness
-- **`app/search_service.py`**
-  - `iterative_search()` — если первый раунд нерелевантен, `_refine_query()` (router_model) переформулирует запрос и ищет снова; результаты обоих раундов объединяются
-  - `_should_retry()` — эвристика: retry если мало результатов, контент короткий или <40% слов запроса встречается в ответах
-  - `_refine_query()` — LLM (router_model, T=0.2) генерирует альтернативный запрос на основе того что нашли в 1-м раунде
-  - `_is_international()` / `_translate_key_terms()` — определяет международные темы и переводит ключевые термины на английский
-  - `_tavily_search()` — freshness scoring: +0.15 к score если в тексте текущий год, штраф за упоминание старых годов
-  - `_format_raw()` — теперь показывает дату публикации источника если Tavily её вернул
-- **`app/agents/research_agent.py`**
-  - `_build_search_queries()` — для международных тем добавляет английский вариант запроса
-  - `_execute()` — использует `iterative_search()` как основной метод + `multi_search()` для дополнительных углов
+**21 настройка в 6 разделах:**
 
-### 2026-04-13 — Улучшения агента поиска #3: специализированные источники, full-page fetch, evaluate pipeline
-- **`app/search_service.py`**
-  - `news_search()` — специализированный поиск через Tavily `topic="news"`, TTL-кэш 2 мин. Приоритизирует свежие новостные публикации
-  - `academic_search()` — поиск с site-hints (`arxiv.org`, `pubmed`, `nature.com`), переключается на английский для международных тем
-  - `_tavily_search()` — принимает `topic` параметр, передаёт в Tavily API
-  - `_fetch_full_page()` — скачивает полный текст страницы через `httpx` + `trafilatura`, до 3000 символов. Fallback через regex-очистку если trafilatura недоступен
-  - `enrich_top_result()` — обогащает топ-1 результат полным текстом если сниппет < 300 символов
-  - `smart_search()` — главный pipeline: выбор метода по mode → iterative retry → LLM-оценка качества → EN-fallback если score < 0.4 → full-page fetch → форматирование
-  - `_evaluate_results()` — router_model оценивает релевантность топ-3 результатов (float 0.0–1.0). При score < 0.4 триггерится EN-поиск
-- **`app/agents/research_agent.py`** — использует `smart_search()` вместо `iterative_search()`. Контекст поиска увеличен до 5000 символов
-- **`requirements.txt`** — добавлен `trafilatura` для full-page fetch
-
-### 2026-04-13 — Улучшения агента поиска #4: semantic dedup, structured extraction, persistent cache
-- **`app/search_service.py`**
-  - `semantic_deduplicate()` — дедупликация по смыслу через TF-IDF + cosine similarity (без внешних API). Порог 0.72 — убирает парафразы, оставляет разные точки зрения. Дубли учитываются в поле `confirmed_by` (показывается как `✓×N` в результатах)
-  - `extract_event_facts()` — для событийных запросов (миссии, релизы, события) router_model извлекает структурированный JSON: статус, дата, место, участники, ключевые факты. Добавляется в начало контекста поиска перед сниппетами
-  - `smart_search()` — pipeline расширен: шаг 0 — persistent knowledge cache; шаг 2.5 — semantic dedup; шаг 4.5 — structured extraction
-  - `__init__()` — при старте чистит истёкшие записи knowledge cache
-- **`app/database.py`**
-  - Новая таблица `knowledge_cache` (query_hash, query, result, mode, hits, expires_at)
-  - `kc_get()` — читает из persistent cache, инкрементирует hits
-  - `kc_set()` — сохраняет результат; TTL: 2 ч для событий, 24 ч для остального
-  - `kc_cleanup()` — удаляет истёкшие записи
-  - `kc_stats()` — статистика: всего записей, активных, топ-5 по hits
+| Раздел | Настройки |
+|---|---|
+| 🌐 Общие | Язык (ru/en), Длина ответов, Стиль общения, Часовой пояс (UTC±) |
+| 🔍 Поиск | Включить поиск, Глубина (basic/advanced), Язык поиска (auto/ru/en) |
+| 🌅 Проактивность | Утренний дайджест, Время дайджеста, Писать при молчании, Часов тишины, Напоминания о дедлайнах, Предупреждение за 30 мин |
+| 🤖 Агенты | Генерация изображений, Брейнсторм, Проверка качества (critic) |
+| 🧠 Память | Запоминать факты, Отслеживать настроение, Адаптировать стиль |
+| 🔊 Медиа | Голосовые ответы (TTS), Индикатор «печатает...» |

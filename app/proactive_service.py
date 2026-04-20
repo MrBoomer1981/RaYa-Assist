@@ -305,12 +305,12 @@ async def check_all_triggers(
     sent = False
 
     # 1. Reminder warning
-    if not sent and FEATURE_REMINDER_WARNING:
+    if not sent and FEATURE_REMINDER_WARNING and us.reminder_warning:
         sent = await check_reminder_warning(user_id, bot, llm)
 
     # 2. Task deadlines
     last_task_check = state.get("last_task_check")
-    if not sent and FEATURE_TASK_DEADLINES and (not last_task_check or
+    if not sent and FEATURE_TASK_DEADLINES and us.task_reminders and (not last_task_check or
             (datetime.utcnow() - last_task_check).total_seconds() > _1_HOUR):
         sent_task_ids = state.setdefault("sent_task_ids", set())
         if await check_task_deadlines(user_id, bot, llm, sent_task_ids):
@@ -331,6 +331,7 @@ async def check_all_triggers(
 
     # 4. Idea follow-up
     last_idea_check = state.get("last_idea_check")
+    # Idea followup — проверяем настройку пользователя
     if not sent and FEATURE_PROACTIVE_IDEA_FOLLOWUP and (not last_idea_check or
             (datetime.utcnow() - last_idea_check).total_seconds() > _12_HOURS):
         sent_diary_ids = state.setdefault("sent_diary_ids", set())

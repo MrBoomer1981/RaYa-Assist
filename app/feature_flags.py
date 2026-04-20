@@ -51,3 +51,28 @@ def status() -> dict:
         "persona_verbose":      FEATURE_PERSONA_VERBOSE,
         "emotional_system":     FEATURE_EMOTIONAL_SYSTEM,
     }
+
+
+def get_user_features(user_id: int) -> dict:
+    """
+    Возвращает feature flags с учётом персональных настроек пользователя.
+    Глобальный флаг может только выключить функцию — включить только если
+    и глобально включено, и пользователь не выключил.
+    """
+    from app.user_settings import get_settings
+    s = get_settings(user_id)
+    return {
+        "image_agent":    FEATURE_IMAGE_AGENT    and s.image_agent,
+        "ideas_agent":    FEATURE_IDEAS_AGENT    and s.ideas_agent,
+        "morning_digest": FEATURE_MORNING_DIGEST and s.morning_digest,
+        "task_deadlines": FEATURE_TASK_DEADLINES and s.task_reminders,
+        "reminder_warn":  FEATURE_REMINDER_WARNING and s.reminder_warning,
+        "proactive_idea": FEATURE_PROACTIVE_IDEA_FOLLOWUP,
+        "proactive_act":  FEATURE_PROACTIVE_ACTIVITY,
+        "proactive_sil":  FEATURE_PROACTIVE_SILENCE and s.proactive_silence,
+        "persona_verbose":FEATURE_PERSONA_VERBOSE  and s.personality_adapt,
+        "emotional":      FEATURE_EMOTIONAL_SYSTEM and s.mood_tracking,
+        "critic":         s.critic_enabled,
+        "memory":         s.memory_enabled,
+        "search":         s.search_enabled,
+    }
