@@ -10,7 +10,7 @@ from app.agents.critic_agent import CriticAgent
 from app.agents.registry import get_agent
 from app.agents.router import RouterAgent, RouteResult
 from app.config import settings
-from app.database import load_history, load_memory
+from app.database import load_history, load_memory, get_user_name
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ class Orchestrator:
         ctx = AgentContext(
             user_id=user_id,
             message=message,
+            user_name=get_user_name(user_id),   # кэшировано LRU-256, дёшево
             history=load_history(user_id, limit=settings.max_history),
             memory_facts=load_memory(user_id),
             search_results=search_results,

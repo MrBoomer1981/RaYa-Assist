@@ -34,6 +34,7 @@ class AgentContext:
     """
     user_id: int
     message: str                        # исходное сообщение пользователя
+    user_name: str = "друг"            # ник/имя пользователя — заполняется оркестратором
     history: list[BaseMessage] = field(default_factory=list)
     memory_facts: list[str] = field(default_factory=list)
     search_results: str = ""            # результаты поиска если были
@@ -110,6 +111,9 @@ class BaseAgent:
         user_content — если нужно переопределить ctx.message.
         """
         system = self._system_prompt()
+
+        # Единое правило имени — работает для всех агентов
+        system = f"{system}\n\nОбращайся к пользователю ТОЛЬКО по имени '{ctx.user_name}'. Никогда не используй другое имя."
 
         # Добавляем факты о пользователе в системный промпт
         if ctx.memory_facts:
