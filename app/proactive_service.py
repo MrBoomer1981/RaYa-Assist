@@ -296,6 +296,9 @@ async def check_all_triggers(
     state — dict с персистентным состоянием между тиками (хранится в ProactiveService).
     Возвращает True если хоть одно сообщение отправлено.
     """
+    from app.user_settings import get_settings as _get_us
+    us = _get_us(user_id)
+
     now_msk = _now_msk()
 
     # Не проверяем ночью
