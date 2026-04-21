@@ -202,6 +202,24 @@ class LLMService:
         Точка входа — делегирует оркестратору.
         Сохраняет в историю, извлекает факты в фоне.
         """
+        # ── Обработка команды «забудь / не запоминай» ──────────────────────────
+        import re as _re
+        _FORGET_RE = _re.compile(
+            r"\b(не надо|не нужно|не запоминай|забудь|удали|убери|сотри|не спрашивай)"
+            r".{0,30}(это|об этом|про это|данные|информацию|тему)?\b",
+            _re.IGNORECASE,
+        )
+        if _FORGET_RE.search(user_message):
+            from app.database import clear_open_threads, clear_structured_memory
+            clear_open_threads(user_id)
+            # Если просит забыть вообще всё — чистим и structured_memory
+            _FORGET_ALL_RE = _re.compile(
+                r"\b(забудь всё|удали всё|очисти память|сотри всё|забудь обо мне)\b",
+                _re.IGNORECASE,
+            )
+            if _FORGET_ALL_RE.search(user_message):
+                clear_structured_memory(user_id)
+
         # Миграция старых фактов → structured_memory (один раз, фоново)
         self._run_background(self._memory.migrate_old_memory(user_id))
 

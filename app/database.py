@@ -670,27 +670,35 @@ def save_conversation_context(
         """, (user_id, topic, user_goal, threads, last_summary, now))
 
 
+def clear_open_threads(user_id: int) -> None:
+    """Очищает список незавершённых тем — вызывается когда пользователь говорит забудь/не запоминай."""
+    ctx = get_conversation_context(user_id)
+    save_conversation_context(
+        user_id=user_id,
+        topic=ctx["topic"],
+        user_goal=ctx["user_goal"],
+        open_threads=[],
+        last_summary=ctx["last_summary"],
+    )
+
+
 def format_context_for_prompt(user_id: int) -> str:
     """Форматирует контекст разговора для системного промпта."""
     ctx = get_conversation_context(user_id)
 
-    if not any([ctx["topic"], ctx["user_goal"],
-                ctx["open_threads"], ctx["last_summary"]]):
+    if not any([ctx["topic"], ctx["open_threads"], ctx["last_summary"]]):
         return ""
 
-    lines = ["🗣️ Контекст текущего разговора:"]
-
+    parts = []
     if ctx["topic"]:
-        lines.append(f"  Тема: {ctx['topic']}")
-    if ctx["user_goal"]:
-        lines.append(f"  Цель пользователя: {ctx['user_goal']}")
+        parts.append(f"тема: {ctx['topic']}")
     if ctx["open_threads"]:
-        threads = "; ".join(ctx["open_threads"][:3])
-        lines.append(f"  Незавершённые темы: {threads}")
+        threads = ", ".join(ctx["open_threads"][:2])
+        parts.append(f"не закрыто: {threads}")
     if ctx["last_summary"]:
-        lines.append(f"  Что обсуждали: {ctx['last_summary']}")
+        parts.append(ctx["last_summary"])
 
-    return "\n".join(lines)
+    return "💬 Контекст: " + " | ".join(parts)
 
 
 # ── Память взаимодействий ─────────────────────────────────────────────────────
