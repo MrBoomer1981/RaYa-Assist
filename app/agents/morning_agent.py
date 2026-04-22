@@ -99,26 +99,14 @@ _PHILOSOPHY = [
 ]
 
 # ── Темы для поиска новостей ──────────────────────────────────────────────────
-_NEWS_QUERIES = [
-    # Технологии и AI
-    ("новости искусственного интеллекта сегодня", "🤖 AI и технологии"),
-    ("технологии AI прорыв сегодня", "🤖 AI и технологии"),
-
-    # Бизнес и стартапы
-    ("стартапы бизнес инвестиции новости сегодня", "💼 Бизнес"),
-    ("мировая экономика бизнес новости сегодня", "💼 Бизнес"),
-
-    # Наука
-    ("научные открытия исследования новости сегодня", "🔬 Наука"),
-    ("космос наука прорыв сегодня", "🔬 Наука"),
-
-    # Мировые события
-    ("главные мировые новости сегодня", "🌍 Мир"),
-    ("геополитика мировые события сегодня", "🌍 Мир"),
-
-    # Продуктивность и психология
-    ("продуктивность психология исследования сегодня", "🧠 Психология"),
-    ("когнитивные науки мышление новости сегодня", "🧠 Психология"),
+# Фиксированный набор — все 5 тем каждый день, никакого рандома.
+# Запросы конструируются с датой в _get_news() чтобы гарантировать свежесть.
+_NEWS_TOPICS = [
+    ("AI искусственный интеллект новости",            "🤖 AI и технологии"),
+    ("главные мировые события",                        "🌍 Мир"),
+    ("бизнес технологии стартапы",                     "💼 Бизнес"),
+    ("наука исследования открытия",                    "🔬 Наука"),
+    ("психология продуктивность мышление исследования","🧠 Психология"),
 ]
 
 
@@ -137,13 +125,16 @@ class MorningAgent(BaseAgent):
         tasks_task   = asyncio.create_task(_get_tasks(ctx.user_id))
         news_task    = asyncio.create_task(_get_news())
 
-        weather, tasks_text, news_text = await asyncio.gather(
-            weather_task, tasks_task, news_task, return_exceptions=True
+        events_task  = asyncio.create_task(_get_events(ctx.user_id))
+
+        weather, tasks_text, news_text, events_text = await asyncio.gather(
+            weather_task, tasks_task, news_task, events_task, return_exceptions=True
         )
 
-        if isinstance(weather, Exception):    weather    = ""
-        if isinstance(tasks_text, Exception): tasks_text = ""
-        if isinstance(news_text, Exception):  news_text  = ""
+        if isinstance(weather, Exception):      weather      = ""
+        if isinstance(tasks_text, Exception):   tasks_text   = ""
+        if isinstance(news_text, Exception):    news_text    = ""
+        if isinstance(events_text, Exception):  events_text  = ""
 
         # Цитата и философия
         quote, author      = random.choice(_QUOTES)
@@ -159,6 +150,9 @@ class MorningAgent(BaseAgent):
 
         if tasks_text:
             lines.append(tasks_text)
+
+        if events_text:
+            lines.append(events_text)
 
         lines.append(f"_{quote}_\n— {author}\n")
 
@@ -238,12 +232,50 @@ async def _get_tasks(user_id: int) -> str:
         return ""
 
 
+# ── События календаря ─────────────────────────────────────────────────────────
+
+async def _get_events(user_id: int) -> str:
+    """Ближайшие события на сегодня и завтра для дайджеста."""
+    try:
+        from app.database import get_events_for_date
+        from datetime import datetime, timedelta
+        today    = datetime.utcnow().date()
+        tomorrow = today + timedelta(days=1)
+
+        ev_today    = get_events_for_date(user_id, today.isoformat())
+        ev_tomorrow = get_events_for_date(user_id, tomorrow.isoformat())
+
+        if not ev_today and not ev_tomorrow:
+            return ""
+
+        _EMOJI = {"blue": "🔵", "green": "🟢", "red": "🔴", "orange": "🟠", "purple": "🟣"}
+        lines  = ["**📅 Календарь:**"]
+
+        if ev_today:
+            lines.append("_Сегодня:_")
+            for ev in ev_today:
+                t = f" {ev['time_start']}" if ev["time_start"] else ""
+                lines.append(f"  {_EMOJI.get(ev['color'], '🔵')}{t} {ev['title']}")
+
+        if ev_tomorrow:
+            lines.append("_Завтра:_")
+            for ev in ev_tomorrow:
+                t = f" {ev['time_start']}" if ev["time_start"] else ""
+                lines.append(f"  {_EMOJI.get(ev['color'], '🔵')}{t} {ev['title']}")
+
+        return "\n".join(lines) + "\n"
+    except Exception as e:
+        logger.warning("События: %s", e)
+        return ""
+
+
 # ── Новости ───────────────────────────────────────────────────────────────────
 
 async def _get_news() -> str:
     """
-    Параллельный поиск по 4 темам через Tavily.
-    Результаты пересказываются на русском через LLM.
+    Параллельный поиск по 5 фиксированным темам через news_search (Tavily topic=news).
+    Запросы содержат дату → только свежие результаты за последние сутки.
+    Пересказывается через быстрый LLM с деталями: кто, что, когда.
     """
     try:
         from app.search_service import SearchService
@@ -251,47 +283,61 @@ async def _get_news() -> str:
         from langchain_core.messages import SystemMessage, HumanMessage
         from app.config import settings
 
-        svc = SearchService()
+        svc  = SearchService()
+        now  = datetime.utcnow()
+        date = now.strftime("%d %B %Y")  # напр. "22 April 2026"
 
-        # Выбираем 4 рандомных темы из пула
-        selected = random.sample(_NEWS_QUERIES, min(4, len(_NEWS_QUERIES)))
+        # Обогащаем запрос датой — поисковик ранжирует свежее выше архивного
+        queries_with_date = [
+            (f"{q} {date}", label)
+            for q, label in _NEWS_TOPICS
+        ]
 
-        # Параллельный поиск
+        # Параллельный поиск — news_search использует Tavily topic=news + DDG fallback
         results = await asyncio.gather(
-            *[svc.search(query, max_results=2) for query, _ in selected],
-            return_exceptions=True
+            *[svc.news_search(query, max_results=4) for query, _ in queries_with_date],
+            return_exceptions=True,
         )
 
         raw_sections = []
-        for (query, label), result in zip(selected, results):
+        for (_, label), result in zip(queries_with_date, results):
             if isinstance(result, Exception) or not result:
                 continue
             text = str(result).strip()
-            if len(text) < 30:
+            if len(text) < 40:
                 continue
-            raw_sections.append((label, text[:800]))
+            raw_sections.append((label, text[:1200]))  # больше текста → лучше пересказ
 
         if not raw_sections:
             return ""
 
-        # Пересказываем на русском через LLM
         raw_combined = "\n\n".join(
             f"[{label}]\n{text}" for label, text in raw_sections
         )
+
         llm = ChatGroq(
             api_key=settings.groq_api_key,
-            model=settings.router_model,
-            temperature=0.3,
+            model=settings.router_model,  # быстрая модель, не тратим основную
+            temperature=0.2,
         )
+
         prompt = (
-            "Ниже — результаты поиска новостей по нескольким темам. "
-            "Перескажи каждую тему КРАТКО на русском языке — 1-2 предложения на тему. "
-            "Сохрани эмодзи-метку темы. Никаких URL. Только суть. Формат:\n"
-            "🤖 AI и технологии\n<суть>\n\n💼 Бизнес\n<суть>\n\nи т.д.\n\n"
+            f"Сегодня {date}. Ниже — результаты поиска новостей за последние сутки по 5 темам.\n"
+            "Для каждой темы напиши ИНФОРМАТИВНЫЙ пересказ: 2-3 предложения с конкретикой — "
+            "названия компаний, имена, цифры, события. Не пиши общими словами.\n"
+            "Если новостей по теме нет или они неактуальны — пропусти тему.\n"
+            "Сохрани эмодзи-метку. Никаких URL. Только суть.\n\n"
+            "Формат:\n"
+            "🤖 AI и технологии\n<2-3 предложения>\n\n"
+            "🌍 Мир\n<2-3 предложения>\n\nи т.д.\n\n"
             f"Исходные данные:\n{raw_combined}"
         )
+
         response = await llm.ainvoke([
-            SystemMessage(content="Ты помощник который кратко пересказывает новости на русском языке."),
+            SystemMessage(content=(
+                "Ты редактор новостного дайджеста. Пишешь кратко, конкретно, без воды. "
+                "Факты: имена, цифры, компании, события. Никаких URL."
+            )),
             HumanMessage(content=prompt),
         ])
         summary = str(response.content).strip()
@@ -300,12 +346,11 @@ async def _get_news() -> str:
             return ""
 
         header = "─" * 20
-        return f"\n{header}\n**📰 Дайджест дня**\n\n{summary}"
+        return f"\n{header}\n**📰 Новости за последние сутки**\n\n{summary}"
 
     except Exception as e:
         logger.warning("Новости: %s", e)
         return ""
-
 
 def _day_ru(dt: datetime) -> str:
     days = ["Понедельник", "Вторник", "Среда", "Четверг",

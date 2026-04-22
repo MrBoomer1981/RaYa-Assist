@@ -19,6 +19,7 @@ from app.config import settings
 from app.database import (
     format_context_for_prompt, format_interaction_memory,
     format_memory_for_prompt, get_recent_moods, save_mood, get_user_name,
+    get_upcoming_events,
 )
 from app.feature_flags import FEATURE_EMOTIONAL_SYSTEM, FEATURE_PERSONA_VERBOSE
 from app.personality_service import (
@@ -67,6 +68,21 @@ def _build_date_block(now_utc: datetime) -> str:
         "Используй эту дату как точку отсчёта. Если в поиске есть более свежие данные — "
         "доверяй им, а не своим знаниям из обучения."
     )
+
+def _build_events_block(user_id: int) -> str:
+    """Ближайшие события для системного промпта — чтобы Рая знала о расписании."""
+    try:
+        events = get_upcoming_events(user_id, limit=5)
+        if not events:
+            return ""
+        lines = ["📅 Ближайшие события:"]
+        for ev in events:
+            t = f" {ev['time_start']}" if ev["time_start"] else ""
+            lines.append(f"  {ev['date']}{t} — {ev['title']}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
 
 _SYSTEM_CACHE_TTL = 60  # секунд — как долго кэшируем статичную часть промпта
 
@@ -147,6 +163,9 @@ class RayaAgent(BaseAgent):
                 return f"Что известно о {get_user_name(ctx.user_id)}:\n{facts}"
             return ""
 
+        async def _get_events():
+            return _build_events_block(ctx.user_id)
+
         async def _get_tasks_summary():
             try:
                 from app.database import get_active_tasks
@@ -167,10 +186,11 @@ class RayaAgent(BaseAgent):
         # Запускаем всё параллельно
         (
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
-            interaction_ctx, observation_ctx, memory_ctx, tasks_summary
+            interaction_ctx, observation_ctx, memory_ctx, tasks_summary, events_ctx
         ) = await asyncio.gather(
             _get_moods(), _get_conv(), _get_personality(), _get_state(),
-            _get_interaction(), _get_observation(), _get_memory(), _get_tasks_summary()
+            _get_interaction(), _get_observation(), _get_memory(), _get_tasks_summary(),
+            _get_events(),
         )
 
         # ── 3. Синхронные вычисления (быстрые) ───────────────────────────────
@@ -184,7 +204,7 @@ class RayaAgent(BaseAgent):
         for block in filter(None, [
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
             opinion_ctx, interaction_ctx, observation_ctx, memory_ctx,
-            tasks_summary, tone_hint, length_hint,
+            tasks_summary, events_ctx, tone_hint, length_hint,
         ]):
             system += f"\n\n{block}"
 
