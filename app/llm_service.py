@@ -38,7 +38,7 @@ _SEARCH_NEVER: frozenset[str] = frozenset({
 _SEARCH_CLASSIFIER_PROMPT = """\
 Ты решаешь нужен ли поиск в интернете для ответа на сообщение пользователя.
 
-ПОИСК НУЖЕН если:
+{context_block}ПОИСК НУЖЕН если:
 - вопрос про текущие события, новости, запуски, миссии, релизы, анонсы
 - спрашивают про дату, статус, результат конкретного события
 - вопрос про актуальные данные: цены, курсы, погода, расписания
@@ -68,7 +68,9 @@ _SEARCH_CLASSIFIER_PROMPT = """\
 - "новости SpaceX" → {{"needs_search": true, "query": "SpaceX news 2026"}}
 - "что такое блокчейн" → {{"needs_search": false, "query": ""}}
 - "последние новости ChatGPT" → {{"needs_search": true, "query": "ChatGPT OpenAI новости 2026"}}
-- "как дела" → {{"needs_search": false, "query": ""}}\
+- "как дела" → {{"needs_search": false, "query": ""}}
+- "А температура?" (после вопроса про погоду в Самаре) → {{"needs_search": true, "query": "погода Самара завтра температура"}}
+- "а как насчёт акций Apple?" (после разговора про инвестиции) → {{"needs_search": true, "query": "акции Apple сейчас"}}\
 """
 
 _MEMORY_EXTRACTION_PROMPT = """\
@@ -89,6 +91,58 @@ class ChatResult:
     reminder: Optional[dict]  = field(default=None)
     agent_name: str           = "raya"
     metadata: dict            = field(default_factory=dict)
+
+
+import re as _re
+
+# ── Follow-up детектор и обогатитель запроса ─────────────────────────────────
+
+# Паттерны коротких уточнений — "А температура?", "и как насчёт...", "что с X?"
+_FOLLOWUP_RE = _re.compile(
+    r"^(а|и|но|ещё|кстати|а что|а как|что с|а если|и что|а там|а у|скажи|"
+    r"дай|покажи|уточни|расскажи подробнее|подробнее|а про|и про|"
+    r"а насчёт|как насчёт)\b",
+    _re.IGNORECASE | _re.UNICODE,
+)
+
+# Темы из которых извлекаем контекст для обогащения запроса
+_SEARCH_TOPIC_RE = _re.compile(
+    r"\b(погода|температура|курс|цена|стоимость|новости|событи|запуск|"
+    r"матч|игра|счёт|акци|биткоин|доллар|евро|прогноз|расписани|"
+    r"выход|релиз|анонс|обновлени)\b",
+    _re.IGNORECASE | _re.UNICODE,
+)
+
+
+def _is_followup(message: str) -> bool:
+    """Определяет является ли сообщение уточняющим follow-up."""
+    return bool(_FOLLOWUP_RE.match(message.strip()))
+
+
+def _enrich_followup_query(message: str, history: list | None) -> str:
+    """
+    Строит поисковый запрос для follow-up сообщения используя контекст истории.
+    Извлекает тему из последнего ответа Раи и добавляет к текущему вопросу.
+    Возвращает пустую строку если тема не найдена.
+    """
+    if not history:
+        return ""
+
+    # Ищем тему в последних сообщениях (предпочитаем ответ Раи)
+    for msg in reversed(history):
+        text = str(msg.content)[:300]
+        match = _SEARCH_TOPIC_RE.search(text)
+        if match:
+            # Берём фрагмент вокруг найденной темы (до 60 символов)
+            start = max(0, match.start() - 20)
+            snippet = text[start:start + 60].strip()
+            # Очищаем и склеиваем с текущим вопросом
+            topic = _re.sub(r"[^\w\s,]", " ", snippet).strip()
+            combined = f"{topic} {message}".strip()
+            return combined[:120]
+
+    return ""
+
 
 
 class LLMService:
@@ -137,12 +191,15 @@ class LLMService:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _decide_search(self, message: str) -> tuple[bool, str]:
+    async def _decide_search(
+        self, message: str, recent_history: list | None = None
+    ) -> tuple[bool, str]:
         """
         LLM-классификатор: нужен ли поиск и какой запрос отправить.
         Использует лёгкую router_model (T=0) — ~0.2–0.3с.
         Запускается параллельно с подготовкой контекста.
 
+        recent_history — последние 2 пары сообщений для контекста follow-up вопросов.
         Возвращает (needs_search, optimized_query).
         При любой ошибке — безопасный fallback (False, "").
         """
@@ -153,8 +210,32 @@ class LLMService:
         if message.strip() in _SEARCH_NEVER or message.startswith("/"):
             return False, ""
 
+        # Строим блок контекста — критично для follow-up вопросов ("А температура?")
+        context_block = ""
+        if recent_history:
+            # Берём последние 4 сообщения (2 пары) — этого достаточно для контекста
+            tail = recent_history[-4:]
+            lines = []
+            for msg in tail:
+                role = "Пользователь" if msg.__class__.__name__ == "HumanMessage" else "Рая"
+                lines.append(f"{role}: {str(msg.content)[:120]}")
+            if lines:
+                context_block = "Контекст последних сообщений:\n" + "\n".join(lines) + "\n\n"
+
+        # Быстрый детектор follow-up без LLM: "А температура?" + context → enriched query
+        # Работает для коротких уточнений (≤30 символов) — не тратим токены на классификацию
+        msg_stripped = message.strip()
+        if len(msg_stripped) <= 30 and context_block and _is_followup(msg_stripped):
+            enriched_query = _enrich_followup_query(msg_stripped, recent_history)
+            if enriched_query:
+                logger.debug("search: follow-up enrich '%s' → '%s'", msg_stripped, enriched_query)
+                return True, enriched_query
+
         try:
-            prompt = _SEARCH_CLASSIFIER_PROMPT.format(message=message[:400])
+            prompt = _SEARCH_CLASSIFIER_PROMPT.format(
+                context_block=context_block,
+                message=message[:400],
+            )
             response = await self._router_llm.ainvoke([HumanMessage(content=prompt)])
             raw = str(response.content).strip()
             # Убираем markdown если модель добавила
@@ -175,6 +256,20 @@ class LLMService:
             from app.agents.orchestrator import Orchestrator
             self._orchestrator = Orchestrator()
         return self._orchestrator
+
+    def invalidate_user_cache(self, user_id: int) -> None:
+        """
+        Сбрасывает все in-memory кэши для пользователя.
+        Вызывать при смене имени, настроек, или по явному запросу.
+        """
+        from app.database import invalidate_user_name_cache
+        invalidate_user_name_cache(user_id)
+        orch = self._orchestrator
+        if orch and "raya" in orch._agents:
+            raya = orch._agents["raya"]
+            if hasattr(raya, "invalidate_prompt_cache"):
+                raya.invalidate_prompt_cache(user_id)
+        logger.debug("♻️ User cache invalidated | user_id=%s", user_id)
 
     # ── Фоновые задачи ────────────────────────────────────────────────────────
 
@@ -225,9 +320,17 @@ class LLMService:
 
         # LLM-классификатор запускаем сразу как задачу —
         # пока он думает, мы синхронно готовим decisions_block и calibration_hint
+        # Загружаем последние сообщения для контекста follow-up вопросов.
+        # Используем небольшой лимит (4) — только для классификатора поиска.
+        # Основная история грузится позже в оркестраторе с полным лимитом.
+        from app.database import load_history as _load_hist
+        _recent = _load_hist(user_id, limit=4) if self._search else []
+
         search_task: asyncio.Task | None = None
         if self._search:
-            search_task = asyncio.create_task(self._decide_search(user_message))
+            search_task = asyncio.create_task(
+                self._decide_search(user_message, recent_history=_recent)
+            )
 
         # Блок принятых решений — для системного промпта агента
         decisions_block = self._consistency.get_decisions_block(user_id)

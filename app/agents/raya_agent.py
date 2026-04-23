@@ -20,6 +20,7 @@ from app.database import (
     format_context_for_prompt, format_interaction_memory,
     format_memory_for_prompt, get_recent_moods, save_mood, get_user_name,
     get_upcoming_events,
+    load_diary_entries,
 )
 from app.feature_flags import FEATURE_EMOTIONAL_SYSTEM, FEATURE_PERSONA_VERBOSE
 from app.personality_service import (
@@ -84,6 +85,23 @@ def _build_events_block(user_id: int) -> str:
         return ""
 
 
+def _build_diary_block(user_id: int) -> str:
+    """Последние 2 записи дневника — для эмоционального контекста Раи."""
+    try:
+        entries = load_diary_entries(user_id, limit=2)
+        if not entries:
+            return ""
+        lines = ["📓 Из дневника (последние записи):"]
+        for created_at, entry in entries:
+            import re as _re
+            clean = _re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*", "", entry)
+            date  = created_at[:10] if created_at else ""
+            lines.append(f"  [{date}] {clean[:200]}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 _SYSTEM_CACHE_TTL = 60  # секунд — как долго кэшируем статичную часть промпта
 
 
@@ -120,6 +138,11 @@ class RayaAgent(BaseAgent):
             oldest = min(self._prompt_cache, key=lambda k: self._prompt_cache[k][1])
             del self._prompt_cache[oldest]
         return prompt
+
+    def invalidate_prompt_cache(self, user_id: int) -> None:
+        """Сбрасывает кэш промпта для пользователя — вызывать при смене имени/настроек."""
+        self._prompt_cache.pop(user_id, None)
+        logger.debug("🗑️ Prompt cache сброшен | user_id=%s", user_id)
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
         now_utc  = datetime.utcnow()
@@ -166,6 +189,9 @@ class RayaAgent(BaseAgent):
         async def _get_events():
             return _build_events_block(ctx.user_id)
 
+        async def _get_diary():
+            return _build_diary_block(ctx.user_id)
+
         async def _get_tasks_summary():
             try:
                 from app.database import get_active_tasks
@@ -186,11 +212,11 @@ class RayaAgent(BaseAgent):
         # Запускаем всё параллельно
         (
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
-            interaction_ctx, observation_ctx, memory_ctx, tasks_summary, events_ctx
+            interaction_ctx, observation_ctx, memory_ctx, tasks_summary, events_ctx, diary_ctx
         ) = await asyncio.gather(
             _get_moods(), _get_conv(), _get_personality(), _get_state(),
             _get_interaction(), _get_observation(), _get_memory(), _get_tasks_summary(),
-            _get_events(),
+            _get_events(), _get_diary(),
         )
 
         # ── 3. Синхронные вычисления (быстрые) ───────────────────────────────
@@ -204,7 +230,7 @@ class RayaAgent(BaseAgent):
         for block in filter(None, [
             emot_ctx, conv_ctx, personality_ctx, state_ctx,
             opinion_ctx, interaction_ctx, observation_ctx, memory_ctx,
-            tasks_summary, events_ctx, tone_hint, length_hint,
+            tasks_summary, events_ctx, diary_ctx, tone_hint, length_hint,
         ]):
             system += f"\n\n{block}"
 

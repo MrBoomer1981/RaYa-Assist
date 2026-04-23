@@ -126,15 +126,18 @@ class MorningAgent(BaseAgent):
         news_task    = asyncio.create_task(_get_news())
 
         events_task  = asyncio.create_task(_get_events(ctx.user_id))
+        social_task  = asyncio.create_task(_get_social_trends())
 
-        weather, tasks_text, news_text, events_text = await asyncio.gather(
-            weather_task, tasks_task, news_task, events_task, return_exceptions=True
+        weather, tasks_text, news_text, events_text, social_text = await asyncio.gather(
+            weather_task, tasks_task, news_task, events_task, social_task,
+            return_exceptions=True,
         )
 
         if isinstance(weather, Exception):      weather      = ""
         if isinstance(tasks_text, Exception):   tasks_text   = ""
         if isinstance(news_text, Exception):    news_text    = ""
         if isinstance(events_text, Exception):  events_text  = ""
+        if isinstance(social_text, Exception):  social_text  = ""
 
         # Цитата и философия
         quote, author      = random.choice(_QUOTES)
@@ -162,6 +165,9 @@ class MorningAgent(BaseAgent):
 
         if news_text:
             lines.append(f"\n{news_text}")
+
+        if social_text:
+            lines.append(f"\n{social_text}")
 
         return AgentResult(
             success=True,
@@ -351,6 +357,19 @@ async def _get_news() -> str:
     except Exception as e:
         logger.warning("Новости: %s", e)
         return ""
+
+
+async def _get_social_trends() -> str:
+    """Горячее с Reddit и X для утреннего дайджеста."""
+    try:
+        from app.search_service import SocialSearchService
+        svc = SocialSearchService()
+        result = await svc.trending_digest(topics=["tech", "news"], reddit_count=3, x_count=2)
+        return result
+    except Exception as e:
+        logger.warning("Social trends: %s", e)
+        return ""
+
 
 def _day_ru(dt: datetime) -> str:
     days = ["Понедельник", "Вторник", "Среда", "Четверг",

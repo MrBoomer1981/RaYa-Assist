@@ -17,6 +17,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_SOCIAL_KW     = ("reddit", "реддит", "twitter", "твиттер", "x.com", "тренды",
+                  "что обсуждают", "горячие темы", "горячее на", "trending", "viral",
+                  "что сейчас обсуждают", "тренды в твиттере", "тренды на x")
 _RESEARCH_KW   = ("исследуй", "изучи", "найди информацию", "что известно", "обзор темы",
                   "расскажи подробно", "углублённо", "сравни подходы")
 _FACT_KW       = ("это правда", "правда ли", "верно ли", "проверь факт", "миф или",
@@ -27,6 +30,7 @@ _SCIENCE_KW    = ("научн", "исследовани", "докажи", "ис�
 
 def _detect_mode(message: str) -> str:
     m = message.lower()
+    if any(kw in m for kw in _SOCIAL_KW):  return "social"
     if any(kw in m for kw in _FACT_KW):    return "fact_check"
     if any(kw in m for kw in _SCIENCE_KW): return "science"
     return "research"
@@ -137,6 +141,10 @@ class ResearchAgent(BaseAgent):
         mode   = _detect_mode(ctx.message)
         system = _SYSTEMS[mode]
 
+        # ── Социальные сети: Reddit + X ──────────────────────────────────────
+        if mode == "social":
+            return await self._execute_social(ctx)
+
         # ── Поиск: максимально агрессивный для research агента ────────────────
         search_block = ""
         if ctx.search_results:
@@ -202,4 +210,57 @@ class ResearchAgent(BaseAgent):
             metadata={"mode": mode},
         )
 
+    async def _execute_social(self, ctx: AgentContext) -> AgentResult:
+        """Обработка запросов про Reddit и X/Twitter тренды."""
+        import re
+        from app.search_service import SocialSearchService
 
+        msg = ctx.message.lower()
+        svc = SocialSearchService()
+
+        is_reddit = any(kw in msg for kw in ("reddit", "реддит"))
+        is_x      = any(kw in msg for kw in ("twitter", "твиттер", "x.com", "икс"))
+
+        topic = "tech"
+        if any(kw in msg for kw in ("новости", "политика", "мир", "news")):
+            topic = "news"
+        elif any(kw in msg for kw in ("финанс", "крипто", "акции", "bitcoin")):
+            topic = "finance"
+        elif any(kw in msg for kw in ("наука", "space", "космос")):
+            topic = "science"
+
+        query_match = re.search(
+            r"(?:reddit|твиттер|twitter|x\.com|тренды|обсуждают)\s+(?:про|о|об|по)?\s*(.{3,40})",
+            ctx.message, re.IGNORECASE,
+        )
+        custom_query = query_match.group(1).strip() if query_match else ""
+
+        try:
+            if is_reddit and not is_x:
+                raw = await svc.search_reddit(custom_query or topic, max_results=5)
+            elif is_x and not is_reddit:
+                raw = await svc.search_x(custom_query or topic, max_results=5)
+            else:
+                raw = await svc.trending_digest(
+                    topics=[topic, "news"] if topic != "news" else ["tech", "news"]
+                )
+            if not raw:
+                raw = "Не удалось получить данные. Попробуй позже."
+        except Exception as e:
+            logger.warning("social search error: %s", e)
+            raw = "Ошибка при получении данных из социальных сетей."
+
+        messages = [
+            SystemMessage(content=(
+                "Ты RaYa. Пользователь спросил о трендах в социальных сетях. "
+                "Перескажи результаты кратко и живо — что горячо, что обсуждают. "
+                "Без URL. Обращайся по имени."
+            )),
+            HumanMessage(content=f"Запрос: {ctx.message}\n\nДанные:\n{raw[:3000]}"),
+        ]
+        resp = await self._llm.ainvoke(messages)
+        logger.info("📱 ResearchAgent: social | topic=%s | user_id=%s", topic, ctx.user_id)
+        return AgentResult(
+            success=True, content=str(resp.content),
+            agent_name=self.agent_name, needs_critic=False,
+        )

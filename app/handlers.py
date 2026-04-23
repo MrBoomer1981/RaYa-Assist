@@ -26,6 +26,7 @@ from app.database import (
     clear_history, clear_memory, load_memory,
     save_reminder, get_active_reminders, get_memory_by_category,
     upsert_user, get_user_name, DB_PATH,
+    get_active_tasks, get_recent_moods, get_top_interactions, load_diary_entries,
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
@@ -82,6 +83,7 @@ def _build_help_text() -> str:
         "/reminders — активные напоминания",
         "/memory    — что знаю о тебе",
         "/forget    — удалить память",
+        "/stats     — личная статистика за неделю",
         "/clear     — очистить историю разговора",
         "/help      — это сообщение",
     ]
@@ -143,6 +145,95 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
 
 
 # ── Регистрация хендлеров ─────────────────────────────────────────────────────
+
+def _build_stats(user_id: int) -> str:
+    """Собирает статистику пользователя за последние 7 дней."""
+    from datetime import datetime, timedelta
+    import sqlite3
+    from app.database import _conn
+
+    now   = datetime.utcnow()
+    week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+
+    lines = ["📊 **Твоя статистика за неделю**\n"]
+
+    # Сообщений за 7 дней
+    try:
+        with _conn() as con:
+            total = con.execute(
+                "SELECT COUNT(*) FROM history WHERE user_id = ? AND created_at >= ?",
+                (user_id, week_ago)
+            ).fetchone()[0]
+        lines.append(f"💬 Сообщений: **{total}**")
+    except Exception:
+        pass
+
+    # Задачи
+    try:
+        with _conn() as con:
+            done_week = con.execute(
+                "SELECT COUNT(*) FROM tasks WHERE user_id = ? AND done = 1 AND created_at >= ?",
+                (user_id, week_ago)
+            ).fetchone()[0]
+        active = len(get_active_tasks(user_id))
+        lines.append(f"✅ Задач закрыто: **{done_week}** | В работе: **{active}**")
+    except Exception:
+        pass
+
+    # Дневниковые записи
+    try:
+        with _conn() as con:
+            diary_count = con.execute(
+                "SELECT COUNT(*) FROM diary WHERE user_id = ? AND created_at >= ?",
+                (user_id, week_ago)
+            ).fetchone()[0]
+        if diary_count:
+            lines.append(f"📓 Записей в дневнике: **{diary_count}**")
+    except Exception:
+        pass
+
+    # Настроение — самое частое за неделю
+    try:
+        moods = get_recent_moods(user_id, limit=20)
+        week_moods = [m[0] for m in moods if m[2] >= week_ago]
+        if week_moods:
+            top_mood = max(set(week_moods), key=week_moods.count)
+            _MOOD_EMOJI = {
+                "радость": "😊", "вдохновение": "🔥", "спокойствие": "😌",
+                "гордость": "💪", "грусть": "😔", "усталость": "😴",
+                "тревога": "😰", "злость": "😤", "скука": "😑", "нейтрально": "😐",
+            }
+            emoji = _MOOD_EMOJI.get(top_mood, "🙂")
+            lines.append(f"🧠 Преобладающее настроение: {emoji} **{top_mood}**")
+    except Exception:
+        pass
+
+    # Топ темы разговора
+    try:
+        topics = get_top_interactions(user_id, limit=3)
+        if topics:
+            topic_str = ", ".join(t[0] for t in topics)
+            lines.append(f"🗣️ Частые темы: {topic_str}")
+    except Exception:
+        pass
+
+    # События на этой неделе
+    try:
+        with _conn() as con:
+            events_count = con.execute(
+                "SELECT COUNT(*) FROM events WHERE user_id = ? AND date >= date('now') AND date <= date('now', '+7 days')",
+                (user_id,)
+            ).fetchone()[0]
+        if events_count:
+            lines.append(f"📅 Событий на неделе: **{events_count}**")
+    except Exception:
+        pass
+
+    if len(lines) == 1:
+        lines.append("_Пока нет данных — пообщайся со мной несколько дней_")
+
+    return "\n".join(lines)
+
 
 def register(dp: Dispatcher, bot: Bot, llm: LLMService,
              voice: VoiceService, vision: VisionService) -> None:
@@ -209,6 +300,15 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         await message.answer("\n".join(lines))
 
     # ── Медиа ─────────────────────────────────────────────────────────────────
+
+    @dp.message(Command("stats"))
+    async def cmd_stats(message: Message) -> None:
+        if not message.from_user:
+            return
+        uid = message.from_user.id
+        upsert_user(uid, message.from_user.first_name or "",
+                    message.from_user.last_name or "", message.from_user.username or "")
+        await message.answer(_build_stats(uid), parse_mode="Markdown")
 
     @dp.message(Command("settings"))
     async def cmd_settings(message: Message) -> None:
@@ -377,6 +477,12 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             return
         u = message.from_user
         upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+        # Сбрасываем prompt cache если имя изменилось в Telegram
+        try:
+            from app.database import invalidate_user_name_cache
+            invalidate_user_name_cache(u.id)
+        except Exception:
+            pass
 
         # Rate limiting — защита от спама
         if _is_rate_limited(u.id):

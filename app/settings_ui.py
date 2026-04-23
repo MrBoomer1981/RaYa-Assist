@@ -31,6 +31,15 @@ from app.user_settings import (
 logger = logging.getLogger(__name__)
 
 
+def _invalidate_cache(user_id: int) -> None:
+    """Сбрасывает prompt cache Раи при изменении настроек пользователя."""
+    try:
+        from app.core import llm_service
+        llm_service.invalidate_user_cache(user_id)
+    except Exception:
+        pass  # не критично — TTL всё равно сбросит за 60с
+
+
 # ── Вспомогательные ───────────────────────────────────────────────────────────
 
 def _meta(key: str) -> dict[str, Any]:
@@ -245,6 +254,7 @@ async def handle_settings_callback(
 
                 update_setting(user_id, key, value)
                 logger.info("settings: user_id=%s %s=%s", user_id, key, value)
+                _invalidate_cache(user_id)
 
                 # Обновляем меню настройки
                 await callback_query.message.edit_text(
@@ -261,6 +271,7 @@ async def handle_settings_callback(
                 cur   = getattr(s, key)
                 new_v = max(meta["min"], min(meta["max"], cur + delta))
                 update_setting(user_id, key, new_v)
+                _invalidate_cache(user_id)
 
                 await callback_query.message.edit_text(
                     text_setting(user_id, key),

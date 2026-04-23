@@ -33,7 +33,10 @@ _EXTRACT_EVERY_N = 3
 _EXTRACTION_PROMPT = """\
 Проанализируй сообщение пользователя и извлеки персональную информацию о нём.
 
-Сообщение: {message}
+Текущая память о пользователе (уже известное):
+{existing_memory}
+
+Новое сообщение: {message}
 
 Верни ТОЛЬКО JSON объект со следующими полями (только те что нашёл, пустые — пропусти):
 {{
@@ -62,6 +65,8 @@ _EXTRACTION_PROMPT = """\
 - Значения — краткие, информативные
 - Только реальные факты из сообщения, не придумывай
 - Если ничего не нашёл — верни {{}}
+- ОБНОВЛЕНИЕ: если новое противоречит памяти ("переехал", "теперь", "сменил", "больше не") — используй НОВОЕ значение с тем же ключом
+- УДАЛЕНИЕ: если факт устарел ("закончил", "отказался от", "больше не актуально") — верни значение "[удалить]"
 - Только JSON, без пояснений"""
 
 
@@ -81,13 +86,26 @@ class MemoryService:
     async def extract_and_save(self, user_id: int, message: str) -> None:
         """
         Анализирует сообщение и сохраняет найденные факты.
+        Передаёт текущую память в промпт — LLM сам разрешает конфликты и
+        помечает устаревшие записи маркером [удалить].
         Вызывается фоново — не блокирует ответ.
         """
         if len(message.strip()) < 10:
             return
 
         try:
-            prompt   = _EXTRACTION_PROMPT.format(message=message[:500])
+            # Передаём текущую память чтобы LLM мог разрешить конфликты
+            existing = get_structured_memory(user_id)
+            existing_lines = []
+            for cat, entries in existing.items():
+                for k, v in entries.items():
+                    existing_lines.append(f"  [{cat}] {k}: {v}")
+            existing_str = "\n".join(existing_lines) if existing_lines else "пусто"
+
+            prompt   = _EXTRACTION_PROMPT.format(
+                message=message[:500],
+                existing_memory=existing_str[:800],  # не перегружаем контекст
+            )
             response = await self._llm.ainvoke([HumanMessage(content=prompt)])
             raw = strip_json(str(response.content))
 
@@ -98,17 +116,25 @@ class MemoryService:
             if not isinstance(data, dict):
                 return
 
-            saved = 0
+            saved = deleted = 0
             for category, entries in data.items():
                 if not isinstance(entries, dict):
                     continue
                 for key, value in entries.items():
-                    if key and value:
-                        upsert_memory(user_id, category, str(key), str(value))
+                    if not key:
+                        continue
+                    val_str = str(value).strip()
+                    if val_str == "[удалить]":
+                        # LLM пометил факт устаревшим — удаляем
+                        from app.database import delete_memory_entry
+                        delete_memory_entry(user_id, category, str(key))
+                        deleted += 1
+                    elif val_str:
+                        upsert_memory(user_id, category, str(key), val_str)
                         saved += 1
 
-            if saved:
-                logger.info("🧠 Память: сохранено %d фактов | user_id=%s", saved, user_id)
+            if saved or deleted:
+                logger.info("🧠 Память: +%d / -%d записей | user_id=%s", saved, deleted, user_id)
 
         except (json.JSONDecodeError, ValueError):
             logger.debug("memory: ничего не извлечено из сообщения")
@@ -218,7 +244,7 @@ _ANALYSIS_PROMPT = """\
 Правила:
 - topic: коротко, конкретно (например: "разработка Telegram бота", "выбор БД")
 - user_goal: цель именно в этом разговоре, не глобальная
-- open_threads: ТОЛЬКО темы где пользователь явно ждёт продолжения или задал вопрос без ответа. Если тема обсуждалась и завершилась — НЕ включай её. Если сомневаешься — пустой список. Максимум 2, по умолчанию пустой список []
+- open_threads: только реально незавершённые темы, максимум 3, пустой список если всё закрыто
 - last_summary: нейтрально, от третьего лица
 - Если диалог только начался — верни пустые строки и пустой список
 - Только JSON"""

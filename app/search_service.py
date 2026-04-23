@@ -926,3 +926,210 @@ class SearchService:
                 chunk.append(f"Источник: {url}")
             parts.append("\n".join(chunk))
         return "\n\n".join(parts)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SocialSearchService — Reddit и X (Twitter) через Tavily + DDG fallback
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Топовые сабреддиты по категориям для поиска трендов
+_REDDIT_SUBS = {
+    "tech":    "technology OR MachineLearning OR programming OR singularity",
+    "news":    "worldnews OR news OR geopolitics",
+    "science": "science OR space OR Futurology",
+    "finance": "investing OR CryptoCurrency OR Economics OR stocks",
+    "general": "popular OR all",
+}
+
+# Категории тем X/Twitter для поиска
+_X_TOPICS = {
+    "tech":    "AI OR ChatGPT OR tech OR programming",
+    "news":    "breaking OR news OR world",
+    "finance": "crypto OR stocks OR bitcoin OR economy",
+}
+
+
+class SocialSearchService:
+    """
+    Поиск горячих обсуждений на Reddit и X (Twitter).
+
+    Стратегия:
+    - Tavily с site:reddit.com / site:x.com (краулит напрямую, обходит блокировки)
+    - DDG с site: фильтром как fallback
+    - Результаты дедублицируются и сортируются по свежести
+    """
+
+    def __init__(self) -> None:
+        self._search = SearchService()
+
+    async def reddit_hot(
+        self,
+        topic: str = "tech",
+        query: str = "",
+        max_results: int = 5,
+    ) -> list[dict]:
+        """
+        Горячие посты Reddit по теме или произвольному запросу.
+        Возвращает список dict: {title, summary, url, source='reddit'}.
+        """
+        subreddits = _REDDIT_SUBS.get(topic, _REDDIT_SUBS["general"])
+
+        if query:
+            search_q = f"site:reddit.com {query}"
+        else:
+            year = datetime.utcnow().year
+            search_q = f"site:reddit.com ({subreddits}) hot discussion {year}"
+
+        raw = await self._search.news_search(search_q, max_results=max_results)
+        return _parse_social_results(raw, source="reddit")
+
+    async def x_trending(
+        self,
+        topic: str = "tech",
+        query: str = "",
+        max_results: int = 5,
+    ) -> list[dict]:
+        """
+        Трендовые посты X (Twitter) по теме или запросу.
+        Возвращает список dict: {title, summary, url, source='x'}.
+        """
+        x_filter = _X_TOPICS.get(topic, query or "trending")
+
+        if query:
+            search_q = f"site:x.com OR site:twitter.com {query}"
+        else:
+            year = datetime.utcnow().year
+            search_q = f"(site:x.com OR site:twitter.com) {x_filter} {year}"
+
+        raw = await self._search.news_search(search_q, max_results=max_results)
+        return _parse_social_results(raw, source="x")
+
+    async def trending_digest(
+        self,
+        topics: list[str] | None = None,
+        reddit_count: int = 3,
+        x_count: int = 2,
+    ) -> str:
+        """
+        Полный дайджест трендов: Reddit + X по заданным темам.
+        Используется в morning_agent и по запросу пользователя.
+        """
+        if topics is None:
+            topics = ["tech", "news"]
+
+        tasks = []
+        labels = []
+        for t in topics:
+            tasks.append(self.reddit_hot(topic=t, max_results=reddit_count))
+            labels.append(("reddit", t))
+            tasks.append(self.x_trending(topic=t, max_results=x_count))
+            labels.append(("x", t))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        reddit_items: list[dict] = []
+        x_items: list[dict] = []
+
+        for (source, _topic), result in zip(labels, results):
+            if isinstance(result, Exception) or not result:
+                continue
+            if source == "reddit":
+                reddit_items.extend(result)
+            else:
+                x_items.extend(result)
+
+        # Дедупликация по URL
+        seen: set[str] = set()
+        reddit_items = _dedup(reddit_items, seen)
+        x_items      = _dedup(x_items,      seen)
+
+        parts = []
+        if reddit_items:
+            lines = ["🔴 **Горячее на Reddit:**"]
+            for item in reddit_items[:5]:
+                lines.append(f"• {item['title']}")
+                if item.get("summary"):
+                    lines.append(f"  _{item['summary'][:120]}_")
+            parts.append("\n".join(lines))
+
+        if x_items:
+            lines = ["🐦 **Трендовое на X:**"]
+            for item in x_items[:4]:
+                lines.append(f"• {item['title']}")
+                if item.get("summary"):
+                    lines.append(f"  _{item['summary'][:100]}_")
+            parts.append("\n".join(lines))
+
+        if not parts:
+            return ""
+
+        header = f"[Данные получены: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC]\n"
+        return header + "\n\n".join(parts)
+
+    async def search_reddit(self, query: str, max_results: int = 5) -> str:
+        """Произвольный поиск по Reddit — для прямых запросов пользователя."""
+        items = await self.reddit_hot(query=query, max_results=max_results)
+        if not items:
+            return "Ничего не нашла на Reddit по этому запросу."
+        lines = [f"🔴 **Reddit — '{query}':**\n"]
+        for item in items:
+            lines.append(f"• **{item['title']}**")
+            if item.get("summary"):
+                lines.append(f"  {item['summary'][:150]}")
+            if item.get("url"):
+                lines.append(f"  {item['url']}")
+            lines.append("")
+        return "\n".join(lines)
+
+    async def search_x(self, query: str, max_results: int = 5) -> str:
+        """Произвольный поиск по X/Twitter — для прямых запросов пользователя."""
+        items = await self.x_trending(query=query, max_results=max_results)
+        if not items:
+            return "Ничего не нашла на X по этому запросу."
+        lines = [f"🐦 **X — '{query}':**\n"]
+        for item in items:
+            lines.append(f"• **{item['title']}**")
+            if item.get("summary"):
+                lines.append(f"  {item['summary'][:150]}")
+            lines.append("")
+        return "\n".join(lines)
+
+
+# ── Вспомогательные функции ───────────────────────────────────────────────────
+
+def _parse_social_results(raw_text: str, source: str) -> list[dict]:
+    """Парсит текстовый вывод SearchService в список структур."""
+    if not raw_text:
+        return []
+    items = []
+    # Разбиваем по блокам (разделены пустой строкой)
+    blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
+    for block in blocks:
+        lines = block.splitlines()
+        if not lines:
+            continue
+        title   = lines[0].strip("[]").strip()
+        summary = " ".join(lines[1:]).strip() if len(lines) > 1 else ""
+        # Убираем метку источника если есть
+        url = ""
+        for line in lines:
+            if line.startswith("Источник:"):
+                url = line.replace("Источник:", "").strip()
+                summary = summary.replace(line, "").strip()
+        # Пропускаем служебные строки (timestamp freshness header)
+        if title.startswith("[Данные получены"):
+            continue
+        if len(title) < 5:
+            continue
+        items.append({"title": title[:200], "summary": summary[:300], "url": url, "source": source})
+    return items
+
+
+def _dedup(items: list[dict], seen: set) -> list[dict]:
+    result = []
+    for item in items:
+        key = item.get("url") or item.get("title", "")[:60]
+        if key and key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result

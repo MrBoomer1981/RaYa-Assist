@@ -51,6 +51,9 @@ def _create_agent(name: str):
             case "explain":
                 from app.agents.explain_agent import ExplainAgent
                 return ExplainAgent()
+            case "diary":
+                from app.agents.diary_agent import DiaryAgent
+                return DiaryAgent()
             case "calendar":
                 from app.agents.calendar_agent import CalendarAgent
                 return CalendarAgent()
