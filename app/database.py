@@ -226,6 +226,16 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_interaction_user
                 ON interaction_memory(user_id, frequency DESC);
+            CREATE TABLE IF NOT EXISTS knowledge_cache (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                query      TEXT    NOT NULL,
+                mode       TEXT    NOT NULL DEFAULT 'general',
+                result     TEXT    NOT NULL,
+                expires_at REAL    NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_kc_query_mode
+                ON knowledge_cache(query, mode);
+
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER NOT NULL,
@@ -888,3 +898,42 @@ def save_memory(user_id: int, facts: list[str]) -> None:
             "INSERT INTO user_memory (user_id, fact) VALUES (?, ?)",
             [(user_id, f) for f in facts if f],
         )
+
+
+# ── Knowledge Cache — персистентный кэш результатов поиска ───────────────────
+
+def kc_get(query: str, mode: str = "general") -> str | None:
+    """Возвращает кэшированный результат поиска если не истёк TTL."""
+    import time
+    with _conn() as con:
+        row = con.execute(
+            "SELECT result, expires_at FROM knowledge_cache WHERE query=? AND mode=?",
+            (query[:500], mode),
+        ).fetchone()
+    if row and time.time() < row[1]:
+        return row[0]
+    return None
+
+
+def kc_set(query: str, result: str, mode: str = "general", ttl_hours: float = 24.0) -> None:
+    """Сохраняет результат поиска с TTL."""
+    import time
+    expires_at = time.time() + ttl_hours * 3600
+    with _conn() as con:
+        con.execute(
+            """INSERT INTO knowledge_cache (query, mode, result, expires_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(query, mode) DO UPDATE SET
+                 result=excluded.result, expires_at=excluded.expires_at""",
+            (query[:500], mode, result[:50000], expires_at),
+        )
+
+
+def kc_cleanup() -> int:
+    """Удаляет истёкшие записи knowledge cache. Возвращает кол-во удалённых."""
+    import time
+    with _conn() as con:
+        cur = con.execute(
+            "DELETE FROM knowledge_cache WHERE expires_at < ?", (time.time(),)
+        )
+        return cur.rowcount
