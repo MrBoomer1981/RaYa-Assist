@@ -43,7 +43,7 @@ _SEARCH_CLASSIFIER_PROMPT = """\
 - спрашивают про дату, статус, результат конкретного события
 - вопрос про актуальные данные: цены, курсы, погода, расписания
 - любое "когда", "когда запуск", "что произошло", "последние новости о X"
-- ПОГОДА и прогноз — ВСЕГДА требует поиска
+- ПОГОДА и прогноз — ВСЕГДА поиск, даже если кажется что знаешь ответ
 - "найди", "поищи", "загугли" — ВСЕГДА поиск
 - упоминаются конкретные программы, проекты, миссии (Артемида, SpaceX, ChatGPT, etc.)
 - вопрос про человека, компанию, продукт в настоящем времени
@@ -71,8 +71,6 @@ _SEARCH_CLASSIFIER_PROMPT = """\
 - "что такое блокчейн" → {{"needs_search": false, "query": ""}}
 - "последние новости ChatGPT" → {{"needs_search": true, "query": "ChatGPT OpenAI новости 2026"}}
 - "как дела" → {{"needs_search": false, "query": ""}}\
-- "погода на завтра" → {{"needs_search": true, "query": "погода завтра прогноз"}}
-- "скажи погоду" → {{"needs_search": true, "query": "погода сегодня"}}\
 """
 
 _MEMORY_EXTRACTION_PROMPT = """\
@@ -176,7 +174,6 @@ class LLMService:
                 r"\b(погода|температура|прогноз|курс|найди|поищи|загугли)\b",
                 message, _fre.IGNORECASE
             ):
-                logger.debug("search: forced on fallback for: %s", message[:40])
                 return True, message
             return False, ""
 
@@ -241,13 +238,17 @@ class LLMService:
                     import re as _sqre
                     _IS_NEWS = _sqre.search(
                         r"\b(погода|температура|прогноз|новости|курс|цена|матч|запуск)\b",
-                        optimized_query, _sqre.IGNORECASE,
-                    )
-                    raw = await (
-                        self._search.smart_search(optimized_query, mode="news", max_results=5)
-                        if _IS_NEWS else
-                        self._search.search(optimized_query)
-                    )
+                        optimized_query, _sqre.IGNORECASE)
+                    try:
+                        if _IS_NEWS:
+                            raw = await self._search.smart_search(
+                                optimized_query, mode="news", max_results=5)
+                        else:
+                            raw = await self._search.search(optimized_query)
+                    except Exception:
+                        # smart_search упал (напр. kc_set) — fallback на базовый
+                        logger.warning("smart_search failed, fallback to search()")
+                        raw = await self._search.search(optimized_query)
                     if raw:
                         search_results = raw
                         logger.info(

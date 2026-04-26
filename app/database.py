@@ -227,14 +227,18 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_interaction_user
                 ON interaction_memory(user_id, frequency DESC);
             CREATE TABLE IF NOT EXISTS knowledge_cache (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                query      TEXT    NOT NULL,
-                mode       TEXT    NOT NULL DEFAULT 'general',
-                result     TEXT    NOT NULL,
-                expires_at REAL    NOT NULL
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_hash  TEXT    NOT NULL,
+                query       TEXT    NOT NULL,
+                mode        TEXT    NOT NULL DEFAULT 'general',
+                result      TEXT    NOT NULL,
+                expires_at  REAL    NOT NULL
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_kc_query_mode
-                ON knowledge_cache(query, mode);
+                ON knowledge_cache(query_hash, mode);
+
+            -- Миграция: добавляем колонку query если её нет (для старых БД)
+            -- SQLite не поддерживает IF NOT EXISTS для колонок — используем try/except в Python
 
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -258,6 +262,14 @@ def init_db() -> None:
                 updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
+    # Миграция: добавляем query колонку в knowledge_cache если её нет
+    try:
+        with _conn() as con:
+            con.execute("ALTER TABLE knowledge_cache ADD COLUMN query TEXT NOT NULL DEFAULT ''")
+        logger.debug("knowledge_cache: колонка query добавлена (миграция)")
+    except Exception:
+        pass  # Колонка уже существует
+
     logger.info("✅ База данных готова: %s", DB_PATH)
     _migrate()
     # Таблица пользовательских настроек
@@ -902,13 +914,20 @@ def save_memory(user_id: int, facts: list[str]) -> None:
 
 # ── Knowledge Cache — персистентный кэш результатов поиска ───────────────────
 
+def _kc_hash(query: str) -> str:
+    """MD5-хэш запроса для индексации."""
+    import hashlib
+    return hashlib.md5(query.encode()).hexdigest()
+
+
 def kc_get(query: str, mode: str = "general") -> str | None:
     """Возвращает кэшированный результат поиска если не истёк TTL."""
     import time
+    qhash = _kc_hash(query)
     with _conn() as con:
         row = con.execute(
-            "SELECT result, expires_at FROM knowledge_cache WHERE query=? AND mode=?",
-            (query[:500], mode),
+            "SELECT result, expires_at FROM knowledge_cache WHERE query_hash=? AND mode=?",
+            (qhash, mode),
         ).fetchone()
     if row and time.time() < row[1]:
         return row[0]
@@ -918,14 +937,16 @@ def kc_get(query: str, mode: str = "general") -> str | None:
 def kc_set(query: str, result: str, mode: str = "general", ttl_hours: float = 24.0) -> None:
     """Сохраняет результат поиска с TTL."""
     import time
+    qhash      = _kc_hash(query)
     expires_at = time.time() + ttl_hours * 3600
     with _conn() as con:
         con.execute(
-            """INSERT INTO knowledge_cache (query, mode, result, expires_at)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(query, mode) DO UPDATE SET
-                 result=excluded.result, expires_at=excluded.expires_at""",
-            (query[:500], mode, result[:50000], expires_at),
+            """INSERT INTO knowledge_cache (query_hash, query, mode, result, expires_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(query_hash, mode) DO UPDATE SET
+                 query=excluded.query, result=excluded.result,
+                 expires_at=excluded.expires_at""",
+            (qhash, query[:500], mode, result[:50000], expires_at),
         )
 
 
