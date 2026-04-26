@@ -9,13 +9,11 @@ calendar_service.py — сервис событий для RaYa.
   - Весь день 🟢 День рождения Мамы
 """
 import logging
-import re
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 from app.database import (
-    delete_event, get_events_for_date, get_events_for_month,
-    get_upcoming_events, save_event, update_event,
+    get_events_for_date, get_events_for_month,
+    get_upcoming_events, save_event,
 )
 
 logger = logging.getLogger(__name__)

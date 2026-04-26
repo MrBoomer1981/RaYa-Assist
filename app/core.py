@@ -8,6 +8,7 @@ main.py просто вызывает Core().start() — больше ничег
 """
 import asyncio
 import logging
+from __future__ import annotations
 from dataclasses import dataclass
 
 from aiogram import Bot, Dispatcher

@@ -11,7 +11,6 @@ code_agent.py — агент для работы с кодом.
 - Писать тесты
 """
 import logging
-import re
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 

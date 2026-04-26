@@ -25,7 +25,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.user_settings import (
     SECTIONS, SETTINGS_META, UserSettings,
-    get_settings, save_settings, update_setting, reset_settings,
+    get_settings, update_setting, reset_settings,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,7 +179,6 @@ def kb_setting(user_id: int, key: str) -> InlineKeyboardMarkup:
 # ── Тексты ────────────────────────────────────────────────────────────────────
 
 def text_main(user_id: int) -> str:
-    s = get_settings(user_id)
     return (
         "⚙️ **Настройки RaYa**\n\n"
         "Выбери раздел для изменения:\n"

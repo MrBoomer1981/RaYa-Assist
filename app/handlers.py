@@ -12,10 +12,8 @@ handlers.py — все Telegram хендлеры и команды.
 import asyncio
 import logging
 import tempfile
-import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, Message, CallbackQuery
@@ -25,8 +23,7 @@ from app.config import settings
 from app.database import (
     clear_history, clear_memory, load_memory,
     save_reminder, get_active_reminders, get_memory_by_category,
-    upsert_user, get_user_name, DB_PATH,
-    get_active_tasks, get_recent_moods, get_top_interactions, load_diary_entries,
+    upsert_user, get_user_name,
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
@@ -147,87 +144,74 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
 # ── Регистрация хендлеров ─────────────────────────────────────────────────────
 
 def _build_stats(user_id: int) -> str:
-    """Собирает статистику пользователя за последние 7 дней."""
+    """Собирает статистику за неделю — один SQL-запрос вместо пяти соединений."""
     from datetime import datetime, timedelta
-    import sqlite3
     from app.database import _conn
 
-    now   = datetime.utcnow()
+    now      = datetime.utcnow()
     week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    lines    = ["📊 **Твоя статистика за неделю**\n"]
 
-    lines = ["📊 **Твоя статистика за неделю**\n"]
+    _MOOD_EMOJI = {
+        "радость": "😊", "вдохновение": "🔥", "спокойствие": "😌",
+        "гордость": "💪", "грусть": "😔", "усталость": "😴",
+        "тревога": "😰", "злость": "😤", "скука": "😑", "нейтрально": "😐",
+    }
 
-    # Сообщений за 7 дней
     try:
         with _conn() as con:
-            total = con.execute(
-                "SELECT COUNT(*) FROM history WHERE user_id = ? AND created_at >= ?",
-                (user_id, week_ago)
+            msg_count = con.execute(
+                "SELECT COUNT(*) FROM history WHERE user_id=? AND created_at>=?",
+                (user_id, week_ago),
             ).fetchone()[0]
-        lines.append(f"💬 Сообщений: **{total}**")
-    except Exception:
-        pass
 
-    # Задачи
-    try:
-        with _conn() as con:
             done_week = con.execute(
-                "SELECT COUNT(*) FROM tasks WHERE user_id = ? AND done = 1 AND created_at >= ?",
-                (user_id, week_ago)
+                "SELECT COUNT(*) FROM tasks WHERE user_id=? AND done=1 AND created_at>=?",
+                (user_id, week_ago),
             ).fetchone()[0]
-        active = len(get_active_tasks(user_id))
-        lines.append(f"✅ Задач закрыто: **{done_week}** | В работе: **{active}**")
-    except Exception:
-        pass
 
-    # Дневниковые записи
-    try:
-        with _conn() as con:
+            active_tasks = con.execute(
+                "SELECT COUNT(*) FROM tasks WHERE user_id=? AND done=0",
+                (user_id,),
+            ).fetchone()[0]
+
             diary_count = con.execute(
-                "SELECT COUNT(*) FROM diary WHERE user_id = ? AND created_at >= ?",
-                (user_id, week_ago)
+                "SELECT COUNT(*) FROM diary WHERE user_id=? AND created_at>=?",
+                (user_id, week_ago),
             ).fetchone()[0]
-        if diary_count:
-            lines.append(f"📓 Записей в дневнике: **{diary_count}**")
-    except Exception:
-        pass
 
-    # Настроение — самое частое за неделю
-    try:
-        moods = get_recent_moods(user_id, limit=20)
-        week_moods = [m[0] for m in moods if m[2] >= week_ago]
-        if week_moods:
-            top_mood = max(set(week_moods), key=week_moods.count)
-            _MOOD_EMOJI = {
-                "радость": "😊", "вдохновение": "🔥", "спокойствие": "😌",
-                "гордость": "💪", "грусть": "😔", "усталость": "😴",
-                "тревога": "😰", "злость": "😤", "скука": "😑", "нейтрально": "😐",
-            }
-            emoji = _MOOD_EMOJI.get(top_mood, "🙂")
-            lines.append(f"🧠 Преобладающее настроение: {emoji} **{top_mood}**")
-    except Exception:
-        pass
+            mood_rows = con.execute(
+                "SELECT mood FROM mood_log WHERE user_id=? AND created_at>=? ORDER BY created_at DESC",
+                (user_id, week_ago),
+            ).fetchall()
 
-    # Топ темы разговора
-    try:
-        topics = get_top_interactions(user_id, limit=3)
-        if topics:
-            topic_str = ", ".join(t[0] for t in topics)
-            lines.append(f"🗣️ Частые темы: {topic_str}")
-    except Exception:
-        pass
-
-    # События на этой неделе
-    try:
-        with _conn() as con:
             events_count = con.execute(
-                "SELECT COUNT(*) FROM events WHERE user_id = ? AND date >= date('now') AND date <= date('now', '+7 days')",
-                (user_id,)
+                "SELECT COUNT(*) FROM events WHERE user_id=? AND date>=date('now') AND date<=date('now','+7 days')",
+                (user_id,),
             ).fetchone()[0]
-        if events_count:
-            lines.append(f"📅 Событий на неделе: **{events_count}**")
+
+            topic_rows = con.execute(
+                "SELECT topic FROM interaction_memory WHERE user_id=? ORDER BY frequency DESC, last_seen DESC LIMIT 3",
+                (user_id,),
+            ).fetchall()
+
     except Exception:
-        pass
+        return "📊 Не удалось получить статистику."
+
+    if msg_count:
+        lines.append(f"💬 Сообщений: **{msg_count}**")
+    if done_week or active_tasks:
+        lines.append(f"✅ Задач закрыто: **{done_week}** | В работе: **{active_tasks}**")
+    if diary_count:
+        lines.append(f"📓 Записей в дневнике: **{diary_count}**")
+    if mood_rows:
+        moods     = [r[0] for r in mood_rows]
+        top_mood  = max(set(moods), key=moods.count)
+        lines.append(f"🧠 Настроение: {_MOOD_EMOJI.get(top_mood, '🙂')} **{top_mood}**")
+    if topic_rows:
+        lines.append(f"🗣️ Частые темы: {', '.join(r[0] for r in topic_rows)}")
+    if events_count:
+        lines.append(f"📅 Событий на неделе: **{events_count}**")
 
     if len(lines) == 1:
         lines.append("_Пока нет данных — пообщайся со мной несколько дней_")

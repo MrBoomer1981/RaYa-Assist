@@ -267,7 +267,7 @@ async def _gen(llm, prompt: str) -> str | None:
         system = settings.system_prompt + (
             "\n\nКРИТИЧНО: Это проактивное сообщение — ты пишешь первой. "
             "Максимум 1-2 предложения. Никаких списков. Живо и по-человечески. "
-            f"Обращайся к пользователю по имени."
+            "Обращайся к пользователю по имени."
         )
         response = await llm.ainvoke([
             SystemMessage(content=system),
@@ -681,18 +681,3 @@ async def generate_initiative_message(user_id: int, llm) -> str:
         logger.exception("generate_initiative_message: ошибка")
         return f"{get_user_name(user_id)}, давно не слышала тебя. Всё хорошо?"
 
-
-# ══════════════════════════════════════════════════════════
-# SCHEDULER SERVICE
-# ══════════════════════════════════════════════════════════
-
-from datetime import datetime
-
-
-from app.database import get_due_reminders, mark_reminder_done, reschedule_reminder
-
-logger = logging.getLogger(__name__)
-
-_CHECK_INTERVAL = 60
-
-from app.utils import RECUR_RU as _RECURRENCE_RU

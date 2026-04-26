@@ -8,7 +8,6 @@ import os
 from typing import Optional
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 

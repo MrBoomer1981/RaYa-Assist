@@ -320,7 +320,6 @@ personality_service.py — единый сервис осознанности л
 Все механизмы работают фоново, не блокируя ответ.
 Результат добавляется в системный промпт raya_agent.
 """
-from collections import Counter
 
 logger = logging.getLogger(__name__)
 

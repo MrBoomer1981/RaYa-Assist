@@ -10,6 +10,7 @@ explain_agent.py — объяснения, структурирование, п�
   plan      — план с дедлайнами, рисками, метриками
 """
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
