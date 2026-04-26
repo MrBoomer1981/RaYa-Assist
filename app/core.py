@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 core.py — инициализация и владение всеми сервисами приложения.
 
@@ -8,7 +9,6 @@ main.py просто вызывает Core().start() — больше ничег
 """
 import asyncio
 import logging
-from __future__ import annotations
 from dataclasses import dataclass
 
 from aiogram import Bot, Dispatcher
@@ -92,7 +92,9 @@ class Core:
 
         dp = Dispatcher()
         dp.message.middleware(AccessMiddleware())
-        register(dp, svc.bot, svc.llm, svc.voice, svc.vision)
+        from app.tts_service import TTSService
+        tts = TTSService()
+        register(dp, svc.bot, svc.llm, svc.voice, svc.vision, tts=tts)
         return dp
 
 
