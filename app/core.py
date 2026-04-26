@@ -92,9 +92,7 @@ class Core:
 
         dp = Dispatcher()
         dp.message.middleware(AccessMiddleware())
-        from app.tts_service import TTSService
-        tts = TTSService()
-        register(dp, svc.bot, svc.llm, svc.voice, svc.vision, tts=tts)
+        register(dp, svc.bot, svc.llm, svc.voice, svc.vision)
         return dp
 
 
