@@ -297,7 +297,7 @@ async def check_all_triggers(
     Возвращает True если хоть одно сообщение отправлено.
     """
     from app.user_settings import get_settings as _get_us
-    us = _get_user_settings(user_id)
+    us = _get_us(user_id)
 
     now_msk = _now_msk()
 

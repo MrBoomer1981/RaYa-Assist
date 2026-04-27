@@ -59,6 +59,13 @@ logger = logging.getLogger(__name__)
 # Лёгкая быстрая модель для роутера — не тратим тяжёлую модель на классификацию
 _ROUTER_MODEL = settings.router_model
 
+# Голые команды поиска → raya + берём тему из истории
+_SEARCH_CMD_RE = re.compile(
+    r"^(найди в интернете|поищи в интернете|загугли|найди|поищи|ищи)[!.\s]*$",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 
 @dataclass(frozen=True)
 class RouteResult:
