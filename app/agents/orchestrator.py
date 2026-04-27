@@ -7,64 +7,25 @@ from typing import Optional
 
 from app.agents.base_agent import AgentContext, AgentResult
 from app.agents.critic_agent import CriticAgent
-from app.agents.registry import get_agent
+from app.agents.registry import get_agent, create_agent
 from app.agents.router import RouterAgent, RouteResult
 from app.config import settings
 from app.database import load_history, load_memory, get_user_name
 
 logger = logging.getLogger(__name__)
 
+# ── Фабрика агентов через реестр ──────────────────────────────────────────────
+# Чтобы добавить нового агента — добавь запись в registry.py (module + class_name).
+# Этот файл трогать не нужно.
 
 def _create_agent(name: str):
-    """Фабрика агентов по имени."""
-    info = get_agent(name)
-    if info is None or not info.enabled:
-        logger.warning("Агент '%s' не найден в реестре", name)
-        return None
-    try:
-        match name:
-            case "raya":
-                from app.agents.raya_agent import RayaAgent
-                return RayaAgent()
-            case "code":
-                from app.agents.code_agent import CodeAgent
-                return CodeAgent()
-            case "image":
-                from app.agents.image_agent import ImageAgent
-                return ImageAgent()
-            case "research":
-                from app.agents.research_agent import ResearchAgent
-                return ResearchAgent()
-            case "morning":
-                from app.agents.morning_agent import MorningAgent
-                return MorningAgent()
-            case "text":
-                from app.agents.text_agent import TextAgent
-                return TextAgent()
-            case "ideas":
-                from app.agents.ideas_agent import IdeasAgent
-                return IdeasAgent()
-            case "todo":
-                from app.agents.todo_agent import TodoAgent
-                return TodoAgent()
-
-            case "explain":
-                from app.agents.explain_agent import ExplainAgent
-                return ExplainAgent()
-            case "diary":
-                from app.agents.diary_agent import DiaryAgent
-                return DiaryAgent()
-            case "calendar":
-                from app.agents.calendar_agent import CalendarAgent
-                return CalendarAgent()
-            case "critic":
-                return CriticAgent()
-            case _:
-                logger.warning("Неизвестный агент '%s'", name)
-                return None
-    except Exception:
-        logger.exception("Ошибка создания агента '%s'", name)
-        return None
+    """Создаёт агента через реестр. Fallback на CriticAgent для 'critic'."""
+    if name == "critic":
+        return CriticAgent()
+    agent = create_agent(name)
+    if agent is None:
+        logger.warning("Агент '%s' не найден или отключён", name)
+    return agent
 
 
 class Orchestrator:

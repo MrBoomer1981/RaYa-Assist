@@ -220,18 +220,58 @@ async def _get_weather() -> str:
 # ── Задачи ────────────────────────────────────────────────────────────────────
 
 async def _get_tasks(user_id: int) -> str:
+    """
+    Задачи с умной приоритизацией:
+    - Сначала задачи с дедлайном СЕГОДНЯ (независимо от приоритета)
+    - Затем задачи с дедлайном ЗАВТРА
+    - Затем остальные по приоритету
+    """
     try:
         from app.database import get_active_tasks
+        from datetime import datetime, timedelta
         db_tasks = get_active_tasks(user_id)
         if not db_tasks:
             return ""
-        emoji = {1: "🔴", 2: "🟡", 3: "🟠"}
-        lines = ["**Задачи на сегодня:**"]
-        for t in db_tasks[:5]:
-            e = emoji.get(t[2], "🟡")
-            lines.append(f"{e} {t[1]}")
-        if len(db_tasks) > 5:
-            lines.append(f"_...и ещё {len(db_tasks) - 5} задач_")
+
+        today_str    = datetime.utcnow().date().isoformat()
+        tomorrow_str = (datetime.utcnow().date() + timedelta(days=1)).isoformat()
+
+        # Разбиваем по срочности дедлайна
+        due_today    = [t for t in db_tasks if t[3] and t[3][:10] == today_str]
+        due_tomorrow = [t for t in db_tasks if t[3] and t[3][:10] == tomorrow_str]
+        overdue      = [t for t in db_tasks if t[3] and t[3][:10] < today_str]
+        rest         = [t for t in db_tasks if not t[3] or t[3][:10] > tomorrow_str]
+
+        _PRIO = {1: "🔴", 2: "🟡", 3: "🟠"}
+        lines = ["**📋 Задачи:**"]
+
+        if overdue:
+            lines.append("_🚨 Просрочено:_")
+            for t in overdue[:3]:
+                lines.append(f"  🚨 {t[1]} _(дедлайн: {t[3][:10]})_")
+
+        if due_today:
+            lines.append("_⏰ Дедлайн сегодня:_")
+            for t in due_today[:3]:
+                lines.append(f"  ⏰ {t[1]}")
+
+        if due_tomorrow:
+            lines.append("_📅 Дедлайн завтра:_")
+            for t in due_tomorrow[:2]:
+                lines.append(f"  📅 {t[1]}")
+
+        remaining_slots = 5 - len(due_today) - len(due_tomorrow) - len(overdue)
+        if remaining_slots > 0 and rest:
+            lines.append("_В работе:_")
+            for t in rest[:remaining_slots]:
+                e = _PRIO.get(t[2], "🟡")
+                lines.append(f"  {e} {t[1]}")
+
+        total = len(db_tasks)
+        shown = len(due_today) + len(due_tomorrow) + len(overdue) + min(remaining_slots, len(rest))
+        if total > shown:
+            lines.append(f"_...и ещё {total - shown} задач_")
+
         return "\n".join(lines) + "\n"
     except Exception as e:
         logger.warning("Задачи: %s", e)

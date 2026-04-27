@@ -57,10 +57,18 @@ class Settings(BaseSettings):
     telegram_user_id: int = 0  # ОБЯЗАТЕЛЬНО задать TELEGRAM_USER_ID в Railway Variables
 
     # Параметры модели
-    model_name: str = "llama-3.3-70b-versatile"
-    router_model: str = "llama-3.1-8b-instant"  # роутер + tone controller
-    temperature: float = 0.7
-    max_history: int = 20
+    model_name:   str   = "llama-3.3-70b-versatile"
+    router_model: str   = "llama-3.1-8b-instant"  # роутер + tone controller
+    temperature:  float = 0.7
+    max_history:  int   = 20
+
+    # Масштабирование
+    # multi_user_mode=True: включает LRU-кэши имён, rate limiting, connection pool
+    multi_user_mode: bool = False
+    # Таймаут агентов по умолчанию (секунды). Deep research переопределяет на 120.
+    agent_timeout:   int  = 30
+    # Максимум параллельных LLM запросов (защита от spike нагрузки)
+    max_concurrent:  int  = 10
 
     # Личность — загружается из persona.txt, не из .env
     system_prompt: str = ""

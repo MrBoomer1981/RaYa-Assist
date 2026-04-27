@@ -73,6 +73,21 @@ def strip_history(history: list, limit: int = 0) -> list:
             result.append(AIMessage(content=msg.content))
     return result
 
+# ── LLM кэш: один объект на модель, не создаём N экземпляров ────────────────
+_LLM_CACHE: dict[str, ChatGroq] = {}
+
+
+def _get_llm(model: str) -> ChatGroq:
+    """Возвращает кэшированный LLM для модели."""
+    if model not in _LLM_CACHE:
+        _LLM_CACHE[model] = ChatGroq(
+            api_key=settings.groq_api_key,
+            model=model,
+            temperature=settings.temperature,
+        )
+    return _LLM_CACHE[model]
+
+
 class BaseAgent:
     """
     Базовый класс для всех агентов.
@@ -89,11 +104,7 @@ class BaseAgent:
     timeout: int = _DEFAULT_TIMEOUT
 
     def __init__(self, model: Optional[str] = None) -> None:
-        self._llm = ChatGroq(
-            api_key=settings.groq_api_key,
-            model=model or settings.model_name,
-            temperature=settings.temperature,
-        )
+        self._llm = _get_llm(model or settings.model_name)
         logger.debug("Агент '%s' инициализирован (модель: %s)",
                      self.agent_name, model or settings.model_name)
 

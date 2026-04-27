@@ -11,6 +11,8 @@ class AgentInfo:
     title:          str
     description:    str
     keywords:       tuple[str, ...]
+    module:         str  = ""    # путь к модулю: "app.agents.code_agent"
+    class_name:     str  = ""    # имя класса: "CodeAgent"
     parallelizable: bool = False
     needs_critic:   bool = False
     enabled:        bool = True
@@ -20,6 +22,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "raya": AgentInfo(
         name="raya", title="RaYa",
+        module="app.agents.raya_agent", class_name="RayaAgent",
         description=(
             "Главный ассистент. Отвечает на общие вопросы, ведёт диалог. "
             "Используется по умолчанию если нет явного триггера."
@@ -29,6 +32,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "code": AgentInfo(
         name="code", title="Code Agent",
+        module="app.agents.code_agent", class_name="CodeAgent",
         description=(
             "Пишет, отлаживает, объясняет код. Архитектура, code review, "
             "рефакторинг. Python, JavaScript, SQL, bash и другие языки."
@@ -43,6 +47,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "image": AgentInfo(
         name="image", title="Image Agent",
+        module="app.agents.image_agent", class_name="ImageAgent",
         description="Генерирует изображения по текстовому описанию через FLUX.",
         keywords=(
             "нарисуй", "сгенерируй картинк", "создай изображени",
@@ -54,6 +59,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "research": AgentInfo(
         name="research", title="Research Agent",
+        module="app.agents.research_agent", class_name="ResearchAgent",
         description=(
             "Исследует темы, проверяет факты, анализирует научные данные. "
             "Три режима: research (глубокое исследование), "
@@ -76,6 +82,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "todo": AgentInfo(
         name="todo", title="Todo Agent",
+        module="app.agents.todo_agent", class_name="TodoAgent",
         description=(
             "Управляет задачами (матрица Эйзенхауэра). "
             "Добавляет, показывает, выполняет, удаляет задачи. "
@@ -94,6 +101,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "text": AgentInfo(
         name="text", title="Text Agent",
+        module="app.agents.text_agent", class_name="TextAgent",
         description=(
             "Трансформирует готовый текст: резюмирует, редактирует стиль, меняет тон, "
             "переводит, пишет письма/посты по шаблону. "
@@ -113,6 +121,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "ideas": AgentInfo(
         name="ideas", title="Ideas Agent",
+        module="app.agents.ideas_agent", class_name="IdeasAgent",
         description=(
             "Генерирует идеи и нестандартные решения. "
             "Брейнсторм, SCAMPER, обратный брейнсторм, devil's advocate."
@@ -128,6 +137,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "explain": AgentInfo(
         name="explain", title="Explain & Plan Agent",
+        module="app.agents.explain_agent", class_name="ExplainAgent",
         description=(
             "Объясняет концепции, структурирует информацию, разбивает на шаги, "
             "строит планы с дедлайнами и рисками. "
@@ -143,8 +153,26 @@ AGENTS: dict[str, AgentInfo] = {
         needs_critic=True,
     ),
 
+    "deep_research": AgentInfo(
+        name="deep_research", title="Deep Research",
+        module="app.agents.deep_research_agent", class_name="DeepResearchAgent",
+        description=(
+            "Глубокое многошаговое исследование темы в стиле Perplexity Deep Research. "
+            "Декомпозирует вопрос, ищет параллельно по нескольким направлениям, "
+            "заполняет пробелы, синтезирует структурированный отчёт с источниками. "
+            "Занимает 30-90 секунд. Используй для сложных аналитических вопросов."
+        ),
+        keywords=(
+            "глубокое исследование", "deep research", "подробный анализ",
+            "исследуй глубоко", "детальный отчёт", "полный анализ",
+            "всё о", "расскажи подробно всё", "подготовь отчёт",
+            "аналитика по", "детально изучи", "развёрнутый анализ",
+        ),
+    ),
+
     "diary": AgentInfo(
         name="diary", title="Diary Agent",
+        module="app.agents.diary_agent", class_name="DiaryAgent",
         description=(
             "Ведёт личный дневник. Записывает мысли, переживания, события дня. "
             "Показывает записи, делает рефлексию по паттернам и настроению. "
@@ -160,6 +188,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "calendar": AgentInfo(
         name="calendar", title="Calendar Agent",
+        module="app.agents.calendar_agent", class_name="CalendarAgent",
         description=(
             "Управляет событиями календаря. "
             "Добавляет, показывает, удаляет, обновляет события. "
@@ -177,6 +206,7 @@ AGENTS: dict[str, AgentInfo] = {
 
     "morning": AgentInfo(
         name="morning", title="Утренний дайджест",
+        module="app.agents.morning_agent", class_name="MorningAgent",
         description=(
             "Запускается ТОЛЬКО автоматически в 6:45 МСК. "
             "НЕ выбирать в ответ на сообщения пользователя."
@@ -194,6 +224,31 @@ AGENTS: dict[str, AgentInfo] = {
 
 def get_agent(name: str) -> AgentInfo | None:
     return AGENTS.get(name)
+
+
+def create_agent(name: str):
+    """
+    Создаёт экземпляр агента по имени через реестр.
+    Добавление нового агента = только запись в AGENTS выше.
+    Orchestrator и router обновятся автоматически.
+    """
+    info = AGENTS.get(name)
+    if info is None or not info.enabled:
+        return None
+    if not info.module or not info.class_name:
+        return None
+    try:
+        import importlib
+        mod = importlib.import_module(info.module)
+        cls = getattr(mod, info.class_name)
+        return cls()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Ошибка создания агента '%s' (%s.%s): %s",
+            name, info.module, info.class_name, e
+        )
+        return None
 
 
 def get_enabled_agents() -> list[AgentInfo]:

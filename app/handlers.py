@@ -43,7 +43,7 @@ _last_request: dict[int, float] = {}
 
 # Глобальный семафор: не более 20 параллельных LLM-запросов
 # При 25+ пользователях это предотвращает перегрузку Groq API
-_LLM_SEMAPHORE = asyncio.Semaphore(20)
+_LLM_SEMAPHORE = asyncio.Semaphore(settings.max_concurrent)
 
 
 def _is_rate_limited(user_id: int) -> bool:
@@ -87,6 +87,19 @@ def _build_help_text() -> str:
     return "\n".join(lines)
 
 
+_DEEP_RESEARCH_TRIGGERS = frozenset({
+    "глубокое исследование", "deep research", "подробный анализ",
+    "исследуй глубоко", "детальный отчёт", "полный анализ",
+    "всё о", "расскажи подробно всё", "подготовь отчёт",
+    "аналитика по", "детально изучи", "развёрнутый анализ",
+})
+
+
+def _is_deep_research_request(message: str) -> bool:
+    msg = message.lower()
+    return any(t in msg for t in _DEEP_RESEARCH_TRIGGERS)
+
+
 async def _keep_typing(bot: Bot, chat_id: int, stop: asyncio.Event) -> None:
     """Периодически отправляет typing пока stop не установлен."""
     while not stop.is_set():
@@ -105,8 +118,75 @@ async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
     return downloaded.read() if downloaded else None
 
 
-async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) -> None:
-    """Отправляет ответ: текст, фото от ImageAgent, подтверждение напоминания."""
+async def _send_deep_research(message: Message, llm: "LLMService", bot: Bot) -> None:
+    """
+    Запускает глубокое исследование с живым прогрессом через edit_message.
+    Показывает каждый шаг как редактирование одного сообщения.
+    """
+    from app.deep_research import DeepResearchEngine
+
+    # Отправляем начальное сообщение — будем его редактировать
+    status_msg = await message.answer("🔬 Начинаю глубокое исследование...")
+    progress_lines: list[str] = []
+
+    async def _update_progress(line: str):
+        progress_lines.append(line)
+        # Показываем последние 6 строк чтобы не перегружать
+        display = "\n".join(progress_lines[-6:])
+        try:
+            await bot.edit_message_text(
+                text=f"🔬 *Исследование в процессе...*\n\n{display}",
+                chat_id=message.chat.id,
+                message_id=status_msg.message_id,
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass  # edit может упасть если сообщение не изменилось
+
+    engine = DeepResearchEngine()
+    async for status in engine.research(message.text or "", progress_cb=_update_progress):
+        await _update_progress(status)
+
+    report = engine.get_report()
+
+    # Удаляем прогресс-сообщение и отправляем финальный отчёт
+    try:
+        await bot.delete_message(message.chat.id, status_msg.message_id)
+    except Exception:
+        pass
+
+    # Telegram ограничивает сообщение 4096 символами — режем если нужно
+    if len(report) <= 4096:
+        await message.answer(report, parse_mode="Markdown")
+    else:
+        # Отправляем частями по ~3800 символов с разбивкой по абзацам
+        chunks = _split_report(report, max_len=3800)
+        for i, chunk in enumerate(chunks):
+            prefix = f"📚 *Отчёт (часть {i+1}/{len(chunks)})*\n\n" if len(chunks) > 1 else ""
+            await message.answer(prefix + chunk, parse_mode="Markdown")
+
+
+def _split_report(text: str, max_len: int = 3800) -> list[str]:
+    """Разбивает длинный текст по абзацам не превышая max_len."""
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n\n"):
+        if len(current) + len(para) + 2 <= max_len:
+            current += ("\n\n" if current else "") + para
+        else:
+            if current:
+                chunks.append(current)
+            current = para
+    if current:
+        chunks.append(current)
+    return chunks or [text[:max_len]]
+
+
+async def _handle_chat_result(
+    message: Message, result: ChatResult, bot: Bot,
+    tts: "TTSService | None" = None,
+) -> None:
+    """Отправляет ответ: текст, фото от ImageAgent, TTS, напоминание."""
     if result.agent_name and "image" in result.agent_name:
         image_bytes = (result.metadata or {}).get("image_bytes")
         if image_bytes:
@@ -119,6 +199,22 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
         return
 
     await message.answer(result.reply)
+
+    # ── TTS: если включён голосовой ответ для этого пользователя ─────────────
+    if tts and tts.enabled and message.from_user:
+        try:
+            from app.user_settings import get_settings
+            user_cfg = get_settings(message.from_user.id)
+            if getattr(user_cfg, "voice_response", False) and result.reply:
+                audio = await tts.synthesize(result.reply, is_voice=True)
+                if audio:
+                    from aiogram.types import BufferedInputFile as _BIF
+                    await bot.send_voice(
+                        chat_id=message.chat.id,
+                        voice=_BIF(audio, filename="reply.mp3"),
+                    )
+        except Exception:
+            logger.debug("TTS send failed — silent skip")
 
     if result.reminder:
         try:
@@ -220,7 +316,7 @@ def _build_stats(user_id: int) -> str:
 
 
 def register(dp: Dispatcher, bot: Bot, llm: LLMService,
-             voice: VoiceService, vision: VisionService) -> None:
+             voice: VoiceService, vision: VisionService, tts: "TTSService | None" = None) -> None:
     """Регистрирует все хендлеры в диспетчере."""
 
     # ── Команды ───────────────────────────────────────────────────────────────
@@ -340,7 +436,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
             await message.answer(f"🎤 Распознано: {text}")
             async with _LLM_SEMAPHORE:
                 result = await llm.chat(u.id, text)
-            await _handle_chat_result(message, result, bot)
+            await _handle_chat_result(message, result, bot, tts=tts)
         except Exception:
             logger.exception("Ошибка LLM voice user_id=%s", u.id)
             await message.answer("⚠️ Произошла ошибка.")
@@ -476,6 +572,11 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         try:
+            # Deep research: запускаем отдельный flow с live-прогрессом
+            if _is_deep_research_request(message.text or ""):
+                await _send_deep_research(message, llm, bot)
+                return
+
             bridge = await llm.get_resume_phrase(u.id)
             async with _LLM_SEMAPHORE:
                 result = await llm.chat(
@@ -483,7 +584,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService,
                     message.text,
                     resume_bridge=bridge,
                 )
-            await _handle_chat_result(message, result, bot)
+            await _handle_chat_result(message, result, bot, tts=tts)
         except Exception:
             logger.exception("Ошибка user_id=%s", u.id)
             await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз или напиши /clear")

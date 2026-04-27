@@ -93,6 +93,29 @@ class ChatResult:
     metadata: dict            = field(default_factory=dict)
 
 
+import re as _weather_re_module
+
+_WEATHER_RE = _weather_re_module.compile(
+    r"\b(погода|температура|прогноз|дождь|снег|ветер|климат|осадки)\b",
+    _weather_re_module.IGNORECASE,
+)
+
+
+def _get_user_city(user_id: int) -> str:
+    """Возвращает город из structured_memory. Пустая строка если нет."""
+    try:
+        from app.database import get_structured_memory
+        mem = get_structured_memory(user_id)
+        for cat in ("facts", "context"):
+            section = mem.get(cat, {})
+            for key in ("город", "city", "location", "место", "регион", "живёт"):
+                if key in section:
+                    return section[key]
+    except Exception:
+        pass
+    return ""
+
+
 class LLMService:
     """
     Сервис для обработки сообщений.
@@ -139,7 +162,7 @@ class LLMService:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
-    async def _decide_search(self, message: str) -> tuple[bool, str]:
+    async def _decide_search(self, message: str, user_id: int = 0) -> tuple[bool, str]:
         """
         LLM-классификатор: нужен ли поиск и какой запрос отправить.
         Использует лёгкую router_model (T=0) — ~0.2–0.3с.
@@ -154,6 +177,13 @@ class LLMService:
         # Быстрый pre-filter — команды точно не требуют поиска
         if message.strip() in _SEARCH_NEVER or message.startswith("/"):
             return False, ""
+
+        # Для погодных запросов без города — добавляем город из памяти
+        if user_id and _WEATHER_RE.search(message):
+            city = _get_user_city(user_id)
+            if city and city.lower() not in message.lower():
+                message = f"{message} в {city}"
+                logger.debug("weather: добавлен город '%s' в запрос", city)
 
         try:
             prompt = _SEARCH_CLASSIFIER_PROMPT.format(message=message[:400])
@@ -215,9 +245,35 @@ class LLMService:
 
         # LLM-классификатор запускаем сразу как задачу —
         # пока он думает, мы синхронно готовим decisions_block и calibration_hint
+        # Если пользователь уточняет локацию после вопроса о погоде
+        # ("я живу в Самаре") — добавляем погодный контекст к запросу
+        _LOCATION_RE = __import__("re").compile(
+            r"^(я живу|живу|нахожусь|я в|мой город|мой регион).{1,40}$",
+            __import__("re").IGNORECASE,
+        )
+        _enriched_message = user_message
+        if _LOCATION_RE.match(user_message.strip()):
+            # Проверяем была ли предыдущая тема про погоду
+            try:
+                from app.database import load_history
+                _hist = load_history(user_id, limit=3)
+                _prev = " ".join(str(m.content) for m in _hist[-3:])
+                if _WEATHER_RE.search(_prev):
+                    import re as _lr
+                    _city_match = _lr.search(
+                        r"(в|из|около|рядом с)?\s*([А-ЯЁа-яё][а-яё]+(?:ской|ской\s+области)?)",
+                        user_message
+                    )
+                    if _city_match:
+                        _city = _city_match.group(0).strip()
+                        _enriched_message = f"погода завтра {_city}"
+                        logger.info("weather: follow-up location → '%s'", _enriched_message)
+            except Exception:
+                pass
+
         search_task: asyncio.Task | None = None
         if self._search:
-            search_task = asyncio.create_task(self._decide_search(user_message))
+            search_task = asyncio.create_task(self._decide_search(_enriched_message, user_id=user_id))
 
         # Блок принятых решений — для системного промпта агента
         decisions_block = self._consistency.get_decisions_block(user_id)
@@ -260,7 +316,7 @@ class LLMService:
 
         agent_result = await self._get_orchestrator().run(
             user_id=user_id,
-            message=user_message,
+            message=user_message,  # оригинальное сообщение для истории
             search_results=search_results,
             is_voice=is_voice,
             extra={
