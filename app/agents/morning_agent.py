@@ -227,7 +227,6 @@ async def _get_tasks(user_id: int) -> str:
     - Затем остальные по приоритету
     """
     try:
-        from app.database import get_active_tasks
         from datetime import datetime, timedelta
         db_tasks = get_active_tasks(user_id)
         if not db_tasks:
@@ -283,7 +282,6 @@ async def _get_tasks(user_id: int) -> str:
 async def _get_events(user_id: int) -> str:
     """Ближайшие события на сегодня и завтра для дайджеста."""
     try:
-        from app.database import get_events_for_date
         from datetime import datetime, timedelta
         today    = datetime.utcnow().date()
         tomorrow = today + timedelta(days=1)
@@ -327,7 +325,6 @@ async def _get_news() -> str:
         from app.search_service import SearchService
         from langchain_groq import ChatGroq
         from langchain_core.messages import SystemMessage, HumanMessage
-        from app.config import settings
 
         svc  = SearchService()
         now  = datetime.utcnow()

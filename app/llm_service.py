@@ -21,6 +21,7 @@ from langchain_groq import ChatGroq
 from app.config import settings
 from app.database import load_memory, save_messages
 
+from app.personality_service import update_feedback, update_emotional_patterns
 logger = logging.getLogger(__name__)
 
 # Семафор — ограничение параллельных LLM запросов.
@@ -346,7 +347,6 @@ class LLMService:
 
         # Personality feedback — каждые 6 сообщений
         if (self._msg_counter.get(user_id, 0)) % 6 == 0:
-            from app.personality_service import update_feedback, update_emotional_patterns
             self._run_background(update_feedback(user_id, self._llm))
             self._run_background(update_emotional_patterns(user_id))
 
