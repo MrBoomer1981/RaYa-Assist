@@ -18,6 +18,6 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from app.core import Core
 
-
+     
 if __name__ == "__main__":
     asyncio.run(Core().start())
