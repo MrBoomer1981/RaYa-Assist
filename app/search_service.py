@@ -275,7 +275,6 @@ class SearchService:
             self._tavily_ok = False
         # Чистим истёкшие записи knowledge cache при старте
         try:
-            from app.database import kc_cleanup
             removed = kc_cleanup()
             if removed:
                 logger.info("🗑️  knowledge_cache: удалено %d истёкших записей", removed)
@@ -439,7 +438,6 @@ class SearchService:
         enriched_q = _enrich_query(query)
 
         # ── Шаг 0: проверяем persistent knowledge cache ───────────────────────
-        from app.database import kc_get, kc_set, kc_cleanup
         kc_result = kc_get(query, mode)
         if kc_result:
             logger.info("📚 Knowledge cache HIT: '%s'", query[:50])
@@ -523,7 +521,10 @@ class SearchService:
 
         # Сохраняем в persistent cache: события — 2 ч, остальное — 24 ч
         ttl = 2 if self._is_event_query(enriched_q) else 24
-        kc_set(query, text, mode, ttl_hours=ttl)
+        try:
+            kc_set(query, text, mode, ttl_hours=ttl)
+        except Exception as _kc_err:
+            logger.debug("kc_set skipped: %s", _kc_err)
 
         return text
 

@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import AsyncGenerator, Callable
 
+from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_groq import ChatGroq
 
 from app.config import settings
 
@@ -97,7 +97,7 @@ _DECOMPOSE_PROMPT = """\
 - Только JSON, без пояснений\
 """
 
-async def decompose_query(query: str, llm: ChatGroq) -> list[SubQuestion]:
+async def decompose_query(query: str, llm: Any) -> list[SubQuestion]:
     """Разбивает запрос на под-вопросы с разными углами исследования."""
     n = min(_MAX_SUBQUESTIONS, max(3, len(query.split()) // 3 + 2))
 
@@ -160,7 +160,7 @@ async def collect_for_question(
     return q
 
 
-async def find_gaps(graph: ResearchGraph, llm: ChatGroq) -> list[str]:
+async def find_gaps(graph: ResearchGraph, llm: Any) -> list[str]:
     """Определяет что ещё нужно найти на основе собранных данных."""
     answered = [q for q in graph.sub_questions if q.answered]
     if not answered:
@@ -214,7 +214,7 @@ _SYNTHESIS_PROMPT = """\
 8. Тон: аналитический, но живой. Не академический сухой язык.\
 """
 
-async def synthesize_report(graph: ResearchGraph, llm: ChatGroq) -> str:
+async def synthesize_report(graph: ResearchGraph, llm: Any) -> str:
     """Синтезирует финальный отчёт из всех собранных данных."""
 
     # Собираем все findings
@@ -293,18 +293,10 @@ class DeepResearchEngine:
     """
 
     def __init__(self) -> None:
-        # Главная модель для синтеза
-        self._llm = ChatGroq(
-            api_key=settings.groq_api_key,
-            model=settings.model_name,
-            temperature=0.2,
-        )
-        # Быстрая модель для декомпозиции и gap-анализа
-        self._fast_llm = ChatGroq(
-            api_key=settings.groq_api_key,
-            model=settings.router_model,
-            temperature=0.0,
-        )
+        # Используем shared LLM cache из base_agent — не создаём лишних объектов
+        from app.agents.base_agent import _get_llm
+        self._llm      = _get_llm(settings.model_name)
+        self._fast_llm = _get_llm(settings.router_model)
         self._graph: ResearchGraph | None = None
 
     async def research(

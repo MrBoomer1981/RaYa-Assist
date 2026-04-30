@@ -452,7 +452,7 @@ class ProactiveService:
                 break
             except Exception:
                 logger.exception("Ошибка планировщика напоминаний")
-            await asyncio.sleep(_CHECK_INTERVAL)
+            await asyncio.sleep(_CHECK_INTERVAL_SEC)
 
     async def _tick_scheduler(self) -> None:
         """Проверяет и отправляет созревшие напоминания."""
