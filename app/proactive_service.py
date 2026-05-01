@@ -529,7 +529,6 @@ class ProactiveService:
 
         # ── Умные триггеры проактивности ─────────────────────────────────────
         try:
-            from app.database import get_all_known_users
             known_users = get_all_known_users()
             if not known_users:
                 return
@@ -546,7 +545,6 @@ class ProactiveService:
         if not FEATURE_PROACTIVE_SILENCE:
             return
         try:
-            from app.database import get_all_known_users
             known_users = get_all_known_users()
             if not known_users:
                 return
@@ -581,7 +579,6 @@ class ProactiveService:
         """Генерирует и отправляет утренний дайджест."""
         try:
             logger.info("🌅 Генерируем утренний дайджест...")
-            from app.database import get_all_known_users
             known_users = get_all_known_users()
             if not known_users:
                 logger.info("Нет пользователей — дайджест пропущен")

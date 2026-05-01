@@ -17,6 +17,8 @@ import random
 from datetime import datetime
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
+from app.config import settings
+from app.database import get_active_tasks, get_events_for_date
 
 logger = logging.getLogger(__name__)
 

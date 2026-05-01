@@ -19,6 +19,7 @@ from app.config import settings
 from app.database import (
     format_context_for_prompt, format_interaction_memory,
     format_memory_for_prompt, get_recent_moods, save_mood, get_user_name,
+    get_active_tasks, get_upcoming_events, load_diary_entries,
 )
 from app.feature_flags import FEATURE_EMOTIONAL_SYSTEM, FEATURE_PERSONA_VERBOSE
 from app.personality_service import (
