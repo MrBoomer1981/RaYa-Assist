@@ -20,7 +20,11 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from app.config import settings
-from app.database import DB_PATH, get_active_tasks, get_top_interactions, get_user_name, load_history, load_memory, save_messages
+from app.database import (
+    DB_PATH, get_active_tasks, get_top_interactions,
+    get_user_name, load_history, load_memory, save_messages,
+    get_all_known_users, get_due_reminders, mark_reminder_done, reschedule_reminder,
+)
 from app.database import _conn  # для прямых SQL запросов
 
 # ── Временные константы (секунды) ────────────────────────────────────────────
