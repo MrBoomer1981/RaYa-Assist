@@ -11,7 +11,7 @@ import logging
 import os
 from pathlib import Path
 from app.feature_flags import (
-    FEATURE_MORNING_DIGEST, FEATURE_PROACTIVE_ACTIVITY,
+    FEATURE_PROACTIVE_ACTIVITY,
     FEATURE_PROACTIVE_IDEA_FOLLOWUP, FEATURE_PROACTIVE_SILENCE,
     FEATURE_REMINDER_WARNING, FEATURE_TASK_DEADLINES,
 )
@@ -97,11 +97,6 @@ async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
     """
     try:
         overdue = []
-        try:
-            _dummy = None
-        except Exception:
-            pass
-
         # Читаем задачи из БД
         if not overdue:
             today    = _now_msk().date()
@@ -460,7 +455,6 @@ class ProactiveService:
 
     async def _tick_scheduler(self) -> None:
         """Проверяет и отправляет созревшие напоминания."""
-        from app.database import get_due_reminders, mark_reminder_done, reschedule_reminder
         now = datetime.utcnow()
         reminders = get_due_reminders(now)
         _RECUR_LABELS = {
@@ -681,4 +675,3 @@ async def generate_initiative_message(user_id: int, llm) -> str:
     except Exception:
         logger.exception("generate_initiative_message: ошибка")
         return f"{get_user_name(user_id)}, давно не слышала тебя. Всё хорошо?"
-

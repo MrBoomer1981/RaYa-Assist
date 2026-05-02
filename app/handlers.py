@@ -184,7 +184,7 @@ def _split_report(text: str, max_len: int = 3800) -> list[str]:
 
 async def _handle_chat_result(
     message: Message, result: ChatResult, bot: Bot,
-    tts: "TTSService | None" = None,
+    tts=None,
 ) -> None:
     """Отправляет ответ: текст, фото от ImageAgent, TTS, напоминание."""
     if result.agent_name and "image" in result.agent_name:
@@ -316,7 +316,7 @@ def _build_stats(user_id: int) -> str:
 
 
 def register(dp: Dispatcher, bot: Bot, llm: LLMService,
-             voice: VoiceService, vision: VisionService, tts: "TTSService | None" = None) -> None:
+             voice: VoiceService, vision: VisionService, tts: None = None) -> None:
     """Регистрирует все хендлеры в диспетчере."""
 
     # ── Команды ───────────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ import logging
 import math
 import re
 import time
+from app.database import kc_get, kc_set, kc_cleanup
 from datetime import datetime
 from typing import Any
 
@@ -388,7 +389,7 @@ class SearchService:
         Используется research_agent в режиме science.
         """
         # Для академических запросов ищем на английском
-        from app.search_service import _translate_key_terms, _is_international
+        from app.search_service import _translate_key_terms
         en_query = _translate_key_terms(query)
         year = datetime.utcnow().year
 

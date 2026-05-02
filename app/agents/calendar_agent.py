@@ -20,7 +20,7 @@ from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.calendar_service import (
     create_event, format_day_for_telegram, format_upcoming_for_telegram,
 )
-from app.database import delete_event, get_events_for_date, get_upcoming_events, update_event
+from app.database import delete_event, get_upcoming_events, update_event
 from app.utils import strip_json
 
 logger = logging.getLogger(__name__)

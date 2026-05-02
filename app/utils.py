@@ -66,7 +66,6 @@ def build_reminder_prompt_block(now_utc: datetime) -> str:
     Формирует блок инструкций по напоминаниям для системного промпта.
     Передаём явное UTC время — модель не угадывает его.
     """
-    from datetime import timedelta
     ex_5min     = (now_utc + timedelta(minutes=5)).strftime(_TIME_FMT)
     ex_1h       = (now_utc + timedelta(hours=1)).strftime(_TIME_FMT)
     ex_tomorrow = (now_utc + timedelta(days=1)).strftime("%Y-%m-%d") + " 09:00:00"

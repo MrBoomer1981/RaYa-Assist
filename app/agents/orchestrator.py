@@ -7,7 +7,7 @@ from typing import Optional
 
 from app.agents.base_agent import AgentContext, AgentResult
 from app.agents.critic_agent import CriticAgent
-from app.agents.registry import get_agent, create_agent
+from app.agents.registry import create_agent
 from app.agents.router import RouterAgent, RouteResult
 from app.config import settings
 from app.database import load_history, load_memory, get_user_name

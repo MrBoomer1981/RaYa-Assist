@@ -2,6 +2,7 @@
 database.py — работа с SQLite.
 WAL-режим, connection-per-call через контекстный менеджер.
 """
+import json as _json
 import logging
 import functools
 import sqlite3
@@ -126,7 +127,7 @@ def _conn() -> Generator[sqlite3.Connection, None, None]:
                 yield con
                 con.commit()
                 return
-            except sqlite3.OperationalError as e:
+            except sqlite3.OperationalError:
                 con.rollback()
                 raise
             except Exception:
@@ -651,7 +652,6 @@ def get_conversation_context(user_id: int) -> dict:
             "open_threads": [], "last_summary": "", "updated_at": "",
         }
 
-    import json as _json
     try:
         threads = _json.loads(row[2]) if row[2] else []
     except Exception:

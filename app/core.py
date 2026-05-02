@@ -7,7 +7,6 @@ main.py просто вызывает Core().start() — больше ничег
 
 Добавить новый сервис: описать в _Services, создать в _init_services().
 """
-import asyncio
 import logging
 from dataclasses import dataclass
 

@@ -76,7 +76,6 @@ def _is_accessible(meta: dict, s: UserSettings) -> bool:
 
 def kb_main(user_id: int) -> InlineKeyboardMarkup:
     """Главное меню: список разделов."""
-    s = get_settings(user_id)
     buttons = []
     for i, section in enumerate(SECTIONS):
         # Считаем кол-во настроек в разделе
@@ -179,6 +178,7 @@ def kb_setting(user_id: int, key: str) -> InlineKeyboardMarkup:
 # ── Тексты ────────────────────────────────────────────────────────────────────
 
 def text_main(user_id: int) -> str:
+    s = get_settings(user_id)
     return (
         "⚙️ **Настройки RaYa**\n\n"
         "Выбери раздел для изменения:\n"
