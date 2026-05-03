@@ -3,6 +3,7 @@ database.py — работа с SQLite.
 WAL-режим, connection-per-call через контекстный менеджер.
 """
 import json as _json
+import time as _time
 import logging
 import functools
 import sqlite3
@@ -108,7 +109,6 @@ def _conn() -> Generator[sqlite3.Connection, None, None]:
     Контекстный менеджер соединения с авто-commit/rollback.
     Retry при SQLITE_BUSY — до 5 попыток с backoff.
     """
-    import time as _time
     last_err = None
     for attempt in range(5):
         try:
@@ -138,7 +138,7 @@ def _conn() -> Generator[sqlite3.Connection, None, None]:
         except sqlite3.OperationalError as e:
             last_err = e
             if "locked" in str(e).lower() and attempt < 4:
-                _time.sleep(0.1 * (2 ** attempt))  # 0.1, 0.2, 0.4, 0.8s
+                _time.sleep(0.1 * (2 ** attempt))  # blocking intentional — SQLite retry в sync контексте
                 continue
             raise
     raise last_err

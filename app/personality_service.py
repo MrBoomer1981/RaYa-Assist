@@ -704,6 +704,7 @@ def get_feedback_hint(user_id: int) -> str:
         if "развёрнутые" in pref:
             return "По предыдущим разговорам — пользователь предпочитает подробные ответы."
     except Exception:
+        logger.debug("personality: silent error", exc_info=True)
         pass
     return ""
 
@@ -716,6 +717,7 @@ def get_depth_hint(user_id: int) -> str:
             if freq >= _TOPIC_THRESHOLD:
                 return f"Пользователь часто возвращается к теме «{topic}» — можешь ссылаться на прошлые разговоры."
     except Exception:
+        logger.debug("personality: silent error", exc_info=True)
         pass
     return ""
 
@@ -728,6 +730,7 @@ def get_emotional_hint(user_id: int) -> str:
         if stress_pattern:
             return f"Эмоциональный паттерн: {stress_pattern}."
     except Exception:
+        logger.debug("personality: silent error", exc_info=True)
         pass
     return ""
 
@@ -757,6 +760,7 @@ def get_repeat_observation(user_id: int, message: str) -> str:
                     "Если прошлый ответ не помог — попробуй другой подход или спроси что именно неясно."
                 )
     except Exception:
+        logger.debug("personality: silent error", exc_info=True)
         pass
     return ""
 
@@ -773,5 +777,6 @@ def get_pattern_observation(user_id: int) -> str:
         if 6 <= now_msk_hour < 9:
             return "Раннее утро — пользователь только просыпается. Бодро и кратко."
     except Exception:
+        logger.debug("personality: silent error", exc_info=True)
         pass
     return ""

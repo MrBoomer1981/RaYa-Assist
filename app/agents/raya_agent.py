@@ -151,7 +151,7 @@ class RayaAgent(BaseAgent):
                 return structured
             if ctx.memory_facts:
                 facts = "\n".join(f"- {f}" for f in ctx.memory_facts)
-                return f"Что известно о {get_user_name(ctx.user_id)}:\n{facts}"
+                return f"Что известно о {ctx.user_name}:\n{facts}"
             return ""
 
         async def _get_tasks_summary():
@@ -202,7 +202,7 @@ class RayaAgent(BaseAgent):
         resume = ctx.extra.get("resume_bridge", "")
         if resume:
             system += (
-                f"\n\nВАЖНО: {get_user_name(ctx.user_id)} вернулся после паузы. Начни ответ с естественного "
+                f"\n\nВАЖНО: {ctx.user_name} вернулся после паузы. Начни ответ с естественного "
                 f"упоминания того о чём говорили: '{resume}' — "
                 f"вплети это органично, не как отдельный абзац."
             )

@@ -74,12 +74,18 @@ def strip_history(history: list, limit: int = 0) -> list:
     return result
 
 # ── LLM кэш: один объект на модель, не создаём N экземпляров ────────────────
+# Максимум 8 моделей в кэше — защита от memory leak при динамической смене моделей
 _LLM_CACHE: dict[str, ChatGroq] = {}
+_LLM_CACHE_MAX = 8
 
 
 def _get_llm(model: str) -> ChatGroq:
-    """Возвращает кэшированный LLM для модели."""
+    """Возвращает кэшированный LLM для модели. LRU-like: при переполнении удаляет первый."""
     if model not in _LLM_CACHE:
+        if len(_LLM_CACHE) >= _LLM_CACHE_MAX:
+            # Удаляем самый старый (первый вставленный — dict сохраняет порядок в Python 3.7+)
+            oldest = next(iter(_LLM_CACHE))
+            del _LLM_CACHE[oldest]
         _LLM_CACHE[model] = ChatGroq(
             api_key=settings.groq_api_key,
             model=model,
@@ -158,9 +164,10 @@ class BaseAgent:
         logger.info("▶️  Агент '%s' запущен | user_id=%s", self.agent_name, ctx.user_id)
 
         try:
+            _timeout = self.timeout if self.timeout != _DEFAULT_TIMEOUT else settings.agent_timeout
             result = await asyncio.wait_for(
                 self._execute(ctx),
-                timeout=self.timeout,
+                timeout=_timeout,
             )
             result.elapsed_ms = _ms(start)
             logger.info(
@@ -173,7 +180,7 @@ class BaseAgent:
             elapsed = _ms(start)
             logger.error(
                 "⏱️  Агент '%s' timeout (%dс) | user_id=%s",
-                self.agent_name, self.timeout, ctx.user_id,
+                self.agent_name, _timeout, ctx.user_id,
             )
             return AgentResult(
                 success=False,

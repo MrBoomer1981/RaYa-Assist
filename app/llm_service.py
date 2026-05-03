@@ -363,6 +363,10 @@ class LLMService:
         # Consistency — проверяем согласованность с принятыми решениями
         reply = await self._consistency.check_and_fix(user_id, reply, user_message)
 
+        # Cleanup: отменяем search_task если не был потреблён
+        if search_task is not None and not search_task.done():
+            search_task.cancel()
+
         return ChatResult(
             reply=reply,
             reminder=reminder,

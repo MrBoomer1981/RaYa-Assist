@@ -218,6 +218,8 @@ AGENTS: dict[str, AgentInfo] = {
         name="critic", title="Critic Agent",
         description="Финальная проверка ответов других агентов. Только программно.",
         keywords=(),
+        module="app.agents.critic_agent", class_name="CriticAgent",
+        enabled=False,
     ),
 }
 
