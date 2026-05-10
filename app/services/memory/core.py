@@ -40,7 +40,7 @@ def _ensure_importance_column() -> None:
         if "last_accessed" not in cols:
             con.execute(
                 "ALTER TABLE structured_memory "
-                "ADD COLUMN last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP"
+                "ADD COLUMN last_accessed DATETIME DEFAULT '2000-01-01 00:00:00'"
             )
             logger.info("✅ Migration: structured_memory.last_accessed добавлен")
 
