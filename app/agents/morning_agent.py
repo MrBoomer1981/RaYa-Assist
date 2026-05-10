@@ -1,179 +1,156 @@
 """
-morning_agent.py — утренний дайджест.
+morning_agent.py — утренний дайджест RaYa.
 
-Срабатывает в 6:45 МСК. Только из ProactiveService.
+Состав:
+  🌤 Погода         — wttr.in с городом из Core Memory
+  📅 Расписание     — события из calendar_service + Obsidian vault
+  ✅ Задачи         — активные задачи с дедлайнами
+  🤖 AI-новости     — последние 24ч, акцент на AI/LLM/OpenAI/Anthropic/Google
+  💻 IT-новости     — технологии, стартапы, продукты, hardware
+  🌍 Мир            — важнейшие события дня
+  💬 Философия      — цитата дня от мыслителей
 
-Формат:
-  День + дата
-  Погода — точные цифры
-  Задачи — Q1 первые, потом Q2
-  Цитата — одна, живая
-  Философия — 2-3 идеи (глубже, не банальности)
-  Новости — параллельный поиск по 4 темам через Tavily
+Каждый блок независим — если упал, остальные показываются.
+LLM вызывается ОДИН раз для новостей (экономим токены).
 """
+from __future__ import annotations
+
 import asyncio
 import logging
-import random
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_groq import ChatGroq
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
-from app.database import get_active_tasks, get_events_for_date
 
 logger = logging.getLogger(__name__)
 
-_WEATHER_API = "https://wttr.in/Samara?format=j1"
+# ── Конфиг ────────────────────────────────────────────────────────────────────
 
-# ── Цитаты — живые, не корпоративные ─────────────────────────────────────────
+_MOSCOW_UTC_OFFSET = 3
+_WEATHER_API       = "https://wttr.in/{city}?format=j1&lang=ru"
+_WEATHER_API_ANON  = "https://wttr.in/?format=j1&lang=ru"  # если город неизвестен
+
+# Поисковые запросы для новостного блока
+# Ключевые слова для AI — максимально специфичны
+_NEWS_QUERIES = {
+    "🤖 AI / LLM": [
+        "OpenAI GPT latest news today",
+        "Anthropic Claude AI news today",
+        "Google DeepMind Gemini news today",
+        "artificial intelligence LLM research news today",
+        "AI startup funding news today",
+    ],
+    "💻 IT / Tech": [
+        "tech industry news today",
+        "new software product launch today",
+        "cybersecurity breach news today",
+        "Apple Microsoft Amazon Google product news today",
+    ],
+    "🌍 Мир": [
+        "breaking world news today",
+        "major geopolitical events today",
+    ],
+}
+
 _QUOTES = [
-    ("Тот, кто знает — не говорит. Тот, кто говорит — не знает.", "Лао-цзы"),
-    ("Мы страдаем больше в воображении, чем в реальности.", "Сенека"),
-    ("Memento mori. Помни о смерти — и живи полнее.", "Stoics"),
-    ("Единственный выход — насквозь.", "Роберт Фрост"),
-    ("Не жалуйся на тьму — зажги свечу.", "Конфуций"),
-    ("Человек не вещь, а процесс.", "Эрих Фромм"),
-    ("Мы то, что мы делаем снова и снова.", "Аристотель"),
-    ("Настоящее — это всё что у тебя есть. И этого достаточно.", "Марк Аврелий"),
-    ("Препятствие — это путь.", "Дзен"),
-    ("Счастье — это не то что ты получаешь, а то каким ты становишься.", "Джим Рон"),
-    ("Боишься — сделай это боясь.", "Сьюзен Джефферс"),
-    ("Не имей сто рублей, а имей сто мыслей.", "Народная мудрость"),
-    ("Великие умы обсуждают идеи. Средние — события. Мелкие — людей.", "Элеонор Рузвельт"),
-    ("Слабый человек говорит что-то случилось. Сильный — что он сделал что-то.", "Эпиктет"),
-    ("Твоя жизнь — это то на что ты обращаешь внимание.", "Уильям Джеймс"),
-    ("Ничто не имеет смысла само по себе. Смысл даёшь ты.", "Виктор Франкл"),
-    ("Амбиция без направления — это хаос.", "Питер Друкер"),
-    ("Если ты не можешь объяснить просто — ты не понимаешь достаточно хорошо.", "Фейнман"),
-    ("Ты не видишь мир таким, каков он есть. Ты видишь его таким, каков ты.", "Талмуд"),
-    ("Скука — это тревога без содержания.", "Пол Тиллих"),
-    ("Одиночество необходимо для того, кто хочет думать.", "Паскаль"),
-    ("Вся беда человека не в том, что он не знает — а в том что знает наверняка.", "Марк Твен"),
-    ("Лучше сделать и пожалеть, чем не сделать и пожалеть.", "Джованни Боккаччо"),
-    ("Первый признак невежды — уверенность.", "Бертран Рассел"),
-    ("Люди не идеи. Но идеи меняют людей.", "Достоевский"),
-    ("Настоящая щедрость по отношению к будущему — отдать всё настоящему.", "Камю"),
-    ("Читай чтобы жить.", "Флобер"),
-    ("Кто смотрит наружу — спит. Кто смотрит внутрь — просыпается.", "Юнг"),
-    ("Опыт — это название которое мы даём своим ошибкам.", "Оскар Уайльд"),
-    ("Деньги не сделают тебя счастливым. Но дадут тебе лучший вид на твои несчастья.", "Довлатов"),
+    ("Сократ", "Я знаю, что ничего не знаю."),
+    ("Марк Аврелий", "Потеря — это не что иное, как изменение, а изменение — это радость природы."),
+    ("Эпиктет", "Не требуй, чтобы происходящее было так, как ты хочешь; но желай, чтобы происходящее было так, как есть — и ты будешь иметь душевный покой."),
+    ("Ницше", "Без музыки жизнь была бы ошибкой."),
+    ("Камю", "Нужно представлять Сизифа счастливым."),
+    ("Сенека", "Не трать время на то, что другие считают важным. Живи по-своему."),
+    ("Витгенштейн", "О чём невозможно говорить, о том следует молчать."),
+    ("Гераклит", "Всё течёт, всё изменяется."),
+    ("Спиноза", "Мир будет счастлив только тогда, когда у каждого человека будет душа философа."),
+    ("Паскаль", "Всё несчастья людей происходят от одной причины: они не умеют спокойно сидеть в своей комнате."),
+    ("Декарт", "Я мыслю — следовательно, я существую."),
+    ("Аристотель", "Мы есть то, что мы делаем постоянно. Совершенство — это привычка."),
+    ("Конфуций", "Когда вам покажется, что цель недостижима, не изменяйте цель — изменяйте план действий."),
+    ("Дао Дэ Цзин", "Знающий не говорит. Говорящий не знает."),
+    ("Хайдеггер", "Язык — это дом бытия."),
 ]
 
-# ── Философия — глубже, острее, не банальности ───────────────────────────────
-_PHILOSOPHY = [
-    # Экзистенциальное
-    "Если бы ты умер завтра — что из незаконченного тебя бы беспокоило больше всего?",
-    "Большинство людей живут чужой жизнью. Насколько твоя жизнь — твоя?",
-    "Ты избегаешь думать о смерти. А ведь именно она придаёт смысл каждому дню.",
-    "Страдание неизбежно. Но большую часть своих страданий мы создаём сами.",
-    "Свобода пугает больше чем несвобода. Ты это замечаешь?",
 
-    # Мышление и восприятие
-    "Твоя карта — это не территория. Насколько точна твоя карта реальности?",
-    "Ты думаешь своими мыслями или мыслями тех, кого читал последние 30 дней?",
-    "Последний раз когда ты изменил своё мнение под влиянием аргументов — когда это было?",
-    "Самая опасная фраза: 'мы всегда так делали'. Где ты её используешь?",
-    "Что ты считаешь правдой только потому что все вокруг так считают?",
-
-    # Действие и прокрастинация
-    "Что ты откладываешь не потому что сложно, а потому что страшно?",
-    "Твоя прокрастинация — это не лень. Это сопротивление. Чему именно?",
-    "Идеальный момент никогда не наступит. Какой худший момент лучше чем этот?",
-    "Ты готовишься к жизни или живёшь? Разница принципиальная.",
-    "Разрыв между знанием и действием — где он у тебя самый большой?",
-
-    # Отношения и общество
-    "Кто из твоего окружения тянет тебя вниз? Ты это признаёшь себе?",
-    "Ты слушаешь чтобы понять или чтобы ответить?",
-    "Какую роль ты играешь которая давно перестала быть тобой?",
-    "Твои ценности и твои действия — насколько они совпадают?",
-
-    # Парадоксы
-    "Чем больше ты контролируешь — тем меньше живёшь.",
-    "Люди тратят здоровье чтобы заработать деньги. Потом деньги чтобы вернуть здоровье.",
-    "Ты хочешь быть правым или хочешь быть счастливым? Иногда надо выбирать.",
-    "Чего бы ты не делал даже за очень большие деньги?",
-
-    # Системное мышление
-    "Система всегда побеждает намерение. Какие системы ты строишь вокруг себя?",
-    "Твои привычки — это автопилот. Куда он тебя летит?",
-    "Проблема редко там где кажется. Где настоящая причина того что тебя беспокоит?",
-    "Что изменится в твоей жизни через год если ты ничего не изменишь сейчас?",
-]
-
-# ── Темы для поиска новостей ──────────────────────────────────────────────────
-# Фиксированный набор — все 5 тем каждый день, никакого рандома.
-# Запросы конструируются с датой в _get_news() чтобы гарантировать свежесть.
-_NEWS_TOPICS = [
-    ("AI искусственный интеллект новости",            "🤖 AI и технологии"),
-    ("главные мировые события",                        "🌍 Мир"),
-    ("бизнес технологии стартапы",                     "💼 Бизнес"),
-    ("наука исследования открытия",                    "🔬 Наука"),
-    ("психология продуктивность мышление исследования","🧠 Психология"),
-]
-
+# ── Агент ─────────────────────────────────────────────────────────────────────
 
 class MorningAgent(BaseAgent):
     agent_name = "morning"
-    timeout    = 60
+    timeout    = 90
 
     def _system_prompt(self) -> str:
         return ""
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
-        now = datetime.utcnow()
+        now_msk = datetime.now(timezone.utc) + timedelta(hours=_MOSCOW_UTC_OFFSET)
+        today   = now_msk.strftime("%Y-%m-%d")
 
-        # Параллельный сбор всего
-        weather_task = asyncio.create_task(_get_weather())
-        tasks_task   = asyncio.create_task(_get_tasks(ctx.user_id))
-        news_task    = asyncio.create_task(_get_news())
-
-        events_task  = asyncio.create_task(_get_events(ctx.user_id))
-        social_task  = asyncio.create_task(_get_social_trends())
-
-        weather, tasks_text, news_text, events_text, social_text = await asyncio.gather(
-            weather_task, tasks_task, news_task, events_task, social_task,
+        # Все блоки параллельно
+        (
+            weather_res,
+            events_res,
+            tasks_res,
+            news_res,
+            obs_res,
+        ) = await asyncio.gather(
+            _get_weather(ctx.user_id),
+            _get_events(ctx.user_id, now_msk),
+            _get_tasks(ctx.user_id),
+            _get_news_digest(),
+            _get_obsidian_schedule(today),
             return_exceptions=True,
         )
 
-        if isinstance(weather, Exception):      weather      = ""
-        if isinstance(tasks_text, Exception):   tasks_text   = ""
-        if isinstance(news_text, Exception):    news_text    = ""
-        if isinstance(events_text, Exception):  events_text  = ""
-        if isinstance(social_text, Exception):  social_text  = ""
+        def safe(v, default=""):
+            return v if isinstance(v, str) else default
 
-        # Цитата и философия
-        quote, author      = random.choice(_QUOTES)
-        philosophy_choices = random.sample(_PHILOSOPHY, 3)
+        weather   = safe(weather_res)
+        events    = safe(events_res)
+        tasks     = safe(tasks_res)
+        news      = safe(news_res)
+        obs_sched = safe(obs_res)
+        quote     = _get_quote(now_msk)
 
-        # Формируем дайджест
-        day    = _day_ru(now)
-        date   = now.strftime("%d.%m")
-        lines  = [f"**{day}, {date}**\n"]
+        # Сборка дайджеста
+        parts: list[str] = []
 
+        # Заголовок
+        day_name = _DAY_RU[now_msk.weekday()]
+        parts.append(
+            f"☀️ *Доброе утро!* {day_name}, {now_msk.strftime('%d.%m.%Y')}\n"
+        )
+
+        # Погода
         if weather:
-            lines.append(f"☁ {weather}\n")
+            parts.append(f"🌤 *Погода*\n{weather}\n")
 
-        if tasks_text:
-            lines.append(tasks_text)
+        # Расписание — Obsidian приоритетнее calendar_service
+        schedule = obs_sched or events
+        if schedule:
+            parts.append(f"📅 *Расписание*\n{schedule}\n")
 
-        if events_text:
-            lines.append(events_text)
+        # Задачи
+        if tasks:
+            parts.append(f"✅ *Задачи*\n{tasks}\n")
 
-        lines.append(f"_{quote}_\n— {author}\n")
+        # Новости
+        if news:
+            parts.append(news)
 
-        lines.append("**На подумать:**")
-        for idea in philosophy_choices:
-            lines.append(f"• {idea}")
+        # Философская цитата
+        if quote:
+            parts.append(f"\n💬 _{quote}_\n")
 
-        if news_text:
-            lines.append(f"\n{news_text}")
-
-        if social_text:
-            lines.append(f"\n{social_text}")
+        if len(parts) <= 2:
+            text = "🌅 Доброе утро! Не удалось загрузить дайджест — проверь подключение."
+        else:
+            text = "\n".join(parts)
 
         return AgentResult(
             success=True,
-            content="\n".join(lines),
+            content=text,
             agent_name=self.agent_name,
             needs_critic=False,
         )
@@ -181,236 +158,295 @@ class MorningAgent(BaseAgent):
 
 # ── Погода ────────────────────────────────────────────────────────────────────
 
-async def _get_weather() -> str:
+async def _get_weather(user_id: int) -> str:
+    """
+    Погода через wttr.in для города из Core Memory пользователя.
+    Если города нет — запрашивает без указания города (IP-геолокация wttr.in).
+    """
     try:
         import httpx
+        from app.llm_service import _get_user_city
+
+        city = _get_user_city(user_id)
+        url  = _WEATHER_API.format(city=city) if city else _WEATHER_API_ANON
+
         async with httpx.AsyncClient(timeout=8) as client:
-            r = await client.get(_WEATHER_API)
+            r = await client.get(url)
             r.raise_for_status()
             data = r.json()
 
-        cur            = data["current_condition"][0]
-        forecast_today = data["weather"][0]
-        temp           = int(cur["temp_C"])
-        feels          = int(cur["FeelsLikeC"])
-        desc           = (cur.get("lang_ru", [{}])[0].get("value")
-                          or cur["weatherDesc"][0]["value"])
-        wind           = int(cur["windspeedKmph"])
-        humid          = int(cur["humidity"])
-        max_t          = int(forecast_today["maxtempC"])
-        min_t          = int(forecast_today["mintempC"])
-        precip         = float(forecast_today.get("hourly", [{}])[6].get("precipMM", 0))
-        rain_str       = f", дождь {precip:.1f}мм" if precip > 0.5 else ""
+        cur  = data["current_condition"][0]
+        fc   = data["weather"][0]
 
-        if temp < -10:    tip = "одевайся тепло"
-        elif temp < 0:    tip = "мороз, тепло"
-        elif temp < 8:    tip = "куртка"
-        elif temp < 16:   tip = "лёгкая куртка"
-        elif temp < 22:   tip = "кофта"
-        else:             tip = "налегке"
-        if precip > 0.5:  tip += ", зонт"
-        if wind > 30:     tip += ", ветрено"
+        temp   = int(cur["temp_C"])
+        feels  = int(cur["FeelsLikeC"])
+        wind   = int(cur["windspeedKmph"])
+        humid  = int(cur["humidity"])
+        desc   = (
+            cur.get("lang_ru", [{}])[0].get("value")
+            or cur["weatherDesc"][0]["value"]
+        )
+        max_t  = int(fc["maxtempC"])
+        min_t  = int(fc["mintempC"])
+        precip = float(
+            next((h.get("precipMM", 0) for h in fc.get("hourly", []) if int(h.get("time", 0)) >= 600), 0)
+        )
 
-        return (f"{desc}. {temp}°C, ощущается {feels}°C. "
-                f"День: {min_t}…{max_t}°C. "
-                f"Влажность {humid}%{rain_str}. {tip}.")
+        # Совет
+        tip = (
+            "одевайся тепло" if temp < -10 else
+            "мороз, тепло"   if temp < 0   else
+            "куртка"          if temp < 8   else
+            "лёгкая куртка"   if temp < 16  else
+            "кофта"           if temp < 22  else
+            "налегке"
+        )
+        if precip > 0.5: tip += ", зонт"
+        if wind > 30:    tip += ", ветрено"
+
+        city_label = f" ({city})" if city else ""
+        rain_str   = f", осадки {precip:.1f}мм" if precip > 0.5 else ""
+
+        return (
+            f"{desc}{city_label}. {temp}°C, ощущается {feels}°C.\n"
+            f"День: {min_t}…{max_t}°C. Влажность {humid}%{rain_str}.\n"
+            f"→ {tip}."
+        )
     except Exception as e:
         logger.warning("Погода: %s", e)
+        return ""
+
+
+# ── Расписание ────────────────────────────────────────────────────────────────
+
+async def _get_events(user_id: int, now_msk: datetime) -> str:
+    """События сегодня + завтра из calendar_service."""
+    try:
+        from app.database import _conn
+
+        today    = now_msk.strftime("%Y-%m-%d")
+        tomorrow = (now_msk + timedelta(days=1)).strftime("%Y-%m-%d")
+
+        _EMOJI = {"red": "🔴", "green": "🟢", "yellow": "🟡",
+                  "purple": "🟣", "blue": "🔵"}
+
+        with _conn() as con:
+            rows_today = con.execute(
+                """SELECT time_start, time_end, title, color, description
+                   FROM events WHERE user_id=? AND date=?
+                   ORDER BY CASE WHEN time_start IS NULL THEN '99:99' ELSE time_start END""",
+                (user_id, today),
+            ).fetchall()
+            rows_tomorrow = con.execute(
+                """SELECT time_start, title, color
+                   FROM events WHERE user_id=? AND date=?
+                   ORDER BY CASE WHEN time_start IS NULL THEN '99:99' ELSE time_start END""",
+                (user_id, tomorrow),
+            ).fetchall()
+
+        if not rows_today and not rows_tomorrow:
+            return "Событий нет."
+
+        lines: list[str] = []
+
+        if rows_today:
+            lines.append("_Сегодня:_")
+            for r in rows_today:
+                t     = f" {r[0]}" if r[0] else ""
+                t_end = f"–{r[1]}" if r[1] else ""
+                emoji = _EMOJI.get(r[3] or "", "🔵")
+                desc  = f"\n    ↳ {r[4]}" if r[4] else ""
+                lines.append(f"  {emoji}{t}{t_end} {r[2]}{desc}")
+
+        if rows_tomorrow:
+            lines.append("_Завтра:_")
+            for r in rows_tomorrow:
+                t     = f" {r[0]}" if r[0] else ""
+                emoji = _EMOJI.get(r[2] or "", "🔵")
+                lines.append(f"  {emoji}{t} {r[1]}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning("События: %s", e)
         return ""
 
 
 # ── Задачи ────────────────────────────────────────────────────────────────────
 
 async def _get_tasks(user_id: int) -> str:
-    """
-    Задачи с умной приоритизацией:
-    - Сначала задачи с дедлайном СЕГОДНЯ (независимо от приоритета)
-    - Затем задачи с дедлайном ЗАВТРА
-    - Затем остальные по приоритету
-    """
+    """Активные задачи с приоритизацией: просроченные → сегодня → ближайшие."""
     try:
-        from datetime import datetime, timedelta
-        db_tasks = get_active_tasks(user_id)
-        if not db_tasks:
-            return ""
+        from app.database import _conn
 
-        today_str    = datetime.utcnow().date().isoformat()
-        tomorrow_str = (datetime.utcnow().date() + timedelta(days=1)).isoformat()
+        today = datetime.utcnow().strftime("%Y-%m-%d")
 
-        # Разбиваем по срочности дедлайна
-        due_today    = [t for t in db_tasks if t[3] and t[3][:10] == today_str]
-        due_tomorrow = [t for t in db_tasks if t[3] and t[3][:10] == tomorrow_str]
-        overdue      = [t for t in db_tasks if t[3] and t[3][:10] < today_str]
-        rest         = [t for t in db_tasks if not t[3] or t[3][:10] > tomorrow_str]
+        with _conn() as con:
+            rows = con.execute(
+                """SELECT title, deadline, priority
+                   FROM tasks
+                   WHERE user_id=? AND done=0
+                   ORDER BY
+                     CASE WHEN deadline < ? THEN 0
+                          WHEN deadline = ? THEN 1
+                          WHEN deadline IS NULL THEN 3
+                          ELSE 2 END,
+                     CASE WHEN priority='высокий' THEN 0
+                          WHEN priority='средний' THEN 1
+                          ELSE 2 END,
+                     deadline ASC
+                   LIMIT 8""",
+                (user_id, today, today),
+            ).fetchall()
 
-        _PRIO = {1: "🔴", 2: "🟡", 3: "🟠"}
-        lines = ["**📋 Задачи:**"]
+        if not rows:
+            return "Активных задач нет. 🎉"
 
-        if overdue:
-            lines.append("_🚨 Просрочено:_")
-            for t in overdue[:3]:
-                lines.append(f"  🚨 {t[1]} _(дедлайн: {t[3][:10]})_")
+        lines: list[str] = []
+        for title, deadline, priority in rows:
+            prefix = ""
+            if deadline:
+                if deadline < today:
+                    prefix = "🔴 просрочено"
+                elif deadline == today:
+                    prefix = "🟡 сегодня"
+                else:
+                    prefix = f"📌 {deadline}"
+            else:
+                prefix = "⬜"
+            lines.append(f"  {prefix} {title}")
 
-        if due_today:
-            lines.append("_⏰ Дедлайн сегодня:_")
-            for t in due_today[:3]:
-                lines.append(f"  ⏰ {t[1]}")
-
-        if due_tomorrow:
-            lines.append("_📅 Дедлайн завтра:_")
-            for t in due_tomorrow[:2]:
-                lines.append(f"  📅 {t[1]}")
-
-        remaining_slots = 5 - len(due_today) - len(due_tomorrow) - len(overdue)
-        if remaining_slots > 0 and rest:
-            lines.append("_В работе:_")
-            for t in rest[:remaining_slots]:
-                e = _PRIO.get(t[2], "🟡")
-                lines.append(f"  {e} {t[1]}")
-
-        total = len(db_tasks)
-        shown = len(due_today) + len(due_tomorrow) + len(overdue) + min(remaining_slots, len(rest))
-        if total > shown:
-            lines.append(f"_...и ещё {total - shown} задач_")
-
-        return "\n".join(lines) + "\n"
+        return "\n".join(lines)
     except Exception as e:
         logger.warning("Задачи: %s", e)
         return ""
 
 
-# ── События календаря ─────────────────────────────────────────────────────────
-
-async def _get_events(user_id: int) -> str:
-    """Ближайшие события на сегодня и завтра для дайджеста."""
-    try:
-        from datetime import datetime, timedelta
-        today    = datetime.utcnow().date()
-        tomorrow = today + timedelta(days=1)
-
-        ev_today    = get_events_for_date(user_id, today.isoformat())
-        ev_tomorrow = get_events_for_date(user_id, tomorrow.isoformat())
-
-        if not ev_today and not ev_tomorrow:
-            return ""
-
-        _EMOJI = {"blue": "🔵", "green": "🟢", "red": "🔴", "orange": "🟠", "purple": "🟣"}
-        lines  = ["**📅 Календарь:**"]
-
-        if ev_today:
-            lines.append("_Сегодня:_")
-            for ev in ev_today:
-                t = f" {ev['time_start']}" if ev["time_start"] else ""
-                lines.append(f"  {_EMOJI.get(ev['color'], '🔵')}{t} {ev['title']}")
-
-        if ev_tomorrow:
-            lines.append("_Завтра:_")
-            for ev in ev_tomorrow:
-                t = f" {ev['time_start']}" if ev["time_start"] else ""
-                lines.append(f"  {_EMOJI.get(ev['color'], '🔵')}{t} {ev['title']}")
-
-        return "\n".join(lines) + "\n"
-    except Exception as e:
-        logger.warning("События: %s", e)
-        return ""
-
-
 # ── Новости ───────────────────────────────────────────────────────────────────
 
-async def _get_news() -> str:
+async def _get_news_digest() -> str:
     """
-    Параллельный поиск по 5 фиксированным темам через news_search (Tavily topic=news).
-    Запросы содержат дату → только свежие результаты за последние сутки.
-    Пересказывается через быстрый LLM с деталями: кто, что, когда.
+    1. Параллельный поиск по трём блокам (AI, IT, Мир) через Tavily.
+    2. Один LLM-вызов (router_model) для пересказа — экономим токены.
+    3. Акцент: последние 24 часа, конкретика (компании, имена, числа).
     """
     try:
-        from app.search_service import SearchService
-        from langchain_groq import ChatGroq
-        from langchain_core.messages import SystemMessage, HumanMessage
+        from deeper.services.web_search import WebSearch
+        from deeper.config import deeper_config
 
-        svc  = SearchService()
-        now  = datetime.utcnow()
-        date = now.strftime("%d %B %Y")  # напр. "22 April 2026"
+        if not deeper_config.tavily_api_key:
+            return ""
 
-        # Обогащаем запрос датой — поисковик ранжирует свежее выше архивного
-        queries_with_date = [
-            (f"{q} {date}", label)
-            for q, label in _NEWS_TOPICS
-        ]
+        svc  = WebSearch(api_key=deeper_config.tavily_api_key, pages_per_query=3)
+        date = datetime.utcnow().strftime("%d %B %Y")
 
-        # Параллельный поиск — news_search использует Tavily topic=news + DDG fallback
+        # Собираем задачи: по два лучших запроса на блок
+        tasks_map: dict[str, list] = {}
+        for block, queries in _NEWS_QUERIES.items():
+            tasks_map[block] = [
+                svc.search_query(f"{q} {date}") for q in queries[:2]
+            ]
+
+        # Параллельный поиск всех запросов
+        all_tasks = [(block, coro)
+                     for block, coros in tasks_map.items()
+                     for coro in coros]
         results = await asyncio.gather(
-            *[svc.news_search(query, max_results=4) for query, _ in queries_with_date],
+            *[coro for _, coro in all_tasks],
             return_exceptions=True,
         )
 
-        raw_sections = []
-        for (_, label), result in zip(queries_with_date, results):
+        # Группируем сниппеты по блоку
+        block_texts: dict[str, list[str]] = {}
+        for (block, _), result in zip(all_tasks, results):
             if isinstance(result, Exception) or not result:
                 continue
-            text = str(result).strip()
-            if len(text) < 40:
-                continue
-            raw_sections.append((label, text[:1200]))  # больше текста → лучше пересказ
+            bucket = block_texts.setdefault(block, [])
+            # answers — Tavily AI-синтез, самое ценное
+            for ans in (result.get("answers") or [])[:2]:
+                if ans and len(ans) > 30:
+                    bucket.append(ans[:400])
+            # snippets — сырые фрагменты
+            for snip in (result.get("snippets") or [])[:3]:
+                if snip and len(snip) > 40:
+                    bucket.append(snip[:300])
 
-        if not raw_sections:
+        if not any(block_texts.values()):
             return ""
 
-        raw_combined = "\n\n".join(
-            f"[{label}]\n{text}" for label, text in raw_sections
-        )
+        # Формируем контекст для LLM
+        raw_parts: list[str] = []
+        for block, texts in block_texts.items():
+            if texts:
+                combined = "\n".join(f"- {t}" for t in texts[:6])
+                raw_parts.append(f"{block}\n{combined}")
 
+        raw_combined = "\n\n".join(raw_parts)
+
+        # Один LLM-вызов — router_model достаточно для пересказа
         llm = ChatGroq(
             api_key=settings.groq_api_key,
-            model=settings.router_model,  # быстрая модель, не тратим основную
-            temperature=0.2,
-        )
-
-        prompt = (
-            f"Сегодня {date}. Ниже — результаты поиска новостей за последние сутки по 5 темам.\n"
-            "Для каждой темы напиши ИНФОРМАТИВНЫЙ пересказ: 2-3 предложения с конкретикой — "
-            "названия компаний, имена, цифры, события. Не пиши общими словами.\n"
-            "Если новостей по теме нет или они неактуальны — пропусти тему.\n"
-            "Сохрани эмодзи-метку. Никаких URL. Только суть.\n\n"
-            "Формат:\n"
-            "🤖 AI и технологии\n<2-3 предложения>\n\n"
-            "🌍 Мир\n<2-3 предложения>\n\nи т.д.\n\n"
-            f"Исходные данные:\n{raw_combined}"
+            model=settings.router_model,
+            temperature=0.15,
         )
 
         response = await llm.ainvoke([
             SystemMessage(content=(
                 "Ты редактор новостного дайджеста. Пишешь кратко, конкретно, без воды. "
-                "Факты: имена, цифры, компании, события. Никаких URL."
+                "Обязательно: компании, имена людей, конкретные числа/версии/суммы. "
+                "Никаких URL. Никаких вводных фраз типа 'В мире технологий...'. "
+                "Максимум 3 предложения на блок."
             )),
-            HumanMessage(content=prompt),
+            HumanMessage(content=(
+                f"Сегодня {date}. Вот сырые данные из поиска.\n"
+                "Напиши дайджест. Сохрани эмодзи-заголовки блоков.\n"
+                "Если данных по блоку нет или они несвежие — пропусти блок.\n\n"
+                f"{raw_combined}"
+            )),
         ])
-        summary = str(response.content).strip()
 
-        if not summary:
+        summary = str(response.content).strip()
+        if not summary or len(summary) < 50:
             return ""
 
-        header = "─" * 20
-        return f"\n{header}\n**📰 Новости за последние сутки**\n\n{summary}"
+        return f"📰 *Новости за последние 24 часа*\n\n{summary}"
 
     except Exception as e:
         logger.warning("Новости: %s", e)
         return ""
 
 
-async def _get_social_trends() -> str:
-    """Горячее с Reddit и X для утреннего дайджеста."""
+# ── Obsidian расписание ───────────────────────────────────────────────────────
+
+async def _get_obsidian_schedule(date: str) -> str:
+    """Читает расписание из Obsidian vault — приоритетнее calendar_service."""
+    from app.config import settings as _cfg
+    if not _cfg.obsidian_enabled:
+        return ""
     try:
-        from app.search_service import SocialSearchService
-        svc = SocialSearchService()
-        result = await svc.trending_digest(topics=["tech", "news"], reddit_count=3, x_count=2)
-        return result
+        from app.services.obsidian import read
+        content = await read(f"📅 Расписание/{date}.md")
+        if not content:
+            return ""
+        # Убираем markdown-заголовок файла
+        lines = [l for l in content.split("\n")
+                 if l.strip() and not l.startswith("# Расписание")]
+        return "\n".join(lines[:20])
     except Exception as e:
-        logger.warning("Social trends: %s", e)
+        logger.debug("Obsidian schedule: %s", e)
         return ""
 
 
-def _day_ru(dt: datetime) -> str:
-    days = ["Понедельник", "Вторник", "Среда", "Четверг",
-            "Пятница", "Суббота", "Воскресенье"]
-    return days[dt.weekday()]
+# ── Цитата ────────────────────────────────────────────────────────────────────
+
+def _get_quote(now: datetime) -> str:
+    """Детерминированная цитата по дню года — каждый день новая."""
+    author, text = _QUOTES[now.timetuple().tm_yday % len(_QUOTES)]
+    return f"«{text}» — {author}"
+
+
+# ── Вспомогательное ───────────────────────────────────────────────────────────
+
+_DAY_RU = [
+    "Понедельник", "Вторник", "Среда", "Четверг",
+    "Пятница", "Суббота", "Воскресенье",
+]

@@ -2,7 +2,7 @@
 agent_registry.py — реестр всех агентов системы.
 """
 from dataclasses import dataclass
-from app.feature_flags import FEATURE_IMAGE_AGENT, FEATURE_IDEAS_AGENT
+import app.feature_flags as _ff
 
 
 @dataclass(frozen=True)
@@ -45,40 +45,7 @@ AGENTS: dict[str, AgentInfo] = {
         parallelizable=True, needs_critic=True,
     ),
 
-    "image": AgentInfo(
-        name="image", title="Image Agent",
-        module="app.agents.image_agent", class_name="ImageAgent",
-        description="Генерирует изображения по текстовому описанию через FLUX.",
-        keywords=(
-            "нарисуй", "сгенерируй картинк", "создай изображени",
-            "draw", "generate image", "картинк", "изображени", "визуализируй",
-        ),
-        parallelizable=True,
-        enabled=FEATURE_IMAGE_AGENT,
-    ),
 
-    "research": AgentInfo(
-        name="research", title="Research Agent",
-        module="app.agents.research_agent", class_name="ResearchAgent",
-        description=(
-            "Исследует темы, проверяет факты, анализирует научные данные. "
-            "Три режима: research (глубокое исследование), "
-            "fact_check (проверка утверждения — за/против), "
-            "science (верификация научных данных с источниками)."
-        ),
-        keywords=(
-            "исследуй", "изучи", "найди информацию", "что известно",
-            "это правда", "верно ли", "проверь факт", "миф или",
-            "на самом деле", "за и против", "плюсы и минусы",
-            "научн", "исследовани", "докажи", "источник", "достоверн",
-            "статистик", "данные говорят", "обзор темы",
-            "reddit", "реддит", "что на реддите", "горячее на reddit",
-            "twitter", "x.com", "твиттер", "тренды в твиттере", "тренды на x",
-            "что обсуждают", "горячие темы", "тренды", "что сейчас обсуждают",
-            "viral", "trending",
-        ),
-        needs_critic=True,
-    ),
 
     "todo": AgentInfo(
         name="todo", title="Todo Agent",
@@ -132,7 +99,7 @@ AGENTS: dict[str, AgentInfo] = {
             "а что если", "альтернативы", "scamper",
         ),
         parallelizable=True,
-        enabled=FEATURE_IDEAS_AGENT,
+        enabled=True,  # управляется через settings.module_ideas
     ),
 
     "explain": AgentInfo(
@@ -154,7 +121,7 @@ AGENTS: dict[str, AgentInfo] = {
     ),
 
     "deep_research": AgentInfo(
-        name="deep_research", title="Deep Research",
+        name="deep_research", title="Deep Research (DEEper)",
         module="app.agents.deep_research_agent", class_name="DeepResearchAgent",
         description=(
             "Глубокое многошаговое исследование темы в стиле Perplexity Deep Research. "
@@ -168,6 +135,23 @@ AGENTS: dict[str, AgentInfo] = {
             "всё о", "расскажи подробно всё", "подготовь отчёт",
             "аналитика по", "детально изучи", "развёрнутый анализ",
         ),
+    ),  # DEEper подключён — Phase 2 complete
+
+    "obsidian": AgentInfo(
+        name="obsidian", title="Obsidian",
+        module="app.agents.obsidian_agent", class_name="ObsidianAgent",
+        description=(
+            "Управляет Obsidian vault: создаёт, ищет, читает, редактирует заметки. "
+            "Поиск по vault, список папок, добавление текста в существующие файлы. "
+            "Использовать когда пользователь явно упоминает Obsidian, vault или заметки."
+        ),
+        keywords=(
+            "obsidian", "vault", "заметк", "создай заметку", "сохрани заметку",
+            "найди в vault", "поиск в obsidian", "открой заметку", "прочитай заметку",
+            "список папки", "что в vault", "добавь в заметку", "удали заметку",
+            "покажи vault",
+        ),
+        needs_critic=False,
     ),
 
     "diary": AgentInfo(
@@ -254,7 +238,25 @@ def create_agent(name: str):
 
 
 def get_enabled_agents() -> list[AgentInfo]:
-    return [a for a in AGENTS.values() if a.enabled]
+    import app.settings as _S
+    s = _S.get()
+    # Карта: имя агента → настройка в UserSettings
+    _MODULE_MAP = {
+        "diary":          s.module_diary,
+        "calendar":       s.module_calendar,
+        "todo":           s.module_todo,
+        "deep_research":  s.module_deep_research,
+        "obsidian":       getattr(s, "module_obsidian", True),
+        "ideas":          s.module_ideas,
+    }
+    result = []
+    for a in AGENTS.values():
+        if not a.enabled:
+            continue
+        if a.name in _MODULE_MAP and not _MODULE_MAP[a.name]:
+            continue  # отключён через /settings
+        result.append(a)
+    return result
 
 
 def get_routable_agents() -> list[AgentInfo]:

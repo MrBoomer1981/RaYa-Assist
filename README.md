@@ -1,82 +1,48 @@
-# RaYa — Personal AI Assistant
+# RaYa + DEEper
 
-Персональный ИИ-ассистент в Telegram на базе Groq (LLaMA 3.3 70B).
+Личная AI-система для одного пользователя.
 
-## Стек
-- **LLM:** Groq API (llama-3.3-70b-versatile / llama-3.1-8b-instant для роутера)
-- **Поиск:** Tavily + DuckDuckGo fallback
-- **БД:** SQLite (WAL-режим) на Railway Volume
-- **Деплой:** Railway
-
-## Архитектура
+## Структура
 
 ```
-handlers.py          — Telegram входная точка
-llm_service.py       — оркестрация: поиск + агенты + память
-agents/orchestrator  — выбор и запуск агента
-agents/router        — 3-уровневый роутинг (regex → keywords → LLM)
-agents/registry      — реестр агентов с ключевыми словами
+raya-deeper/
+├── app/               # Рая — Telegram-бот, агенты, БД
+│   ├── agents/        # Оркестратор + агенты (calendar, diary, todo, ...)
+│   │   └── deep_research_agent.py  ← мост к DEEper
+│   ├── config.py      # Конфиг (читает .env)
+│   └── ...
+├── deeper/            # DEEper — модуль поиска (дорабатывается отдельно)
+│   ├── config.py      # Конфиг DEEper (тот же .env)
+│   ├── services/      # ResearchAgent, KnowledgeBase, WebSearch, ...
+│   └── utils/
+├── data/              # SQLite + FAISS (Railway: persistent volume /app/data)
+├── main.py
+├── requirements.txt
+├── railway.toml
+└── .env.example       # → скопировать в .env и заполнить
 ```
 
-## Агенты
-| Агент | Назначение |
-|---|---|
-| raya | Основной: разговор, вопросы, поиск |
-| calendar | События, расписание, дедлайны |
-| diary | Личный дневник, рефлексия |
-| todo | Задачи и напоминания |
-| code | Написание и объяснение кода |
-| research | Глубокий поиск с источниками |
-| deep_research | Perplexity-style: декомпозиция → параллельный поиск → отчёт |
-| text | Редактирование и трансформация текста |
-| explain | Объяснение концепций |
-| ideas | Мозговой штурм |
-| image | Генерация изображений |
-| morning | Утренний дайджест (06:45 МСК) |
+## Интеграция DEEper
 
-## Команды
-- `/start` — приветствие
-- `/stats` — статистика за неделю
-- `/memory` — что знает о пользователе
-- `/forget` — удалить память
-- `/reminders` — активные напоминания
-- `/settings` — настройки
-- `/clear` — очистить историю
+Единственная точка соединения: `app/agents/deep_research_agent.py → DEEperBridge`
 
-## Переменные окружения
-```
-TELEGRAM_BOT_TOKEN=
-GROQ_API_KEY=
-TAVILY_API_KEY=
-TELEGRAM_USER_ID=   # опционально
-```
+- DEEper **не знает** о Рае — можно дорабатывать `deeper/` независимо
+- Рая вызывает `bridge.research(topic, mode, progress_cb)` и получает `dict`
+- Live-прогресс: каждый шаг DEEper обновляет сообщение в Telegram
 
-## Changelog
+## Деплой на Railway
 
-### 2026-04-27 — Финальная пересборка
+1. Скопировать `.env.example` → `.env` и заполнить все ключи
+2. Установить `OWNER_USER_ID` (свой Telegram ID)
+3. `git push` → Railway автоматически деплоит
+4. Persistent volume монтируется на `/app/data`
 
-**Структурные изменения:**
-- Удалены мёртвые файлы: `app/raya_agent.py` (дубликат), `app/agents/llm_service.py` (устаревший), `app/agents/intent_classifier.py` (не используется), `app/integrations/` (пустой каркас)
-- Добавлены новые агенты: `calendar_agent`, `diary_agent`, `deep_research_agent`
-- Добавлены новые сервисы: `deep_research.py`, `sunday_digest.py`
+### Переменные Railway (Settings → Variables)
+Все переменные из `.env.example` добавить вручную в Railway UI.
+`.env` файл НЕ коммитится — только в Railway Variables.
 
-**Ключевые фиксы:**
-- Поиск погоды: classifier всегда ищет погоду, smart_search(mode=news) для актуальности, город из памяти автоматически добавляется в запрос
-- "Найди в интернете" → берёт тему из истории разговора
-- "я живу в X" после вопроса о погоде → автоматически перезапускает поиск с городом
-- Бот больше не сомневается в данных поиска (убрано правило "данные могут быть устаревшими" при наличии результатов)
-- Router: 3 уровня — разговорные реплики/факты без LLM, затем keywords, затем LLM
-- Память: LLM видит текущие факты и разрешает конфликты, устаревшие записи удаляются
-- Prompt cache: инвалидируется мгновенно при смене настроек (не TTL 60с)
-- `kc_set` исправлен: добавлен `query_hash` под схему живой БД
-- `core.py`: `from __future__ import annotations` перенесён на строку 1
-- `database.py`: `import json as _json` на уровне модуля (не локально)
-- `proactive_service.py`: удалён дублирующий блок SCHEDULER в конце файла
+## Phase 3 (Obsidian)
 
-**Новые возможности:**
-- Календарь: создание, просмотр, удаление событий через чат
-- Дневник: запись мыслей, авто-определение настроения, рефлексия
-- Deep Research: декомпозиция вопроса → параллельный поиск → gap-filling → структурированный отчёт
-- Reddit/X тренды: через Tavily site: фильтр
-- Утренний дайджест: погода + задачи с дедлайнами + календарь + новости + Reddit/X
-- /stats: сообщения, задачи, настроение, темы, события за неделю
+Заполнить в Railway Variables:
+- `OBSIDIAN_VAULT_PATH` — прямой доступ к vault
+- или `OBSIDIAN_API_URL` + `OBSIDIAN_API_KEY` — через плагин

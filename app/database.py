@@ -273,12 +273,21 @@ def init_db() -> None:
 
     logger.info("✅ База данных готова: %s", DB_PATH)
     _migrate()
-    # Таблица пользовательских настроек
+    # user_settings removed (single-user mode)
+
+    # Таблицы Recall Memory (эпизоды разговоров)
     try:
-        from app.user_settings import _ensure_table
-        _ensure_table()
-    except Exception as e:
-        logger.warning("user_settings table: %s", e)  # идемпотентные ALTER TABLE миграции
+        from app.services.memory.recall import _init_tables as _init_recall
+        _init_recall()
+    except Exception as _e:
+        logger.error("❌ Recall tables init FAILED: %s", _e, exc_info=True)
+
+    # Core Memory — добавляем importance/last_accessed в structured_memory
+    try:
+        from app.services.memory.core import _ensure_importance_column
+        _ensure_importance_column()
+    except Exception as _e:
+        logger.error("❌ Core memory columns FAILED: %s", _e, exc_info=True)
 
 
 # ── История ───────────────────────────────────────────────────────────────────

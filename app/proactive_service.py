@@ -10,22 +10,18 @@ import itertools
 import logging
 import os
 from pathlib import Path
-from app.feature_flags import (
-    FEATURE_PROACTIVE_ACTIVITY,
-    FEATURE_PROACTIVE_IDEA_FOLLOWUP, FEATURE_PROACTIVE_SILENCE,
-    FEATURE_REMINDER_WARNING, FEATURE_TASK_DEADLINES,
-)
+import app.feature_flags as _ff
 from langchain_core.messages import HumanMessage, SystemMessage
 import sqlite3
 from datetime import datetime, timedelta
 
 from app.config import settings
 from app.database import (
-    DB_PATH, get_active_tasks, get_top_interactions,
+    DB_PATH, _conn,
+    get_active_tasks, get_top_interactions,
     get_user_name, load_history, load_memory, save_messages,
     get_all_known_users, get_due_reminders, mark_reminder_done, reschedule_reminder,
 )
-from app.database import _conn  # для прямых SQL запросов
 
 # ── Временные константы (секунды) ────────────────────────────────────────────
 _1_HOUR   = 3_600
@@ -295,9 +291,6 @@ async def check_all_triggers(
     state — dict с персистентным состоянием между тиками (хранится в ProactiveService).
     Возвращает True если хоть одно сообщение отправлено.
     """
-    from app.user_settings import get_settings as _get_us
-    us = _get_us(user_id)
-
     now_msk = _now_msk()
 
     # Не проверяем ночью
@@ -307,12 +300,12 @@ async def check_all_triggers(
     sent = False
 
     # 1. Reminder warning
-    if not sent and FEATURE_REMINDER_WARNING and us.reminder_warning:
+    if not sent and _ff.reminder_warning():
         sent = await check_reminder_warning(user_id, bot, llm)
 
     # 2. Task deadlines
     last_task_check = state.get("last_task_check")
-    if not sent and FEATURE_TASK_DEADLINES and us.task_reminders and (not last_task_check or
+    if not sent and _ff.task_deadlines() and (not last_task_check or
             (datetime.utcnow() - last_task_check).total_seconds() > _1_HOUR):
         sent_task_ids = state.setdefault("sent_task_ids", set())
         if await check_task_deadlines(user_id, bot, llm, sent_task_ids):
@@ -334,7 +327,7 @@ async def check_all_triggers(
     # 4. Idea follow-up
     last_idea_check = state.get("last_idea_check")
     # Idea followup — проверяем настройку пользователя
-    if not sent and FEATURE_PROACTIVE_IDEA_FOLLOWUP and (not last_idea_check or
+    if not sent and _ff.proactive_ideas() and (not last_idea_check or
             (datetime.utcnow() - last_idea_check).total_seconds() > _12_HOURS):
         sent_diary_ids = state.setdefault("sent_diary_ids", set())
         if await check_idea_followup(user_id, bot, llm, sent_diary_ids):
@@ -342,7 +335,7 @@ async def check_all_triggers(
         state["last_idea_check"] = datetime.utcnow()
 
     # 5. Activity suggestion
-    if not sent and FEATURE_PROACTIVE_ACTIVITY:
+    if not sent and _ff.proactive_activity():
         ok, new_ts = await check_activity_suggestion(
             user_id, bot, llm, state.get("last_suggestion")
         )
@@ -365,9 +358,11 @@ from aiogram import Bot
 logger = logging.getLogger(__name__)
 
 _MOSCOW_UTC_OFFSET  = 3
-_DIGEST_HOUR_MSK    = 6      # 06:45 МСК
-_DIGEST_MINUTE_MSK  = 45
-_SILENCE_HOURS      = 4      # через сколько часов писать первой
+# Время дайджеста и тишины теперь из app.settings (меняются через /settings)
+import app.settings as _us_mod
+def _digest_hour()   -> int: return _us_mod.get().digest_hour
+def _digest_minute() -> int: return _us_mod.get().digest_minute
+def _silence_hours() -> int: return _us_mod.get().silence_hours
 _CHECK_INTERVAL_SEC = 60     # проверка каждую минуту
 
 
@@ -432,8 +427,7 @@ class ProactiveService:
         self._sched_task = asyncio.create_task(self._run_scheduler())
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "🌅 Проактивный сервис запущен | дайджест %02d:%02d МСК | тишина %dч",
-            _DIGEST_HOUR_MSK, _DIGEST_MINUTE_MSK, _SILENCE_HOURS,
+            "🌅 Проактивный сервис запущен | дайджест из settings | тишина из settings",
         )
 
     def stop(self) -> None:
@@ -500,7 +494,7 @@ class ProactiveService:
 
         # ── Утренний дайджест — строго 6:45 МСК, 1 раз в день ──────────────
         # Окно ±2 минуты — защита от пропущенного тика под нагрузкой
-        digest_target = _DIGEST_HOUR_MSK * 60 + _DIGEST_MINUTE_MSK
+        digest_target = _digest_hour() * 60 + _digest_minute()
         current_msk   = msk_hour * 60 + msk_minute
         in_window     = abs(current_msk - digest_target) <= 2
 
@@ -520,7 +514,7 @@ class ProactiveService:
         # Не пишем чаще чем раз в _SILENCE_HOURS
         if self._last_initiative:
             since_initiative = (now_utc - self._last_initiative).total_seconds() / _1_HOUR
-            if since_initiative < _SILENCE_HOURS:
+            if since_initiative < _silence_hours():
                 return
 
         await self._check_silence(now_utc)
@@ -540,7 +534,7 @@ class ProactiveService:
 
     async def _check_silence(self, now_utc: datetime) -> None:
         """Проверяет тишину и пишет первой если надо."""
-        if not FEATURE_PROACTIVE_SILENCE:
+        if not _ff.proactive_silence():
             return
         try:
             known_users = get_all_known_users()
@@ -662,7 +656,7 @@ async def generate_initiative_message(user_id: int, llm) -> str:
             if tasks:
                 context += f"Активные задачи: {', '.join(t[1] for t in tasks[:3])}\n"
         except Exception:
-            pass
+            logger.debug("suppressed", exc_info=True)
 
         prompt = next(_initiative_cycle)
 

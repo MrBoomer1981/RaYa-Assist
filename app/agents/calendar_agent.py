@@ -22,6 +22,7 @@ from app.calendar_service import (
 )
 from app.database import delete_event, get_upcoming_events, update_event
 from app.utils import strip_json
+from app.config import settings as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,31 @@ def _resolve_date(raw: str) -> str:
     return ""
 
 
+async def _sync_day_to_obsidian(user_id: int, date: str) -> None:
+    """Синхронизирует события одного дня в Obsidian. Fire-and-forget."""
+    try:
+        from app.services.obsidian import save_calendar_day as obs_cal
+        from app.database import get_upcoming_events
+        import sqlite3
+
+        # Берём события именно на эту дату из БД
+        from app.database import _conn
+        with _conn() as con:
+            rows = con.execute(
+                """SELECT id, date, time_start, time_end, title, description, color
+                   FROM events WHERE user_id = ? AND date = ?
+                   ORDER BY CASE WHEN time_start IS NULL THEN '99:99' ELSE time_start END""",
+                (user_id, date)
+            ).fetchall()
+        events = [{"id": r[0], "date": r[1], "time_start": r[2] or "",
+                   "time_end": r[3] or "", "title": r[4],
+                   "description": r[5], "color": r[6]} for r in rows]
+        await obs_cal(date, events)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("📅 Obsidian calendar sync failed: %s", e)
+
+
 class CalendarAgent(BaseAgent):
     agent_name = "calendar"
     timeout    = 30
@@ -157,6 +183,8 @@ class CalendarAgent(BaseAgent):
                 )
                 logger.info("📅 CalendarAgent: добавлено '%s' на %s | user_id=%s",
                             event["title"][:40], date, ctx.user_id)
+                if _cfg.obsidian_enabled:
+                    await _sync_day_to_obsidian(ctx.user_id, date)
             except Exception as e:
                 logger.warning("calendar: ошибка добавления события: %s", e)
 
@@ -184,6 +212,10 @@ class CalendarAgent(BaseAgent):
             ok = delete_event(event_id, ctx.user_id)
             logger.info("🗑️ CalendarAgent: удалено событие #%d ok=%s | user_id=%s",
                         event_id, ok, ctx.user_id)
+            if ok and _cfg.obsidian_enabled:
+                # Дата нужна для sync — берём из контекста (уже распаршена выше)
+                _sync_date = show_match.group(1).strip() if show_match else today
+                await _sync_day_to_obsidian(ctx.user_id, _resolve_date(_sync_date) or today)
 
         # ── UPDATE EVENT ───────────────────────────────────────────────────────
         upd_match = re.search(r"<update_event>(.*?)</update_event>", raw, re.DOTALL)
@@ -194,6 +226,9 @@ class CalendarAgent(BaseAgent):
                 ok = update_event(event_id, ctx.user_id, **data)
                 logger.info("✏️ CalendarAgent: обновлено #%d ok=%s | user_id=%s",
                             event_id, ok, ctx.user_id)
+                if ok and _cfg.obsidian_enabled:
+                    upd_date = data.get("date", today)
+                    await _sync_day_to_obsidian(ctx.user_id, upd_date)
             except Exception as e:
                 logger.warning("calendar: ошибка обновления: %s", e)
 

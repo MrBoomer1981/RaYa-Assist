@@ -70,6 +70,8 @@ _EXTRACTION_PROMPT = """\
 - Только JSON, без пояснений"""
 
 
+# DEPRECATED: заменён на app.services.memory.MemoryManager
+# Оставлен для обратной совместимости — не удалять без проверки импортов
 class MemoryService:
     """Сервис управления структурированной памятью."""
 
@@ -579,7 +581,7 @@ class ConsistencyService:
                     topic, dec[:40], user_id,
                 )
         except Exception:
-            pass  # автосохранение — некритично
+            logger.debug("auto_save_decisions suppressed", exc_info=True)
 
     async def _llm_check(
         self,

@@ -22,12 +22,12 @@ from app.config import settings
 from app.database import load_memory, save_messages
 
 from app.personality_service import update_feedback, update_emotional_patterns
+import app.settings as _user_settings_mod
 logger = logging.getLogger(__name__)
 
-# Семафор — ограничение параллельных LLM запросов.
-# Настраивается через env LLM_CONCURRENCY (default 10).
-# Groq free tier: ~30 RPM, 10 concurrent оптимально для 25+ users.
-_LLM_CONCURRENCY = int(__import__("os").getenv("LLM_CONCURRENCY", "10"))
+# Семафор — ограничение параллельных LLM запросов (single-user = 3 достаточно).
+import os as _os
+_LLM_CONCURRENCY = int(_os.getenv("LLM_CONCURRENCY", "3"))
 _LLM_SEMAPHORE = asyncio.Semaphore(_LLM_CONCURRENCY)
 
 # Быстрый keyword pre-filter — отсекает явно неподходящие запросы
@@ -94,12 +94,31 @@ class ChatResult:
     metadata: dict            = field(default_factory=dict)
 
 
-import re as _weather_re_module
+import re as _re
 
-_WEATHER_RE = _weather_re_module.compile(
+_WEATHER_RE = _re.compile(
     r"\b(погода|температура|прогноз|дождь|снег|ветер|климат|осадки)\b",
-    _weather_re_module.IGNORECASE,
+    _re.IGNORECASE,
 )
+
+
+_LOCATION_RE = _re.compile(
+    r"^(я живу|живу|нахожусь|я в|мой город|мой регион).{1,40}$",
+    _re.IGNORECASE,
+)
+
+
+
+def _format_search_results(raw: dict) -> str:
+    """Форматирует результат WebSearch.search_query() в строку для LLM-контекста."""
+    parts = []
+    for answer in raw.get("answers", [])[:2]:
+        if answer:
+            parts.append(answer)
+    for snippet in raw.get("snippets", [])[:4]:
+        if snippet:
+            parts.append(snippet)
+    return "\n\n".join(parts) if parts else ""
 
 
 def _get_user_city(user_id: int) -> str:
@@ -113,7 +132,7 @@ def _get_user_city(user_id: int) -> str:
                 if key in section:
                     return section[key]
     except Exception:
-        pass
+        logger.debug("_get_user_city failed", exc_info=True)
     return ""
 
 
@@ -127,29 +146,35 @@ class LLMService:
         self._llm = ChatGroq(
             api_key=settings.groq_api_key,
             model=settings.model_name,
-            temperature=settings.temperature,
+            temperature=_user_settings_mod.get().temperature,
         )
-        # Лёгкая модель для классификатора поиска (быстро и дёшево)
+        # Лёгкая модель для классификатора поиска и MemoryManager (быстро и дёшево)
         self._router_llm = ChatGroq(
             api_key=settings.groq_api_key,
             model=settings.router_model,
             temperature=0.0,
         )
+        self._fast_llm = self._router_llm  # alias — тот же инстанс
         self._search: Optional[Any] = None
         if settings.search_enabled:
-            from app.search_service import SearchService
-            self._search = SearchService()
-            logger.info("🔍 Поиск в интернете включён")
+            from deeper.services.web_search import WebSearch
+            from deeper.config import deeper_config
+            self._search = WebSearch(
+                api_key=deeper_config.tavily_api_key,
+                pages_per_query=settings.agent_timeout // 10 or 2,
+            )
+            logger.info("🔍 DEEper WebSearch подключён")
 
         self._msg_counter: dict[int, int] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._orchestrator: Optional[Any] = None
 
         from app.llm_pipeline import (
-            MemoryService, ContextService, ConsistencyService,
+            ContextService, ConsistencyService,
               RouterCalibration,
         )
-        self._memory      = MemoryService(self._llm)
+        # MemoryManager живёт в Orchestrator; здесь ссылка добавляется при первом _get_orchestrator()
+        self._memory = None  # инициализируется в _get_orchestrator()
         self._context     = ContextService(self._llm)
           # ToneController убран — логика в системном промпте
         self._consistency = ConsistencyService(self._llm)
@@ -212,7 +237,8 @@ class LLMService:
         """Ленивая инициализация оркестратора."""
         if self._orchestrator is None:
             from app.agents.orchestrator import Orchestrator
-            self._orchestrator = Orchestrator()
+            self._orchestrator = Orchestrator(self._llm, self._llm, self._fast_llm)
+            self._memory = self._orchestrator._memory  # единственный инстанс
         return self._orchestrator
 
     # ── Фоновые задачи ────────────────────────────────────────────────────────
@@ -241,17 +267,10 @@ class LLMService:
         Точка входа — делегирует оркестратору.
         Сохраняет в историю, извлекает факты в фоне.
         """
-        # Миграция старых фактов → structured_memory (один раз, фоново)
-        self._run_background(self._memory.migrate_old_memory(user_id))
-
         # LLM-классификатор запускаем сразу как задачу —
         # пока он думает, мы синхронно готовим decisions_block и calibration_hint
         # Если пользователь уточняет локацию после вопроса о погоде
         # ("я живу в Самаре") — добавляем погодный контекст к запросу
-        _LOCATION_RE = __import__("re").compile(
-            r"^(я живу|живу|нахожусь|я в|мой город|мой регион).{1,40}$",
-            __import__("re").IGNORECASE,
-        )
         _enriched_message = user_message
         if _LOCATION_RE.match(user_message.strip()):
             # Проверяем была ли предыдущая тема про погоду
@@ -270,7 +289,7 @@ class LLMService:
                         _enriched_message = f"погода завтра {_city}"
                         logger.info("weather: follow-up location → '%s'", _enriched_message)
             except Exception:
-                pass
+                logger.debug("suppressed", exc_info=True)
 
         search_task: asyncio.Task | None = None
         if self._search:
@@ -292,28 +311,15 @@ class LLMService:
             try:
                 needs_search, optimized_query = await search_task
                 if needs_search and self._search:
-                    import re as _sqre
-                    _IS_NEWS = _sqre.search(
-                        r"\b(погода|температура|прогноз|новости|курс|цена|матч|запуск)\b",
-                        optimized_query, _sqre.IGNORECASE)
-                    try:
-                        if _IS_NEWS:
-                            raw = await self._search.smart_search(
-                                optimized_query, mode="news", max_results=5)
-                        else:
-                            raw = await self._search.search(optimized_query)
-                    except Exception:
-                        # smart_search упал (напр. kc_set) — fallback на базовый
-                        logger.warning("smart_search failed, fallback to search()")
-                        raw = await self._search.search(optimized_query)
+                    raw = await self._search.search_query(optimized_query)
                     if raw:
-                        search_results = raw
+                        search_results = _format_search_results(raw)
                         logger.info(
                             "user_id=%s | поиск добавлен в контекст (query='%s')",
                             user_id, optimized_query[:60],
                         )
             except Exception:
-                logger.exception("user_id=%s | ошибка поиска", user_id)
+                logger.exception("search error | user_id=%s", user_id)
 
         agent_result = await self._get_orchestrator().run(
             user_id=user_id,
@@ -335,24 +341,22 @@ class LLMService:
 
         save_messages(user_id, user_message, reply)
 
-        # Структурированная память — извлекаем каждые N сообщений
-        if self._memory.should_extract(user_id):
-            self._run_background(
-                self._memory.extract_and_save(user_id, user_message)
-            )
+        # Инкрементируем счётчик сообщений
+        self._msg_counter[user_id] = self._msg_counter.get(user_id, 0) + 1
 
         # Контекст разговора — обновляем каждые N сообщений
         if self._context.should_update(user_id):
             self._run_background(self._context.update(user_id))
 
         # Personality feedback — каждые 6 сообщений
-        if (self._msg_counter.get(user_id, 0)) % 6 == 0:
+        if self._msg_counter.get(user_id, 1) % 6 == 0:
             self._run_background(update_feedback(user_id, self._llm))
             self._run_background(update_emotional_patterns(user_id))
 
-        # Interaction memory — каждое сообщение (фоново, лёгкая операция)
-        from app.llm_pipeline import extract_interaction
-        self._run_background(extract_interaction(user_id, user_message, self._llm))
+        # Interaction memory — каждые 3 сообщения (LLM-вызов, не надо на каждое)
+        if self._msg_counter.get(user_id, 0) % 3 == 1:
+            from app.llm_pipeline import extract_interaction
+            self._run_background(extract_interaction(user_id, user_message, self._llm))
 
         logger.debug(
             "user_id=%s | агент=%s | reminder=%s",

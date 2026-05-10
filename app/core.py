@@ -1,11 +1,8 @@
 from __future__ import annotations
 """
-core.py — инициализация и владение всеми сервисами приложения.
+core.py — инициализация и запуск всего приложения.
 
-Единственная точка где создаются сервисы.
-main.py просто вызывает Core().start() — больше ничего не знает.
-
-Добавить новый сервис: описать в _Services, создать в _init_services().
+main.py просто вызывает Core().start().
 """
 import logging
 from dataclasses import dataclass
@@ -21,30 +18,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Services:
-    """Все сервисы приложения в одном месте."""
     bot:       "Bot"
     llm:       "LLMService"
-    voice:     "VoiceService"
     vision:    "VisionService"
     proactive: "ProactiveService"
 
 
 class Core:
-    """
-    Инициализирует, запускает и останавливает всё приложение.
-
-    Использование:
-        core = Core()
-        await core.start()   # блокирует до остановки
-    """
-
     def __init__(self) -> None:
         self._services: Services | None = None
 
-    # ── Публичный API ─────────────────────────────────────────────────────────
-
     async def start(self) -> None:
-        """Запускает всё приложение."""
+        import app.settings as _S
+        _S.get()  # загружаем настройки из файла сразу
         init_db()
 
         svc = self._init_services()
@@ -62,11 +48,8 @@ class Core:
             await svc.bot.session.close()
             logger.info("🛑 RaYa остановлена")
 
-    # ── Инициализация ─────────────────────────────────────────────────────────
-
     def _init_services(self) -> Services:
         from app.llm_service       import LLMService
-        from app.voice_service     import VoiceService
         from app.vision_service    import VisionService
         from app.proactive_service import ProactiveService
 
@@ -75,15 +58,10 @@ class Core:
             default=DefaultBotProperties(parse_mode=None),
         )
         llm       = LLMService()
-        voice     = VoiceService()
         vision    = VisionService()
         proactive = ProactiveService(bot, llm)
 
-        return Services(
-            bot=bot, llm=llm, voice=voice,
-            vision=vision,
- proactive=proactive,
-        )
+        return Services(bot=bot, llm=llm, vision=vision, proactive=proactive)
 
     def _build_dispatcher(self, svc: Services) -> Dispatcher:
         from app.middleware import AccessMiddleware
@@ -91,20 +69,17 @@ class Core:
 
         dp = Dispatcher()
         dp.message.middleware(AccessMiddleware())
-        register(dp, svc.bot, svc.llm, svc.voice, svc.vision)
+        register(dp, svc.bot, svc.llm, svc.vision)
         return dp
 
-
     def _log_startup(self, svc: Services) -> None:
-        """Логирует информацию о запуске."""
         from app.agents.registry import get_enabled_agents
         agents = [a.name for a in get_enabled_agents()]
         logger.info(
-            "🤖 RaYa запущена | модель: %s | поиск: %s | агентов: %d (%s)",
+            "🤖 RaYa запущена | модель: %s | поиск: %s | obsidian: %s | агентов: %d (%s)",
             settings.model_name,
             "вкл" if settings.search_enabled else "выкл",
+            "вкл" if settings.obsidian_enabled else "выкл",
             len(agents),
             ", ".join(agents),
         )
-
-

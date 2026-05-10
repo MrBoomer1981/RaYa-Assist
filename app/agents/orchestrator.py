@@ -10,7 +10,9 @@ from app.agents.critic_agent import CriticAgent
 from app.agents.registry import create_agent
 from app.agents.router import RouterAgent, RouteResult
 from app.config import settings
-from app.database import load_history, load_memory, get_user_name
+import app.settings as _user_settings
+from app.services.memory import MemoryManager as _MemoryManager
+from app.database import load_history, get_user_name
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,14 @@ class Orchestrator:
     Агенты создаются лениво — только при первом обращении.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, llm=None, router=None, fast_llm=None) -> None:
+        from app.services.memory import MemoryManager
         self._router = RouterAgent()
         self._agents: dict = {}
         self._critic: Optional[CriticAgent] = None
+        # fast_llm для MemoryManager (rerank + extract); если нет — fallback на llm
+        self._memory = MemoryManager(fast_llm or llm)
+        self._bg_tasks: set = set()  # удержание фоновых задач от GC
         logger.info("🧠 Оркестратор инициализирован")
 
     def _get_agent(self, name: str):
@@ -65,12 +71,17 @@ class Orchestrator:
         if extra:
             combined_extra.update(extra)
 
+        history = load_history(user_id, limit=_user_settings.get().max_history)
+
+        # Строим контекст памяти (Core + Recall если нужен + Archival если нужен)
+        memory_ctx = await self._memory.build_context(user_id, message)
+
         ctx = AgentContext(
             user_id=user_id,
             message=message,
-            user_name=get_user_name(user_id),   # кэшировано LRU-256, дёшево
-            history=load_history(user_id, limit=settings.max_history),
-            memory_facts=load_memory(user_id),
+            user_name=get_user_name(user_id),
+            history=history,
+            memory_facts=[memory_ctx.to_prompt()] if not memory_ctx.is_empty() else [],
             search_results=search_results,
             extra=combined_extra,
         )
@@ -96,5 +107,14 @@ class Orchestrator:
         if result.success and result.content:
             from app.utils import clean_reply
             result.content = clean_reply(result.content)
+
+        # Обновляем память фоново (не блокируем ответ)
+        if result.success and result.content:
+            import asyncio as _aio
+            _task = _aio.create_task(
+                self._memory.after_turn(user_id, message, result.content)
+            )
+            self._bg_tasks.add(_task)
+            _task.add_done_callback(self._bg_tasks.discard)
 
         return result

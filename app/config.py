@@ -1,3 +1,9 @@
+"""
+config.py — ТОЛЬКО инфраструктурные секреты из .env.
+
+Всё что меняется через /settings — в app/settings.py.
+Это файл не трогается в runtime.
+"""
 import logging
 from pathlib import Path
 from pydantic import field_validator
@@ -5,122 +11,71 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-# Путь к файлу личности — лежит рядом с main.py
-PERSONA_PATH = Path("persona.txt")
-
-_DEFAULT_PERSONA = (
-    "Ты мой личный ИИ-ассистент RaYa. Общаемся как старые друзья — без формальностей. "
-    "Ты прямой, честный и не боишься сказать если я не прав. "
-    "Помогаешь с любыми задачами: работа, идеи, тексты, планы. "
-    "Отвечаешь кратко и по делу."
-)
-
 
 def _load_persona() -> str:
-    """
-    Загружает личность бота из persona.txt.
-    Если файл не найден — использует дефолтный промпт.
-    """
-    if PERSONA_PATH.exists():
-        text = PERSONA_PATH.read_text(encoding="utf-8").strip()
+    path = Path("persona.txt")
+    if path.exists():
+        text = path.read_text(encoding="utf-8").strip()
         if text:
-            logger.info("✅ Личность загружена из %s (%d символов)", PERSONA_PATH, len(text))
             return text
-        logger.warning("⚠️ %s пустой — используется дефолтный промпт", PERSONA_PATH)
-    else:
-        logger.info("ℹ️ %s не найден — используется дефолтный промпт", PERSONA_PATH)
-    return _DEFAULT_PERSONA
+    return (
+        "Ты мой личный ИИ-ассистент RaYa. Общаемся как старые друзья — без формальностей. "
+        "Ты прямой, честный и не боишься сказать если я не прав. "
+        "Помогаешь с любыми задачами: работа, идеи, тексты, планы. "
+        "Отвечаешь кратко и по делу."
+    )
 
 
 class Settings(BaseSettings):
-    """Конфигурация приложения — все параметры берутся из .env файла."""
-
+    """
+    Инфраструктурные настройки — из .env / Railway Variables.
+    НЕ меняются через /settings.
+    Меняемые пользователем настройки — в app/settings.py.
+    """
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
-    # Обязательные ключи
-    groq_api_key: str
-    telegram_token: str
+    # ── Обязательные ────────────────────────────────────────────────────────
+    groq_api_key:    str
+    telegram_token:  str
 
-    # Список разрешённых Telegram user_id (безопасность)
-    # Формат в .env: ALLOWED_USER_IDS=123456789,987654321
-    allowed_user_ids: str = ""
+    # ── Доступ ──────────────────────────────────────────────────────────────
+    owner_user_id: int = 0   # 0 = dev mode (все пользователи)
 
-    # Опциональные ключи для расширений
+    # ── API ключи ────────────────────────────────────────────────────────────
     tavily_api_key: str = ""
 
-    # Telegram user_id владельца — нужен для веб-интерфейса
-    # Найти: написать боту /start и посмотреть логи Railway (user_id=XXXXXXXXX)
-    telegram_user_id: int = 0  # ОБЯЗАТЕЛЬНО задать TELEGRAM_USER_ID в Railway Variables
+    # ── Obsidian (Phase 3) ───────────────────────────────────────────────────
+    obsidian_vault_path: str = ""
+    obsidian_api_url:    str = ""
+    obsidian_api_key:    str = ""
 
-    # Параметры модели
-    model_name:   str   = "llama-3.3-70b-versatile"
-    router_model: str   = "llama-3.1-8b-instant"  # роутер + tone controller
-    temperature:  float = 0.7
-    max_history:  int   = 20
+    # ── Модели (дефолты — можно перекрыть в .env) ────────────────────────────
+    # Пользователь может менять температуру через /settings,
+    # но имена моделей фиксированы в .env
+    model_name:   str = "llama-3.3-70b-versatile"
+    router_model: str = "llama-3.1-8b-instant"
 
-    # Масштабирование
-    # multi_user_mode=True: включает LRU-кэши имён, rate limiting, connection pool
-    multi_user_mode: bool = False
-    # Таймаут агентов по умолчанию (секунды). Deep research переопределяет на 120.
-    agent_timeout:   int  = 30
-    # Максимум параллельных LLM запросов (защита от spike нагрузки)
-    max_concurrent:  int  = 10
+    # ── Таймауты ─────────────────────────────────────────────────────────────
+    agent_timeout: int = 30
 
-    # Личность — загружается из persona.txt, не из .env
+    # ── Личность (из файла, не из .env) ──────────────────────────────────────
     system_prompt: str = ""
 
     def model_post_init(self, __context) -> None:
-        """Загружаем persona.txt после инициализации настроек."""
         if not self.system_prompt:
             object.__setattr__(self, "system_prompt", _load_persona())
-
-    @field_validator("telegram_user_id")
-    @classmethod
-    def validate_telegram_user_id(cls, v: int) -> int:
-        if v == 0:
-            logger.info(
-                "ℹ️ TELEGRAM_USER_ID не задан — user_id будет определяться динамически "
-                "из первого пользователя в БД. Веб-интерфейс потребует хотя бы одного входящего сообщения."
-            )
-        return v
-
-    @field_validator("temperature")
-    @classmethod
-    def validate_temperature(cls, v: float) -> float:
-        if not 0.0 <= v <= 2.0:
-            raise ValueError("temperature должна быть от 0.0 до 2.0")
-        return v
-
-    @field_validator("max_history")
-    @classmethod
-    def validate_max_history(cls, v: int) -> int:
-        if v < 2:
-            raise ValueError("max_history должен быть минимум 2")
-        return v
 
     @property
     def search_enabled(self) -> bool:
         return bool(self.tavily_api_key)
 
     @property
-    def allowed_ids(self) -> set[int]:
-        """Возвращает множество разрешённых user_id."""
-        if not self.allowed_user_ids:
-            return set()
-        ids = set()
-        for part in self.allowed_user_ids.split(","):
-            part = part.strip()
-            if part.isdigit():
-                ids.add(int(part))
-        return ids
-
-    @property
-    def security_enabled(self) -> bool:
-        return bool(self.allowed_user_ids)
+    def obsidian_enabled(self) -> bool:
+        return bool(self.obsidian_vault_path or self.obsidian_api_url)
 
 
 settings = Settings()

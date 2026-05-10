@@ -20,7 +20,7 @@ from app.database import (
     format_context_for_prompt, format_interaction_memory,
     format_memory_for_prompt, get_recent_moods, save_mood, get_user_name,
 )
-from app.feature_flags import FEATURE_EMOTIONAL_SYSTEM, FEATURE_PERSONA_VERBOSE
+import app.feature_flags as _ff
 from app.personality_service import (
     build_observation_block, build_personality_block,
     detect_mood, detect_task_type, extract_emotion_tag,
@@ -49,7 +49,6 @@ def _build_hard_rules(user_name: str) -> str:
         "   - Анализировать фото и изображения (пользователь отправляет фото → ты видишь и описываешь)\n"
         "   - Принимать голосовые сообщения и отвечать на них (voice handler встроен)\n"
         "   - Запоминать информацию о пользователе (structured_memory сохраняет факты, город, интересы)\n"
-        "   - Создавать изображения по описанию (image_agent)\n"
         "   - Искать в интернете актуальные данные (Tavily + DDG)\n"
         "   - Управлять задачами, дедлайнами, напоминаниями, календарём, дневником\n"
         "   Если спрашивают что умеешь — отвечай уверенно, перечисляй реальные возможности."
@@ -117,12 +116,12 @@ class RayaAgent(BaseAgent):
         is_voice = ctx.extra.get("is_voice", False)
 
         # ── 1. Фоновый трекинг настроения ────────────────────────────────────
-        if FEATURE_EMOTIONAL_SYSTEM:
+        if _ff.emotional_system():
             self._run_background(self._track_mood(ctx))
 
         # ── 2. Параллельный сбор контекста ───────────────────────────────────
         async def _get_moods():
-            if not FEATURE_EMOTIONAL_SYSTEM:
+            if not _ff.emotional_system():
                 return ""
             moods = get_recent_moods(ctx.user_id, limit=7)
             return mood_context(moods)
@@ -131,7 +130,7 @@ class RayaAgent(BaseAgent):
             return format_context_for_prompt(ctx.user_id)
 
         async def _get_personality():
-            if not FEATURE_PERSONA_VERBOSE:
+            if not _ff.persona_verbose():
                 return ""
             return build_personality_block(ctx.user_id, ctx.message)
 

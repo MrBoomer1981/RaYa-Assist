@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import load_diary_entries, save_diary_entry, save_mood
+from app.config import settings as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,15 @@ class DiaryAgent(BaseAgent):
                         entry_id, mood, ctx.user_id)
         except Exception as e:
             logger.warning("diary: ошибка сохранения: %s", e)
+
+        # Синхронизируем с Obsidian (не блокирует ответ пользователю)
+        if _cfg.obsidian_enabled:
+            try:
+                from app.services.obsidian import save_diary_entry as obs_diary
+                date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                await obs_diary(date_str, entry_text, mood)
+            except Exception as e:
+                logger.warning("📓 Obsidian sync failed: %s", e)
 
         # Убираем служебные теги из ответа пользователю
         reply = re.sub(r"<diary_(entry|mood)>.*?</diary_(entry|mood)>", "",

@@ -86,10 +86,11 @@ def _get_llm(model: str) -> ChatGroq:
             # Удаляем самый старый (первый вставленный — dict сохраняет порядок в Python 3.7+)
             oldest = next(iter(_LLM_CACHE))
             del _LLM_CACHE[oldest]
+        import app.settings as _us
         _LLM_CACHE[model] = ChatGroq(
             api_key=settings.groq_api_key,
             model=model,
-            temperature=settings.temperature,
+            temperature=_us.get().temperature,
         )
     return _LLM_CACHE[model]
 
