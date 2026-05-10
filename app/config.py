@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # ── API ключи ────────────────────────────────────────────────────────────
     tavily_api_key: str = ""
 
+    # ── GitHub vault (альтернатива Obsidian REST API) ─────────────────────────
+    github_token:      str = ""
+    github_vault_repo: str = ""   # формат: user/repo-name
+
     # ── Obsidian (Phase 3) ───────────────────────────────────────────────────
     obsidian_vault_path: str = ""
     obsidian_api_url:    str = ""
@@ -75,7 +79,15 @@ class Settings(BaseSettings):
 
     @property
     def obsidian_enabled(self) -> bool:
-        return bool(self.obsidian_vault_path or self.obsidian_api_url)
+        return bool(
+            self.obsidian_vault_path
+            or self.obsidian_api_url
+            or (self.github_token and self.github_vault_repo)
+        )
+
+    @property
+    def obsidian_via_github(self) -> bool:
+        return bool(self.github_token and self.github_vault_repo)
 
 
 settings = Settings()
