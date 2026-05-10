@@ -40,6 +40,11 @@ async def sync_matrix(user_id: int) -> None:
     """
     from app.config import settings
     if not settings.obsidian_enabled:
+        logger.warning(
+            "📋 Obsidian sync пропущен — задай переменные в Railway:\n"
+            "  GITHUB_TOKEN + GITHUB_VAULT_REPO (рекомендуется)\n"
+            "  или OBSIDIAN_API_URL + OBSIDIAN_API_KEY"
+        )
         return
     try:
         from app.database import get_active_tasks
