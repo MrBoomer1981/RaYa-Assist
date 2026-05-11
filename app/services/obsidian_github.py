@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 _BASE = "https://api.github.com"
 
+def _full_path(path: str) -> str:
+    """Добавляет подпапку vault если задана в GITHUB_VAULT_PATH."""
+    prefix = getattr(settings, "github_vault_path", "").strip("/")
+    if prefix:
+        return f"{prefix}/{path.lstrip('/')}"
+    return path.lstrip("/")
+
+
 
 def _enabled() -> bool:
     return bool(
@@ -43,7 +51,7 @@ async def read(path: str) -> str:
     if not _enabled():
         return ""
     try:
-        url = f"{_BASE}/repos/{settings.github_vault_repo}/contents/{path}"
+        url = f"{_BASE}/repos/{settings.github_vault_repo}/contents/{_full_path(path)}"
         async with httpx.AsyncClient(timeout=8) as client:
             r = await client.get(url, headers=_headers())
         if r.status_code == 404:
@@ -62,7 +70,7 @@ async def write(path: str, content: str, message: str = "") -> bool:
     if not _enabled():
         return False
     try:
-        url = f"{_BASE}/repos/{settings.github_vault_repo}/contents/{path}"
+        url = f"{_BASE}/repos/{settings.github_vault_repo}/contents/{_full_path(path)}"
         encoded = base64.b64encode(content.encode()).decode()
         commit_msg = message or f"raya: update {path.split('/')[-1]}"
 
@@ -117,7 +125,7 @@ async def list_folder(path: str = "") -> list[str]:
     if not _enabled():
         return []
     try:
-        url = f"{_BASE}/repos/{settings.github_vault_repo}/contents/{path}"
+        url = f"{_BASE}/repos/{settings.github_vault_repo}/contents/{_full_path(path)}"
         async with httpx.AsyncClient(timeout=8) as client:
             r = await client.get(url, headers=_headers())
             r.raise_for_status()

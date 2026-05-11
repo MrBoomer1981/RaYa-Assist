@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     # ── GitHub vault (альтернатива Obsidian REST API) ─────────────────────────
     github_token:      str = ""
     github_vault_repo: str = ""   # формат: user/repo-name
+    github_vault_path: str = ""   # подпапка внутри репо, если vault не в корне
+                                  # напр. "obsidian-vault" если vault в repo/obsidian-vault/
 
     # ── Obsidian (Phase 3) ───────────────────────────────────────────────────
     obsidian_vault_path: str = ""
