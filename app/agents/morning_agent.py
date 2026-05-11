@@ -282,18 +282,16 @@ async def _get_tasks(user_id: int) -> str:
 
         with _conn() as con:
             rows = con.execute(
-                """SELECT title, deadline, priority
+                """SELECT text, due_date, priority
                    FROM tasks
                    WHERE user_id=? AND done=0
                    ORDER BY
-                     CASE WHEN deadline < ? THEN 0
-                          WHEN deadline = ? THEN 1
-                          WHEN deadline IS NULL THEN 3
+                     CASE WHEN due_date != '' AND due_date < ? THEN 0
+                          WHEN due_date = ? THEN 1
+                          WHEN due_date IS NULL OR due_date = '' THEN 3
                           ELSE 2 END,
-                     CASE WHEN priority='высокий' THEN 0
-                          WHEN priority='средний' THEN 1
-                          ELSE 2 END,
-                     deadline ASC
+                     priority ASC,
+                     due_date ASC
                    LIMIT 8""",
                 (user_id, today, today),
             ).fetchall()
@@ -302,18 +300,16 @@ async def _get_tasks(user_id: int) -> str:
             return "Активных задач нет. 🎉"
 
         lines: list[str] = []
-        for title, deadline, priority in rows:
-            prefix = ""
-            if deadline:
-                if deadline < today:
-                    prefix = "🔴 просрочено"
-                elif deadline == today:
-                    prefix = "🟡 сегодня"
-                else:
-                    prefix = f"📌 {deadline}"
+        for text, due_date, priority in rows:
+            if due_date and due_date < today:
+                prefix = "🔴 просрочено"
+            elif due_date == today:
+                prefix = "🟡 сегодня"
+            elif due_date:
+                prefix = f"📌 {due_date}"
             else:
                 prefix = "⬜"
-            lines.append(f"  {prefix} {title}")
+            lines.append(f"  {prefix} {text}")
 
         return "\n".join(lines)
     except Exception as e:

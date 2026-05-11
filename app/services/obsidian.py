@@ -26,13 +26,9 @@ def _backend():
     return None  # будем использовать прямые функции ниже
 
 
-from __future__ import annotations
-
-import logging
 import re
 import ssl
 from datetime import datetime
-from typing import Any
 
 import aiohttp
 
