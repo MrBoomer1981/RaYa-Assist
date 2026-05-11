@@ -14,6 +14,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+import time as _time
+
+_last_sync: float = 0.0
+_SYNC_DEBOUNCE_SEC = 30  # не обновляем матрицу чаще раза в 30 сек
+
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,13 @@ async def sync_matrix(user_id: int) -> None:
     Перезаписывает 📋 Задачи/Матрица.md актуальными задачами из SQLite.
     Вызывать после КАЖДОГО add/done/delete.
     """
+    global _last_sync
+    now = _time.monotonic()
+    if now - _last_sync < _SYNC_DEBOUNCE_SEC:
+        logger.debug("📋 Obsidian sync: debounce пропуск")
+        return
+    _last_sync = now
+
     from app.config import settings
     if not settings.obsidian_enabled:
         logger.warning(
