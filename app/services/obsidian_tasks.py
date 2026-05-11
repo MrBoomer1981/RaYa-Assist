@@ -135,7 +135,9 @@ def _build_matrix(tasks: list[tuple]) -> str:
     # Группируем по квадранту
     by_q: dict[int, list[tuple]] = {1: [], 2: [], 3: [], 4: []}
     for t in tasks:
-        q = t[2] if t[2] in (1, 2, 3, 4) else 2
+        p = t[2]
+        # priority 1=Q1, 2=Q2, 3=Q3, 4=Q4; остальное → Q2
+        q = p if p in (1, 2, 3, 4) else 2
         by_q[q].append(t)
 
     lines = [

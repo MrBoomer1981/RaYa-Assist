@@ -23,7 +23,7 @@ _SYSTEM = """\
 🔴 Q1 (priority=1) — Срочно и важно (дедлайн сегодня/завтра)
 🟡 Q2 (priority=2) — Важно, не срочно (цели, развитие) ← дефолт
 🟠 Q3 (priority=3) — Срочно, не важно (мелкие просьбы)
-⚪ Q4 (priority=3) — Не срочно, не важно
+⚪ Q4 (priority=4) — Не срочно, не важно
 
 Операции (используй XML-теги в ответе):
 - Добавить: <tasks>[{"quadrant":"q2","tasks":["текст задачи"]}]</tasks>
@@ -111,8 +111,10 @@ class TodoAgent(BaseAgent):
                     mutated = True
                     break
 
-        # ── Sync Obsidian после любой мутации ─────────────────────────────────
-        if mutated:
+        # ── Sync Obsidian после мутации ИЛИ первого показа ──────────────────
+        show_keywords = ("покажи", "список", "дела", "задачи", "матрица")
+        is_show = any(kw in ctx.message.lower() for kw in show_keywords)
+        if mutated or is_show:
             from app.services.obsidian_tasks import sync_matrix
             await sync_matrix(ctx.user_id)
 
@@ -147,7 +149,7 @@ class TodoAgent(BaseAgent):
             logger.warning("todo: не смог распарсить tasks JSON: %s", raw_json[:100])
             return
 
-        _Q_TO_PRIORITY = {"q1": 1, "q2": 2, "q3": 3, "q4": 3}
+        _Q_TO_PRIORITY = {"q1": 1, "q2": 2, "q3": 3, "q4": 4}
 
         for group in groups:
             quadrant = group.get("quadrant", "q2")
