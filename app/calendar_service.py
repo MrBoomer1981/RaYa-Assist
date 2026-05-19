@@ -38,7 +38,9 @@ _DAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
 def create_event(user_id: int, date: str, title: str,
                  time_start: str = "", time_end: str = "",
-                 description: str = "", color: str = "blue") -> dict:
+                 description: str = "", color: str = "blue",
+                 importance: int = 0, repeat: str = "",
+                 remind_days: int = 0) -> dict:
     """
     Возвращает dict созданного события.
     """
@@ -46,6 +48,7 @@ def create_event(user_id: int, date: str, title: str,
         user_id=user_id, date=date, title=title,
         time_start=time_start, time_end=time_end,
         description=description, color=color,
+        importance=importance, repeat=repeat, remind_days=remind_days,
     )
 
 
@@ -54,6 +57,7 @@ def create_event(user_id: int, date: str, title: str,
         "id": event_id, "date": date, "title": title,
         "time_start": time_start, "time_end": time_end,
         "description": description, "color": color,
+        "importance": importance, "repeat": repeat, "remind_days": remind_days,
     }
 
 
@@ -109,7 +113,9 @@ def format_day_for_telegram(user_id: int, date: str) -> str:
                 t = ev["time_start"]
             else:
                 t = "Весь день"
-            lines.append(f"{emoji} {t} — {ev['title']}")
+            importance_mark = " ⭐" if ev.get("importance",0)==1 else " 🔥" if ev.get("importance",0)==2 else ""
+            repeat_mark = " 🔁" if ev.get("repeat","") else ""
+            lines.append(f"{emoji} {t} — {ev['title']}{importance_mark}{repeat_mark}")
             if ev["description"]:
                 lines.append(f"   _{ev['description']}_")
 

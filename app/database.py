@@ -39,6 +39,18 @@ def _migrate() -> None:
         rem_cols = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
         if "recurrence" not in rem_cols:
             con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
+
+        # 2. events: importance, repeat, remind_days
+        ev_cols = {row[1] for row in con.execute("PRAGMA table_info(events)").fetchall()}
+        if "importance" not in ev_cols:
+            con.execute("ALTER TABLE events ADD COLUMN importance INTEGER DEFAULT 0")
+            # importance: 0=обычное, 1=важное, 2=критически важное
+        if "repeat" not in ev_cols:
+            con.execute("ALTER TABLE events ADD COLUMN repeat TEXT DEFAULT ''")
+            # repeat: '' | 'yearly' | 'monthly' | 'weekly'
+        if "remind_days" not in ev_cols:
+            con.execute("ALTER TABLE events ADD COLUMN remind_days INTEGER DEFAULT 0")
+            # remind_days: за сколько дней напомнить (0=не напоминать)
             con.commit()
             logger.info("✅ Migration: reminders.recurrence добавлен")
 
@@ -62,7 +74,7 @@ def _migrate() -> None:
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id    INTEGER NOT NULL,
                     text       TEXT    NOT NULL DEFAULT '',
-                    priority   INTEGER NOT NULL DEFAULT 2,
+                    priority   INTEGER NOT NULL DEFAULT 2,  -- 1=Q1, 2=Q2, 3=Q3, 4=Q4
                     due_date   TEXT    DEFAULT '',
                     done       INTEGER NOT NULL DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -182,7 +194,7 @@ def init_db() -> None:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id    INTEGER NOT NULL,
                 text       TEXT    NOT NULL,
-                priority   INTEGER NOT NULL DEFAULT 2,
+                priority   INTEGER NOT NULL DEFAULT 2,  -- 1=Q1, 2=Q2, 3=Q3, 4=Q4
                 due_date   TEXT    DEFAULT '',
                 done       INTEGER NOT NULL DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -780,11 +792,13 @@ def format_interaction_memory(user_id: int) -> str:
 
 def save_event(user_id: int, date: str, title: str,
                time_start: str = "", time_end: str = "",
-               description: str = "", color: str = "blue") -> int:
+               description: str = "", color: str = "blue",
+               importance: int = 0, repeat: str = "",
+               remind_days: int = 0) -> int:
     """Сохраняет событие. Возвращает id."""
     with _conn() as con:
         cur = con.execute(
-            """INSERT INTO events (user_id, date, time_start, time_end, title, description, color)
+            """INSERT INTO events (user_id, date, time_start, time_end, title, description, color, importance, repeat, remind_days)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (user_id, date, time_start or None, time_end or None, title, description, color)
         )
@@ -967,3 +981,36 @@ def kc_cleanup() -> int:
             "DELETE FROM knowledge_cache WHERE expires_at < ?", (time.time(),)
         )
         return cur.rowcount
+
+# ── Расписание из фото ────────────────────────────────────────────────────────
+
+def save_schedule_photo(user_id: int, raw_text: str, summary: str = "") -> None:
+    """Сохраняет расписание из фото (UPSERT — одно активное на пользователя)."""
+    with _conn() as con:
+        con.execute("""
+            INSERT INTO schedule_photo (user_id, raw_text, summary, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                raw_text   = excluded.raw_text,
+                summary    = excluded.summary,
+                updated_at = CURRENT_TIMESTAMP
+        """, (user_id, raw_text, summary))
+
+
+def get_schedule_photo(user_id: int) -> dict | None:
+    """Возвращает активное расписание или None."""
+    with _conn() as con:
+        row = con.execute("""
+            SELECT raw_text, summary, updated_at
+            FROM schedule_photo WHERE user_id = ?
+        """, (user_id,)).fetchone()
+    if not row:
+        return None
+    return {"raw_text": row[0], "summary": row[1], "updated_at": row[2]}
+
+
+def delete_schedule_photo(user_id: int) -> None:
+    """Удаляет сохранённое расписание."""
+    with _conn() as con:
+        con.execute("DELETE FROM schedule_photo WHERE user_id = ?", (user_id,))
+

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 
 from app.config import settings
 from app.database import (
@@ -60,6 +60,8 @@ def _build_help_text() -> str:
         "/clear     — очистить историю разговора",
         "/settings  — настройки (время дайджеста, модули, модель)",
         "/vault     — статус Obsidian vault",
+        "/schedule  — показать сохранённое расписание",
+        "🎤 Голосовые сообщения поддерживаются",
         "/help      — это сообщение",
     ]
     return "\n".join(lines)
@@ -82,77 +84,109 @@ async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
     return downloaded.read() if downloaded else None
 
 
+# Хранилище тем ожидающих выбора режима: chat_id → topic
+_PENDING_RESEARCH: dict[int, str] = {}
+
+_MODES = {
+    "simple": ("🟢 Быстрый",     "~2 мин · 5 запросов · базовый обзор"),
+    "deep":   ("🔵 Углублённый", "~5 мин · 15 запросов · детальный анализ"),
+    "study":  ("🟣 Изучение",    "~8 мин · 20 запросов · полное погружение"),
+}
+
+
 async def _send_deep_research(message: Message, bot: Bot) -> None:
     """
-    Запускает DEEper с живым прогрессом через edit_message.
-    Пользователь видит каждый шаг исследования в реальном времени.
+    Шаг 1: показывает inline-кнопки выбора режима.
+    Шаг 2 (после выбора): запускает DEEper с live-прогрессом.
     """
-    from app.agents.deep_research_agent import _get_bridge, _MODE_LABELS
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-    # ── Отправляем начальное сообщение ────────────────────────────────
-    status_msg = await message.answer("🔬 Начинаю глубокое исследование...")
+    topic = _get_search_topic(message.text or "")
+    if not topic:
+        await message.answer("Укажи тему. Пример: `поиск: квантовые компьютеры`",
+                             parse_mode="Markdown")
+        return
+
+    # Сохраняем тему и показываем выбор режима
+    _PENDING_RESEARCH[message.chat.id] = topic
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{emoji} {desc}",
+            callback_data=f"dr:{mode}",
+        )]
+        for mode, (emoji, desc) in _MODES.items()
+    ] + [[InlineKeyboardButton(text="❌ Отмена", callback_data="dr:cancel")]])
+
+    await message.answer(
+        f"🔬 *Тема:* {topic}\n\nВыбери глубину исследования:",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+
+
+async def _run_deep_research(chat_id: int, topic: str, mode: str, bot: Bot,
+                              status_msg_id: int) -> None:
+    """Запускает DEEper и отправляет отчёт."""
+    import time
+    from app.agents.deep_research_agent import _get_bridge
+
     progress_lines: list[str] = []
 
     async def _update(line: str) -> None:
         progress_lines.append(line)
-        display = "\n".join(progress_lines[-7:])
+        display = "\n".join(progress_lines[-6:])
         try:
+            mode_label = _MODES.get(mode, (mode, ""))[0]
             await bot.edit_message_text(
-                text=f"🔬 *Исследование...*\n\n{display}",
-                chat_id=message.chat.id,
-                message_id=status_msg.message_id,
+                text=f"🔬 *{mode_label} · {topic[:40]}*\n\n{display}",
+                chat_id=chat_id,
+                message_id=status_msg_id,
                 parse_mode="Markdown",
             )
         except Exception:
-            pass  # edit_message может упасть если сообщение удалено
+            pass
 
     try:
         bridge = _get_bridge()
     except Exception as e:
         await bot.edit_message_text(
             text=f"⚠️ DEEper не запустился: {e}",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
+            chat_id=chat_id,
+            message_id=status_msg_id,
         )
         return
 
-    query = message.text or ""
-    import time
     start = time.monotonic()
-
     try:
-        result = await bridge.research(
-            topic=query,
-            mode="deep",
-            progress_cb=_update,
-        )
+        result = await bridge.research(topic=topic, mode=mode, progress_cb=_update)
     except Exception as e:
         await bot.edit_message_text(
-            text=f"⚠️ Ошибка исследования: {e}",
-            chat_id=message.chat.id,
-            message_id=status_msg.message_id,
+            text=f"⚠️ Ошибка: {e}",
+            chat_id=chat_id,
+            message_id=status_msg_id,
         )
         return
 
-    elapsed  = round(time.monotonic() - start, 1)
-    report   = result.get("report", "Отчёт не сформирован.")
-    sources  = result.get("sources", [])
-    res_id   = result.get("id")
+    elapsed = round(time.monotonic() - start, 1)
+    report  = result.get("report", "Отчёт не сформирован.")
+    sources = result.get("sources", [])
+    res_id  = result.get("id")
+    mode_label = _MODES.get(mode, (mode, ""))[0]
 
-    footer = f"\n\n---\n🔬 Углублённый | ⏱ {elapsed}с | 📚 {len(sources)} источников"
+    footer = f"\n\n---\n{mode_label} | ⏱ {elapsed}с | 📚 {len(sources)} источников"
     if res_id:
         footer += f" | ID: {res_id}"
 
     try:
-        await bot.delete_message(message.chat.id, status_msg.message_id)
+        await bot.delete_message(chat_id, status_msg_id)
     except Exception:
-        pass  # MessageToDeleteNotFound — сообщение уже удалено, OK
+        pass
 
-    full_report = report + footer
-    chunks = _split_report(full_report, max_len=3800)
+    chunks = _split_report(report + footer, max_len=3800)
     for i, chunk in enumerate(chunks):
-        prefix = f"📚 *Отчёт (часть {i+1}/{len(chunks)})*\n\n" if len(chunks) > 1 else ""
-        await message.answer(prefix + chunk, parse_mode="Markdown")
+        prefix = f"📚 *Часть {i+1}/{len(chunks)}*\n\n" if len(chunks) > 1 else ""
+        await bot.send_message(chat_id, prefix + chunk, parse_mode="Markdown")
 
 
 def _split_report(text: str, max_len: int = 3800) -> list[str]:
@@ -195,16 +229,19 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
 
 
 
-_DEEP_RESEARCH_TRIGGERS = frozenset({
-    "глубокое исследование", "deep research", "подробный анализ",
-    "исследуй глубоко", "детальный отчёт", "полный анализ",
-    "всё о", "расскажи подробно всё", "подготовь отчёт",
-    "аналитика по", "детально изучи", "развёрнутый анализ",
-})
+import re as _re_dr
+
+_SEARCH_CMD_RE = _re_dr.compile(
+    r'^(?:поиск|исследуй|research|найди всё о|изучи|разберись с)[:\s]+(.+)$',
+    _re_dr.IGNORECASE | _re_dr.DOTALL,
+)
 
 def _is_deep_research(message: str) -> bool:
-    msg = message.lower()
-    return any(t in msg for t in _DEEP_RESEARCH_TRIGGERS)
+    return bool(_SEARCH_CMD_RE.match(message.strip()))
+
+def _get_search_topic(message: str) -> str:
+    m = _SEARCH_CMD_RE.match(message.strip())
+    return m.group(1).strip() if m else message.strip()
 
 # ── Статистика ────────────────────────────────────────────────────────────────
 
@@ -282,6 +319,36 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
     """Регистрирует все хендлеры в диспетчере."""
     from app.commands.settings_cmd import router as settings_router
     dp.include_router(settings_router)
+
+    @dp.callback_query(lambda c: c.data and c.data.startswith("dr:"))
+    async def handle_deeper_mode(callback: CallbackQuery) -> None:
+        """Обрабатывает выбор режима DEEper."""
+        from aiogram.types import CallbackQuery
+        mode = callback.data.split(":", 1)[1]
+        chat_id = callback.message.chat.id
+
+        if mode == "cancel":
+            _PENDING_RESEARCH.pop(chat_id, None)
+            await callback.message.edit_text("❌ Отменено.")
+            await callback.answer()
+            return
+
+        topic = _PENDING_RESEARCH.pop(chat_id, None)
+        if not topic:
+            await callback.answer("Тема не найдена. Отправь запрос заново.")
+            return
+
+        mode_label = _MODES.get(mode, (mode, ""))[0]
+        await callback.message.edit_text(
+            f"🔬 *{mode_label}*\n📌 {topic}\n\nНачинаю исследование...",
+            parse_mode="Markdown",
+        )
+        await callback.answer()
+
+        import asyncio as _asyncio
+        _asyncio.create_task(
+            _run_deep_research(chat_id, topic, mode, bot, callback.message.message_id)
+        )
 
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
@@ -372,6 +439,27 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
         await message.answer(_build_stats(uid), parse_mode="Markdown")
 
 
+
+    @dp.message(Command("schedule"))
+    async def cmd_schedule(message: Message) -> None:
+        """Показывает сохранённое расписание."""
+        if not message.from_user:
+            return
+        from app.database import get_schedule_photo, delete_schedule_photo
+        sched = get_schedule_photo(message.from_user.id)
+        if not sched:
+            await message.answer(
+                "📅 Расписание не сохранено.\n\n"
+                "Отправь фото расписания с подписью 'расписание' — запомню."
+            )
+            return
+        updated = sched["updated_at"][:10] if sched["updated_at"] else ""
+        text = (
+            f"📅 **Твоё расписание** (обновлено {updated})\n\n"
+            f"{sched['raw_text'][:3000]}"
+        )
+        await message.answer(text, parse_mode="Markdown")
+
     @dp.message(Command("vault"))
     async def cmd_vault(message: Message) -> None:
         """Показывает статус Obsidian и корневые папки."""
@@ -408,6 +496,57 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
         except Exception as e:
             await message.answer(f"✅ Obsidian доступен, но ошибка листинга: {e}")
 
+
+_SCHEDULE_KEYWORDS = frozenset({
+    "расписание", "schedule", "занятия", "уроки", "пары", "лекции",
+    "рабочий план", "план на неделю", "план недели", "распорядок",
+    "сохрани расписание", "запомни расписание", "это моё расписание",
+})
+
+def _is_schedule_photo(caption: str) -> bool:
+    """Определяет по подписи — это фото расписания."""
+    if not caption:
+        return False
+    cap = caption.lower()
+    return any(kw in cap for kw in _SCHEDULE_KEYWORDS)
+
+
+async def _transcribe_voice(bot: Bot, voice) -> str:
+    """
+    Транскрибирует голосовое сообщение через Groq Whisper.
+    Возвращает текст или пустую строку при ошибке.
+    """
+    import io
+    from groq import AsyncGroq
+    from app.config import settings
+
+    try:
+        # Скачиваем ogg файл
+        file_info = await bot.get_file(voice.file_id)
+        downloaded = await bot.download_file(file_info.file_path)
+        if not downloaded:
+            return ""
+
+        audio_bytes = downloaded.read()
+        client = AsyncGroq(api_key=settings.groq_api_key)
+
+        # Groq Whisper принимает file-like объект
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "voice.ogg"
+
+        transcription = await client.audio.transcriptions.create(
+            file=audio_file,
+            model="whisper-large-v3-turbo",  # быстрая и точная модель
+            language="ru",
+            response_format="text",
+        )
+        text = str(transcription).strip()
+        logger.info("🎤 Транскрипция: '%s...'", text[:50])
+        return text
+    except Exception as e:
+        logger.warning("🎤 Ошибка транскрипции: %s", e)
+        return ""
+
     # ── Медиа ─────────────────────────────────────────────────────────────────
 
     @dp.message(lambda m: m.photo is not None)
@@ -428,13 +567,44 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
                 await message.answer("⚠️ Не удалось скачать фото.")
                 return
             user_prompt = message.caption or ""
-            result = await vision.analyze(image_bytes, user_prompt)
-            if not result:
-                await message.answer("⚠️ Не смог проанализировать изображение.")
-                return
-            note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
-            llm.save_photo_exchange(u.id, f"[Фото{note}]", result)
-            await message.answer(f"🖼️ {result}")
+            # Определяем — расписание или обычное фото
+            is_schedule = _is_schedule_photo(user_prompt)
+
+            if is_schedule:
+                # Специальный промпт для извлечения расписания
+                schedule_prompt = (
+                    "Это фото расписания. Извлеки всё расписание структурированно:\n"
+                    "- Для каждого дня недели перечисли все занятия/задачи\n"
+                    "- Укажи время если видно\n"
+                    "- Сохрани все детали точно как на фото\n"
+                    "Формат: День недели → Время: Название"
+                )
+                result = await vision.analyze(image_bytes, schedule_prompt)
+                if not result:
+                    await message.answer("⚠️ Не смог прочитать расписание.")
+                    return
+
+                # Сохраняем расписание
+                from app.database import save_schedule_photo
+                summary_prompt = f"Дай краткое резюме расписания в 1-2 предложениях:\n{result[:500]}"
+                summary_result = await vision.analyze(image_bytes, summary_prompt)
+                save_schedule_photo(u.id, result, summary_result or "")
+                llm.save_photo_exchange(u.id, "[Расписание сохранено]", result)
+
+                await message.answer(
+                    f"📅 Расписание сохранено! Буду показывать его каждое утро.\n\n"
+                    f"**Что извлекла:**\n{result[:800]}"
+                    + ("..." if len(result) > 800 else ""),
+                    parse_mode="Markdown"
+                )
+            else:
+                result = await vision.analyze(image_bytes, user_prompt)
+                if not result:
+                    await message.answer("⚠️ Не смог проанализировать изображение.")
+                    return
+                note = f' (вопрос: "{user_prompt}")' if user_prompt else ""
+                llm.save_photo_exchange(u.id, f"[Фото{note}]", result)
+                await message.answer(f"🖼️ {result}")
         except Exception:
             logger.exception("Ошибка vision user_id=%s", u.id)
             await message.answer("⚠️ Произошла ошибка при анализе фото.")
@@ -502,6 +672,61 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
             typing_task.cancel()
             if tmp_path:
                 tmp_path.unlink(missing_ok=True)
+
+
+    @dp.message(lambda m: m.voice is not None)
+    async def handle_voice(message: Message) -> None:
+        """Голосовое сообщение → транскрипция → обычный текстовый pipeline."""
+        if not message.from_user or not message.voice:
+            return
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+
+        # Показываем что обрабатываем
+        stop_typing = asyncio.Event()
+        typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
+
+        try:
+            # Транскрибируем
+            text = await _transcribe_voice(bot, message.voice)
+
+            if not text:
+                await message.answer("🎤 Не смог разобрать голосовое. Попробуй ещё раз.")
+                return
+
+            # Показываем что услышали
+            await message.answer(f"🎤 _Услышала:_ {text}", parse_mode="Markdown")
+
+            # Обрабатываем как обычный текст
+            from app.commands.settings_cmd import handle_pending_input
+            setting_reply = handle_pending_input(u.id, text)
+            if setting_reply is not None:
+                await message.answer(setting_reply, parse_mode="Markdown")
+                return
+
+            if _is_deep_research(text):
+                stop_typing.set()
+                typing_task.cancel()
+                # Подставляем текст в message для deep research
+                class _FakeMsg:
+                    text = text
+                    chat = message.chat
+                    from_user = message.from_user
+                    async def answer(self, *a, **kw):
+                        return await message.answer(*a, **kw)
+                await _send_deep_research(_FakeMsg(), bot)
+                return
+
+            bridge = await llm.get_resume_phrase(u.id)
+            result = await llm.chat(u.id, text, resume_bridge=bridge)
+            await _handle_chat_result(message, result, bot)
+
+        except Exception:
+            logger.exception("Ошибка voice user_id=%s", u.id)
+            await message.answer("⚠️ Произошла ошибка. Попробуй ещё раз.")
+        finally:
+            stop_typing.set()
+            typing_task.cancel()
 
     # ── Текст ─────────────────────────────────────────────────────────────────
 

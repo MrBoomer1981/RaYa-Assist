@@ -126,8 +126,8 @@ class MorningAgent(BaseAgent):
         if weather:
             parts.append(f"🌤 *Погода*\n{weather}\n")
 
-        # Расписание — Obsidian приоритетнее calendar_service
-        schedule = obs_sched or events
+        # Расписание — приоритет: Obsidian → фото-расписание → calendar events
+        schedule = obs_sched or photo_sched or events
         if schedule:
             parts.append(f"📅 *Расписание*\n{schedule}\n")
 
@@ -412,6 +412,20 @@ async def _get_news_digest() -> str:
 
 
 # ── Obsidian расписание ───────────────────────────────────────────────────────
+
+async def _get_photo_schedule(user_id: int) -> str:
+    """Загружает расписание сохранённое из фото."""
+    try:
+        from app.database import get_schedule_photo
+        sched = get_schedule_photo(user_id)
+        if not sched or not sched.get("raw_text"):
+            return ""
+        updated = sched.get("updated_at", "")[:10]
+        return f"**📅 Твоё расписание** (фото от {updated}):\n{sched['raw_text'][:600]}"
+    except Exception as e:
+        logger.debug("photo schedule: %s", e)
+        return ""
+
 
 async def _get_obsidian_schedule(date: str) -> str:
     """Читает расписание из Obsidian vault — приоритетнее calendar_service."""
