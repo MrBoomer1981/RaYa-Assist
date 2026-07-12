@@ -2,9 +2,6 @@
 PDF processing using PyMuPDF.
 Extracts text, chunks it, generates an LLM summary, and stores it.
 """
-import io
-import os
-from typing import Optional
 
 import fitz  # PyMuPDF
 from groq import Groq

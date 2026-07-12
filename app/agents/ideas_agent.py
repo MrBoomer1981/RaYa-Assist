@@ -85,18 +85,6 @@ class IdeasAgent(BaseAgent):
         response  = await self._llm.ainvoke(messages)
         content   = str(response.content)
 
-        # Сохраняем в Obsidian фоново
-        from app.config import settings as _cfg
-        if _cfg.obsidian_enabled:
-            try:
-                from app.services.obsidian_tasks import add_idea
-                import asyncio as _aio
-                _t = _aio.create_task(add_idea(ctx.message[:80], content[:400]))
-                self.__dict__.setdefault('_bg', set()).add(_t)
-                _t.add_done_callback(self.__dict__['_bg'].discard)
-            except Exception as _e:
-                logger.debug('ideas obsidian: %s', _e)
-
         return AgentResult(
             success=True,
             content=content,

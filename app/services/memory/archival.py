@@ -4,20 +4,17 @@ Archival Memory — слой 3 из 3.
 Безлимитный архив — никогда не вытесняется.
 Поиск по запросу: не инжектируется автоматически, только по явному вызову.
 
-Источники (в порядке приоритета):
+Источники:
   1. DEEper KnowledgeBase — результаты исследований
-  2. Obsidian vault        — заметки, дневник (когда подключён)
-  3. Загруженные документы — PDF/DOCX обработанные через document_service
+  2. Загруженные документы — PDF/DOCX обработанные через document_service
 
 Вызывается когда:
   - Пользователь явно спрашивает "что я изучал про X"
   - Recall вернул 0 результатов и запрос выглядит как поиск
-  - Агент obsidian напрямую вызывает archival поиск
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +30,7 @@ async def search(query: str, limit: int = 5) -> list[dict]:
     deeper_results = await _search_deeper(query, limit=limit)
     results.extend(deeper_results)
 
-    # 2. Obsidian vault
-    obsidian_results = await _search_obsidian(query, limit=3)
-    results.extend(obsidian_results)
-
-    # Сортируем по релевантности (у DEEper — BM25 score, у Obsidian — score плагина)
+    # Сортируем по релевантности (BM25 score из DEEper)
     results.sort(key=lambda r: r.get("relevance", 0), reverse=True)
     return results[:limit]
 
@@ -70,28 +63,6 @@ async def _search_deeper(query: str, limit: int = 5) -> list[dict]:
         return results
     except Exception as e:
         logger.debug("archival: DEEper search failed: %s", e)
-        return []
-
-
-async def _search_obsidian(query: str, limit: int = 3) -> list[dict]:
-    """Ищет в Obsidian vault через obsidian service."""
-    try:
-        from app.config import settings
-        if not settings.obsidian_enabled:
-            return []
-        from app.services.obsidian import search as obs_search
-        raw = await obs_search(query, limit=limit)
-        return [
-            {
-                "source":    "Obsidian",
-                "title":     r.get("filename", r.get("path", "?")),
-                "snippet":   r.get("content", "")[:300],
-                "relevance": r.get("score", 0.4),
-            }
-            for r in raw
-        ]
-    except Exception as e:
-        logger.debug("archival: Obsidian search failed: %s", e)
         return []
 
 

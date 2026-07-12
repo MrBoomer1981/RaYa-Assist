@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 
-from app.database import _conn, upsert_memory, delete_memory_entry
+from app.database import _conn
+from app.utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,7 @@ def format_for_prompt(user_id: int) -> str:
 
 def _maybe_decay(user_id: int) -> None:
     """Запускает decay не чаще раза в _DECAY_THROTTLE_H часов per user."""
-    now = datetime.utcnow()
+    now = utcnow()
     last = _last_decay.get(user_id)
     if last and (now - last).total_seconds() < _DECAY_THROTTLE_H * 3600:
         return
@@ -207,7 +208,7 @@ def _maybe_decay(user_id: int) -> None:
 def _apply_decay(user_id: int) -> None:
     """SQL UPDATE — снижает importance старых фактов."""
     cutoff = (
-        datetime.utcnow() - timedelta(days=_IMPORTANCE_DECAY_DAYS)
+        utcnow() - timedelta(days=_IMPORTANCE_DECAY_DAYS)
     ).strftime("%Y-%m-%d %H:%M:%S")
     with _conn() as con:
         con.execute(

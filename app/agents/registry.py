@@ -2,7 +2,6 @@
 agent_registry.py — реестр всех агентов системы.
 """
 from dataclasses import dataclass
-import app.feature_flags as _ff
 
 
 @dataclass(frozen=True)
@@ -11,8 +10,8 @@ class AgentInfo:
     title:          str
     description:    str
     keywords:       tuple[str, ...]
-    module:         str  = ""    # путь к модулю: "app.agents.code_agent"
-    class_name:     str  = ""    # имя класса: "CodeAgent"
+    module:         str  = ""    # путь к модулю: "app.agents.todo_agent"
+    class_name:     str  = ""    # имя класса: "TodoAgent"
     parallelizable: bool = False
     needs_critic:   bool = False
     enabled:        bool = True
@@ -29,23 +28,6 @@ AGENTS: dict[str, AgentInfo] = {
         ),
         keywords=(),
     ),
-
-    "code": AgentInfo(
-        name="code", title="Code Agent",
-        module="app.agents.code_agent", class_name="CodeAgent",
-        description=(
-            "Пишет, отлаживает, объясняет код. Архитектура, code review, "
-            "рефакторинг. Python, JavaScript, SQL, bash и другие языки."
-        ),
-        keywords=(
-            "код", "code", "python", "javascript", "функци", "класс",
-            "баг", "ошибк", "debug", "напиши скрипт", "реализуй",
-            "рефактор", "sql", "запрос", "программ",
-        ),
-        parallelizable=True, needs_critic=True,
-    ),
-
-
 
     "todo": AgentInfo(
         name="todo", title="Todo Agent",
@@ -141,23 +123,6 @@ AGENTS: dict[str, AgentInfo] = {
         ),
     ),  # DEEper подключён — Phase 2 complete
 
-    "obsidian": AgentInfo(
-        name="obsidian", title="Obsidian",
-        module="app.agents.obsidian_agent", class_name="ObsidianAgent",
-        description=(
-            "Управляет Obsidian vault: создаёт, ищет, читает, редактирует заметки. "
-            "Поиск по vault, список папок, добавление текста в существующие файлы. "
-            "Использовать когда пользователь явно упоминает Obsidian, vault или заметки."
-        ),
-        keywords=(
-            "obsidian", "vault", "заметк", "создай заметку", "сохрани заметку",
-            "найди в vault", "поиск в obsidian", "открой заметку", "прочитай заметку",
-            "список папки", "что в vault", "добавь в заметку", "удали заметку",
-            "покажи vault",
-        ),
-        needs_critic=False,
-    ),
-
     "diary": AgentInfo(
         name="diary", title="Diary Agent",
         module="app.agents.diary_agent", class_name="DiaryAgent",
@@ -250,7 +215,6 @@ def get_enabled_agents() -> list[AgentInfo]:
         "calendar":       s.module_calendar,
         "todo":           s.module_todo,
         "deep_research":  s.module_deep_research,
-        "obsidian":       getattr(s, "module_obsidian", True),
         "ideas":          s.module_ideas,
     }
     result = []

@@ -4,7 +4,7 @@ two-stage search, report verification.
 All reports in Russian.
 """
 import asyncio
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 from deeper.config import DeeperConfig as Config, ResearchMode, RESEARCH_MODES
 from deeper.services.cache_manager import CacheManager
@@ -154,7 +154,6 @@ class ResearchAgent:
 
         # ── Save ──────────────────────────────────────────────────────
         summary = await self._generate_summary(topic, report)
-        topics, key_facts = await self._extract_topics(topic, summary)
         await notify("💾 Сохраняю в базу знаний...")
         research_id = await self.kb.save_research(
             title=title, summary=summary, report=report, sources=all_urls,
@@ -168,8 +167,6 @@ class ResearchAgent:
             "report":      report,
             "sources":     all_urls,
             "summary":     summary,
-            "topics":      topics,
-            "key_facts":   key_facts,
             "mode":        mode.label,
         }
 
@@ -352,39 +349,6 @@ class ResearchAgent:
         except Exception as e:
             logger.warning("Верификация пропущена: {}", e)
             return report
-
-    async def _extract_topics(self, topic: str, summary: str) -> tuple[list[str], list[str]]:
-        """Извлекает темы и ключевые факты из summary для wiki-связей в Obsidian."""
-        import json
-        try:
-            from groq import AsyncGroq
-            client = AsyncGroq(api_key=self.config.groq_api_key)
-            prompt = (
-                f"Тема исследования: {topic}\n"
-                f"Краткое резюме: {summary[:600]}\n\n"
-                "Верни ТОЛЬКО JSON без пояснений:\n"
-                '{"topics": ["тема1", "тема2", "тема3"], '
-                '"key_facts": ["факт1", "факт2", "факт3"]}\n'
-                "topics — 3-5 ключевых тем (1-3 слова каждая).\n"
-                "key_facts — 3-5 конкретных фактов (компании, технологии, имена).\n"
-                "Только JSON."
-            )
-            resp = await client.chat.completions.create(
-                model=self.config.fast_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.0,
-            )
-            raw = resp.choices[0].message.content.strip()
-            # Убираем markdown-блоки если есть
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            data = json.loads(raw)
-            return data.get("topics", [])[:5], data.get("key_facts", [])[:5]
-        except Exception as e:
-            logger.debug("_extract_topics failed: {}", e)
-            # Fallback: используем первые слова темы
-            words = topic.split()[:5]
-            return [" ".join(words[:3]), " ".join(words[:2])], []
 
     async def _generate_summary(self, topic: str, report: str) -> str:
         try:

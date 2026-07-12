@@ -14,103 +14,33 @@ from typing import Generator
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from app.utils import utcnow
+
 logger = logging.getLogger(__name__)
 
 # Railway Volume — данные хранятся на постоянном диске
 # Локально (разработка): ./database.db
 # Railway (прод): /data/database.db (Volume примонтирован к /data)
-import os as _os
+import os as _os  # noqa: E402 — рядом с местом использования, намеренно
 DB_PATH = Path(_os.getenv("DB_PATH", "database.db"))
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _migrate() -> None:
     """
-    Идемпотентные миграции БД — запускаются один раз при старте через init_db().
-    Открывает собственное соединение вне транзакции, т.к. executescript()
-    делает implicit COMMIT и несовместим с контекстным менеджером _conn().
+    Миграции БД — запускаются один раз при старте через init_db().
+    Открывает собственное соединение вне транзакции, т.к. одна из миграций
+    делает executescript() с implicit COMMIT, несовместимым с _conn().
+    Сама логика миграций живёт в app/migrations.py (версионирована через
+    PRAGMA user_version, но каждая миграция всё равно идемпотентна).
     """
     import sqlite3 as _sq3
+    from app.migrations import run_migrations
+
     con = _sq3.connect(str(DB_PATH), timeout=10)
     try:
         con.execute("PRAGMA journal_mode=WAL")
-
-        # 1. reminders: добавить recurrence если нет
-        rem_cols = {row[1] for row in con.execute("PRAGMA table_info(reminders)").fetchall()}
-        if "recurrence" not in rem_cols:
-            con.execute("ALTER TABLE reminders ADD COLUMN recurrence TEXT DEFAULT NULL")
-
-        # 2. events: importance, repeat, remind_days
-        ev_cols = {row[1] for row in con.execute("PRAGMA table_info(events)").fetchall()}
-        if "importance" not in ev_cols:
-            con.execute("ALTER TABLE events ADD COLUMN importance INTEGER DEFAULT 0")
-            # importance: 0=обычное, 1=важное, 2=критически важное
-        if "repeat" not in ev_cols:
-            con.execute("ALTER TABLE events ADD COLUMN repeat TEXT DEFAULT ''")
-            # repeat: '' | 'yearly' | 'monthly' | 'weekly'
-        if "remind_days" not in ev_cols:
-            con.execute("ALTER TABLE events ADD COLUMN remind_days INTEGER DEFAULT 0")
-            # remind_days: за сколько дней напомнить (0=не напоминать)
-            con.commit()
-            logger.info("✅ Migration: reminders.recurrence добавлен")
-
-        # 2. tasks: пересоздать таблицу если нет колонки text
-        #    Читаем реальные колонки — старая схема могла не иметь priority/due_date
-        task_col_rows = con.execute("PRAGMA table_info(tasks)").fetchall()
-        task_cols = {row[1] for row in task_col_rows}
-        if task_cols and "text" not in task_cols:
-            # Найти текстовую колонку (не системная)
-            system_cols = {"id", "user_id", "priority", "due_date", "done", "created_at", "text"}
-            old_col = next((c for c in task_cols if c not in system_cols), None)
-            src_text  = old_col  if old_col  else "''"
-            src_prio  = "priority"  if "priority"  in task_cols else "2"
-            src_due   = "due_date"  if "due_date"   in task_cols else "''"
-            src_done  = "done"      if "done"       in task_cols else "0"
-            src_ts    = "created_at" if "created_at" in task_cols else "CURRENT_TIMESTAMP"
-            logger.info("⚙️  Migration: tasks.%s -> tasks.text (cols: %s)", src_text, task_cols)
-            con.executescript(f"""
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS tasks_new (
-                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id    INTEGER NOT NULL,
-                    text       TEXT    NOT NULL DEFAULT '',
-                    priority   INTEGER NOT NULL DEFAULT 2,  -- 1=Q1, 2=Q2, 3=Q3, 4=Q4
-                    due_date   TEXT    DEFAULT '',
-                    done       INTEGER NOT NULL DEFAULT 0,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                );
-                INSERT OR IGNORE INTO tasks_new (id, user_id, text, priority, due_date, done, created_at)
-                    SELECT id, user_id, {src_text}, {src_prio}, {src_due}, {src_done}, {src_ts} FROM tasks;
-                DROP TABLE tasks;
-                ALTER TABLE tasks_new RENAME TO tasks;
-                CREATE INDEX IF NOT EXISTS idx_tasks_user ON tasks(user_id, done);
-            """)
-            logger.info("✅ Migration: tasks пересозданы")
-
-        # 3. users: создать таблицу если нет, и добавить недостающие колонки
-        con.executescript("""
-            PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS users (
-                user_id     INTEGER PRIMARY KEY,
-                first_name  TEXT    DEFAULT '',
-                last_name   TEXT    DEFAULT '',
-                username    TEXT    DEFAULT '',
-                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        # ALTER TABLE для колонок которые могли отсутствовать в ранних версиях
-        user_cols = {row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()}
-        # CURRENT_TIMESTAMP нельзя использовать как DEFAULT в ALTER TABLE в SQLite
-        for col, typedef in [
-            ("last_name", "TEXT DEFAULT ''"),
-            ("username",  "TEXT DEFAULT ''"),
-            ("updated_at", "TEXT DEFAULT ''"),
-        ]:
-            if col not in user_cols:
-                con.execute(f"ALTER TABLE users ADD COLUMN {col} {typedef}")
-                con.commit()
-                logger.info("✅ Migration: users.%s добавлен", col)
-
+        run_migrations(con)
     finally:
         con.close()
 
@@ -250,9 +180,6 @@ def init_db() -> None:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_kc_query_mode
                 ON knowledge_cache(query_hash, mode);
 
-            -- Миграция: добавляем колонку query если её нет (для старых БД)
-            -- SQLite не поддерживает IF NOT EXISTS для колонок — используем try/except в Python
-
             CREATE TABLE IF NOT EXISTS events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id     INTEGER NOT NULL,
@@ -274,15 +201,20 @@ def init_db() -> None:
                 last_summary TEXT    DEFAULT '',
                 updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS schedule_photo (
+                user_id     INTEGER PRIMARY KEY,
+                raw_text    TEXT     NOT NULL DEFAULT '',
+                summary     TEXT     DEFAULT '',
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS users (
+                user_id     INTEGER PRIMARY KEY,
+                first_name  TEXT    DEFAULT '',
+                last_name   TEXT    DEFAULT '',
+                username    TEXT    DEFAULT '',
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
         """)
-    # Миграция: добавляем query колонку в knowledge_cache если её нет
-    try:
-        with _conn() as con:
-            con.execute("ALTER TABLE knowledge_cache ADD COLUMN query TEXT NOT NULL DEFAULT ''")
-        logger.debug("knowledge_cache: колонка query добавлена (миграция)")
-    except Exception:
-        pass  # Колонка уже существует
-
     logger.info("✅ База данных готова: %s", DB_PATH)
     _migrate()
     # user_settings removed (single-user mode)
@@ -309,10 +241,10 @@ def load_history(user_id: int, limit: int = 20) -> list[BaseMessage]:
     with _conn() as con:
         rows = con.execute("""
             SELECT role, content FROM (
-                SELECT role, content, created_at FROM history
+                SELECT id, role, content, created_at FROM history
                 WHERE user_id = ?
-                ORDER BY created_at DESC LIMIT ?
-            ) ORDER BY created_at ASC
+                ORDER BY created_at DESC, id DESC LIMIT ?
+            ) ORDER BY created_at ASC, id ASC
         """, (user_id, limit)).fetchall()
     return [
         HumanMessage(content=c) if r == "human" else AIMessage(content=c)
@@ -564,7 +496,7 @@ MEMORY_CATEGORIES = {
 
 def upsert_memory(user_id: int, category: str, key: str, value: str) -> None:
     """Сохраняет или обновляет запись в структурированной памяти."""
-    now = datetime.utcnow().strftime(_TIME_FMT)
+    now = utcnow().strftime(_TIME_FMT)
     with _conn() as con:
         con.execute("""
             INSERT INTO structured_memory (user_id, category, key, value, updated_at)
@@ -695,7 +627,7 @@ def save_conversation_context(
     last_summary: str = "",
 ) -> None:
     """Сохраняет или обновляет контекст разговора."""
-    now     = datetime.utcnow().strftime(_TIME_FMT)
+    now     = utcnow().strftime(_TIME_FMT)
     threads = _json.dumps(open_threads or [], ensure_ascii=False)
 
     with _conn() as con:
@@ -739,7 +671,7 @@ def format_context_for_prompt(user_id: int) -> str:
 
 def upsert_interaction(user_id: int, topic: str, summary: str) -> None:
     """Добавляет или обновляет запись о теме разговора."""
-    now = datetime.utcnow().strftime(_TIME_FMT)
+    now = utcnow().strftime(_TIME_FMT)
     with _conn() as con:
         existing = con.execute("""
             SELECT id, frequency FROM interaction_memory
@@ -799,8 +731,9 @@ def save_event(user_id: int, date: str, title: str,
     with _conn() as con:
         cur = con.execute(
             """INSERT INTO events (user_id, date, time_start, time_end, title, description, color, importance, repeat, remind_days)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, date, time_start or None, time_end or None, title, description, color)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, date, time_start or None, time_end or None, title, description, color,
+             importance, repeat, remind_days)
         )
         return cur.lastrowid
 

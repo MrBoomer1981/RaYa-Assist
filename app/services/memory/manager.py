@@ -31,7 +31,7 @@ _RECALL_TRIGGERS = re.compile(
 )
 
 _ARCHIVAL_TRIGGERS = re.compile(
-    r"(что я изучал|что в vault|из исследований|из базы знаний|"
+    r"(что я изучал|из исследований|из базы знаний|"
     r"deeper|поиск в памяти|архив|моё исследование про)",
     re.IGNORECASE,
 )

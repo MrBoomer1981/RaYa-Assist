@@ -22,6 +22,7 @@ from app.database import (
     get_user_name, load_history, load_memory, save_messages,
     get_all_known_users, get_due_reminders, mark_reminder_done, reschedule_reminder,
 )
+from app.utils import utcnow
 
 # ── Временные константы (секунды) ────────────────────────────────────────────
 _1_HOUR   = 3_600
@@ -37,7 +38,7 @@ _MOSCOW_UTC_OFFSET = 3
 
 
 def _now_msk() -> datetime:
-    return datetime.utcnow() + timedelta(hours=_MOSCOW_UTC_OFFSET)
+    return utcnow() + timedelta(hours=_MOSCOW_UTC_OFFSET)
 
 
 # ── Триггер 1: Напоминание за 30 минут ───────────────────────────────────────
@@ -48,7 +49,7 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
     Возвращает True если сообщение отправлено.
     """
     try:
-        now = datetime.utcnow()
+        now = utcnow()
         window_start = now + timedelta(minutes=25)
         window_end   = now + timedelta(minutes=35)
 
@@ -143,7 +144,7 @@ async def check_long_absence(user_id: int, bot, llm, last_absence_msg: datetime 
         if last_msg is None:
             return False, last_absence_msg
 
-        now = datetime.utcnow()
+        now = utcnow()
         silence_hours = (now - last_msg).total_seconds() / _1_HOUR
 
         if silence_hours < 48:
@@ -177,7 +178,7 @@ async def check_idea_followup(user_id: int, bot, llm, sent_ids: set) -> bool:
     """
     try:
 
-        cutoff = (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        cutoff = (utcnow() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
 
         with sqlite3.connect(str(DB_PATH)) as con:
             rows = con.execute("""
@@ -222,7 +223,7 @@ async def check_activity_suggestion(
     Не чаще раза в 24ч.
     """
     try:
-        now = datetime.utcnow()
+        now = utcnow()
         if last_suggestion and (now - last_suggestion).total_seconds() < _24_HOURS:
             return False, last_suggestion
         interactions = get_top_interactions(user_id, limit=3)
@@ -306,20 +307,20 @@ async def check_all_triggers(
     # 2. Task deadlines
     last_task_check = state.get("last_task_check")
     if not sent and _ff.task_deadlines() and (not last_task_check or
-            (datetime.utcnow() - last_task_check).total_seconds() > _1_HOUR):
+            (utcnow() - last_task_check).total_seconds() > _1_HOUR):
         sent_task_ids = state.setdefault("sent_task_ids", set())
         if await check_task_deadlines(user_id, bot, llm, sent_task_ids):
             sent = True
-        state["last_task_check"] = datetime.utcnow()
+        state["last_task_check"] = utcnow()
 
     # 3. Long absence — каждые 6ч
     last_abs_check = state.get("last_absence_check")
     if not sent and (not last_abs_check or
-            (datetime.utcnow() - last_abs_check).total_seconds() > _6_HOURS):
+            (utcnow() - last_abs_check).total_seconds() > _6_HOURS):
         ok, new_ts = await check_long_absence(
             user_id, bot, llm, state.get("last_absence_msg")
         )
-        state["last_absence_check"] = datetime.utcnow()
+        state["last_absence_check"] = utcnow()
         if ok:
             state["last_absence_msg"] = new_ts
             sent = True
@@ -328,11 +329,11 @@ async def check_all_triggers(
     last_idea_check = state.get("last_idea_check")
     # Idea followup — проверяем настройку пользователя
     if not sent and _ff.proactive_ideas() and (not last_idea_check or
-            (datetime.utcnow() - last_idea_check).total_seconds() > _12_HOURS):
+            (utcnow() - last_idea_check).total_seconds() > _12_HOURS):
         sent_diary_ids = state.setdefault("sent_diary_ids", set())
         if await check_idea_followup(user_id, bot, llm, sent_diary_ids):
             sent = True
-        state["last_idea_check"] = datetime.utcnow()
+        state["last_idea_check"] = utcnow()
 
     # 5. Activity suggestion
     if not sent and _ff.proactive_activity():
@@ -350,16 +351,16 @@ async def check_all_triggers(
 # ProactiveService
 # ────────────────────────────────────────────────────────────
 
-import asyncio
+import asyncio  # noqa: E402 — рядом с местом использования (ProactiveService), намеренно
 
-from aiogram import Bot
+from aiogram import Bot  # noqa: E402 — рядом с местом использования, намеренно
 
 
 logger = logging.getLogger(__name__)
 
 _MOSCOW_UTC_OFFSET  = 3
 # Время дайджеста и тишины теперь из app.settings (меняются через /settings)
-import app.settings as _us_mod
+import app.settings as _us_mod  # noqa: E402 — рядом с местом использования, намеренно
 def _digest_hour()   -> int: return _us_mod.get().digest_hour
 def _digest_minute() -> int: return _us_mod.get().digest_minute
 def _silence_hours() -> int: return _us_mod.get().silence_hours
@@ -449,7 +450,7 @@ class ProactiveService:
 
     async def _tick_scheduler(self) -> None:
         """Проверяет и отправляет созревшие напоминания."""
-        now = datetime.utcnow()
+        now = utcnow()
         reminders = get_due_reminders(now)
         _RECUR_LABELS = {
             "daily": "каждый день", "weekly": "каждую неделю",
@@ -482,7 +483,7 @@ class ProactiveService:
             await asyncio.sleep(_CHECK_INTERVAL_SEC)
 
     async def _tick(self) -> None:
-        now_utc = datetime.utcnow()
+        now_utc = utcnow()
 
         # Всё время считаем в МСК
         msk_total_minutes = now_utc.hour * 60 + now_utc.minute + _MOSCOW_UTC_OFFSET * 60
@@ -511,7 +512,7 @@ class ProactiveService:
         if not (8 <= now_msk_hour < 23):
             return
 
-        # Не пишем чаще чем раз в _SILENCE_HOURS
+        # Не пишем чаще чем раз в N часов тишины (настраивается в /settings)
         if self._last_initiative:
             since_initiative = (now_utc - self._last_initiative).total_seconds() / _1_HOUR
             if since_initiative < _silence_hours():
@@ -548,7 +549,7 @@ class ProactiveService:
 
             silence_hours = (now_utc - last_msg).total_seconds() / _1_HOUR
 
-            if silence_hours >= _SILENCE_HOURS:
+            if silence_hours >= _silence_hours():
                 logger.info("🤫 Тишина %.1f ч — RaYa пишет первой", silence_hours)
 
                 # Берём лёгкую модель для инициативы
@@ -646,11 +647,10 @@ async def generate_initiative_message(user_id: int, llm) -> str:
     try:
         facts  = load_memory(user_id)
 
+        user_name = get_user_name(user_id)
         context = ""
         if facts:
-            user_name = get_user_name(user_id)
-        context += f"Что RaYa знает о {user_name}: {'; '.join(facts[:3])}\n"
-        # Читаем задачи из Obsidian если доступен
+            context += f"Что RaYa знает о {user_name}: {'; '.join(facts[:3])}\n"
         try:
             tasks = get_active_tasks(user_id)
             if tasks:
@@ -661,7 +661,7 @@ async def generate_initiative_message(user_id: int, llm) -> str:
         prompt = next(_initiative_cycle)
 
         response = await llm.ainvoke([
-            SystemMessage(content=f"Ты RaYa — личный ассистент и друг пользователя. Обращайся к нему по имени '{get_user_name(user_id)}'."),
+            SystemMessage(content=f"Ты RaYa — личный ассистент и друг пользователя. Обращайся к нему по имени '{user_name}'."),
             HumanMessage(content=prompt + "\n\n" + context),
         ])
         return str(response.content).strip()

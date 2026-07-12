@@ -13,13 +13,11 @@ DEEper дорабатывается в deeper/ независимо, этот м
 
 Интерфейс DEEper намеренно не трогается — только импортируем и вызываем.
 """
-import asyncio
 import logging
 import time
 from typing import Optional
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
-from app.config import settings as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -163,16 +161,12 @@ class DeepResearchAgent(BaseAgent):
                 metadata={"progress": progress},
             )
 
-        elapsed   = round(time.monotonic() - start, 1)
-        report    = result.get("report", "Отчёт не сформирован.")
-        sources   = result.get("sources", [])
-        res_id    = result.get("id")
-        # Темы и факты — нужны для wiki-связей в Obsidian
-        topics    = result.get("topics",    [])
-        key_facts = result.get("key_facts", [])
+        elapsed = round(time.monotonic() - start, 1)
+        report  = result.get("report", "Отчёт не сформирован.")
+        sources = result.get("sources", [])
+        res_id  = result.get("id")
 
-        obs_note = f" | 🗂 [vault]" if obs_path else ""
-        footer = f"\n\n---\n🔬 *{_MODE_LABELS[mode]}* | ⏱ {elapsed}с | 📚 {len(sources)} источников{obs_note}"
+        footer = f"\n\n---\n🔬 *{_MODE_LABELS[mode]}* | ⏱ {elapsed}с | 📚 {len(sources)} источников"
         if res_id:
             footer += f" | ID: {res_id}"
 
@@ -180,31 +174,6 @@ class DeepResearchAgent(BaseAgent):
             "✅ DEEper завершён | mode=%s | sources=%d | %.1fs | id=%s",
             mode, len(sources), elapsed, res_id,
         )
-
-        # Сохраняем отчёт в Obsidian vault
-        obs_path = None
-        if _cfg.obsidian_enabled:
-            try:
-                from app.services.obsidian import save_research_report as obs_research
-                obs_path = await obs_research(query, report, sources, mode)
-                logger.info("🔬 Obsidian: отчёт → %s", obs_path)
-
-                # Автосвязи с другими заметками vault (фоново)
-                if obs_path and (topics or key_facts):
-                    import asyncio as _aio
-                    from app.services.obsidian_links import link_research_note
-                    _link_task = _aio.create_task(
-                        link_research_note(obs_path, query, topics, key_facts)
-                    )
-                    # Удерживаем от GC до завершения
-                    _link_task.add_done_callback(
-                        lambda t: logger.info(
-                            "🔗 Links: %d связей создано",
-                            len(t.result()) if not t.exception() else 0,
-                        )
-                    )
-            except Exception as e:
-                logger.warning("🔬 Obsidian research sync failed: %s", e)
 
         return AgentResult(
             success=True,
@@ -218,6 +187,5 @@ class DeepResearchAgent(BaseAgent):
                 "progress":      progress,
                 "elapsed":       elapsed,
                 "deep_research": True,
-                "obsidian_path": obs_path,
             },
         )

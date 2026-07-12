@@ -1,7 +1,9 @@
 """sunday_digest.py — еженедельный обзор по воскресеньям."""
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import timedelta
+
+from app.utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,7 @@ async def build_sunday_digest(user_id: int, name: str) -> str:
         load_diary_entries, _conn,
     )
 
-    now      = datetime.utcnow()
+    now      = utcnow()
     week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
 
     with _conn() as con:

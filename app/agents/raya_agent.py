@@ -27,7 +27,7 @@ from app.personality_service import (
     get_opinion_hint, get_response_length_hint,
     mood_context, state_to_prompt, update_state,
 )
-from app.utils import build_reminder_prompt_block, clean_reminder_tag, parse_reminder
+from app.utils import build_reminder_prompt_block, clean_reminder_tag, parse_reminder, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class RayaAgent(BaseAgent):
         return prompt
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
-        now_utc  = datetime.utcnow()
+        now_utc  = utcnow()
         is_voice = ctx.extra.get("is_voice", False)
 
         # ── 1. Фоновый трекинг настроения ────────────────────────────────────

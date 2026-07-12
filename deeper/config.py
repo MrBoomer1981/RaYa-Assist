@@ -7,7 +7,7 @@ deeper/config.py — конфигурация DEEper модуля.
 Дорабатывать можно свободно — Рая импортирует только DeeperConfig.
 """
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict
 from pathlib import Path
 from dotenv import load_dotenv

@@ -2,6 +2,43 @@
 
 Личная AI-система для одного пользователя.
 
+## Архитектура
+
+```mermaid
+flowchart TD
+    TG["Telegram"] -->|текст / фото / документ / голос| H["handlers.py"]
+    TG -->|"/deeper тема"| H
+
+    H -->|обычное сообщение| LLM["LLMService.chat()"]
+    H -->|"/deeper"| DR["DeepResearchAgent"]
+
+    LLM --> ORCH["Orchestrator"]
+    ORCH -->|контекст| MEM["MemoryManager<br/>Core + Recall + Archival"]
+    ORCH -->|маршрутизация| ROUTER["RouterAgent<br/>ключевые слова → LLM-классификатор"]
+
+    ROUTER --> AGENTS["Агенты"]
+    AGENTS -.-> RAYA["raya"]
+    AGENTS -.-> TODO["todo"]
+    AGENTS -.-> CAL["calendar"]
+    AGENTS -.-> DIARY["diary"]
+    AGENTS -.-> IDEAS["ideas"]
+    AGENTS -.-> EXPLAIN["explain"]
+    AGENTS -.-> MORNING["morning"]
+
+    AGENTS -->|needs_critic| CRITIC["CriticAgent"]
+    CRITIC --> REPLY["Ответ пользователю"]
+    AGENTS --> REPLY
+
+    AGENTS <--> DB[("SQLite<br/>database.db")]
+    DR --> BRIDGE["DEEperBridge"]
+    BRIDGE --> DEEPER["DEEper<br/>web search · scraping · SQLite FTS5"]
+
+    PROACTIVE["ProactiveService<br/>фоновый scheduler"] -.->|сама пишет первой| TG
+    PROACTIVE --> DB
+```
+
+DEEper не знает о существовании Раи — единственная точка связи снизу.
+
 ## Структура
 
 ```
@@ -15,12 +52,28 @@ raya-deeper/
 │   ├── config.py      # Конфиг DEEper (тот же .env)
 │   ├── services/      # ResearchAgent, KnowledgeBase, WebSearch, ...
 │   └── utils/
-├── data/              # SQLite + FAISS (Railway: persistent volume /app/data)
+├── tests/             # pytest — unit + integration тесты
+├── data/              # SQLite (Railway: persistent volume /app/data)
 ├── main.py
 ├── requirements.txt
+├── requirements-dev.txt  # pytest, ruff — только для разработки
 ├── railway.toml
 └── .env.example       # → скопировать в .env и заполнить
 ```
+
+## Тесты
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+pytest tests/ -v
+```
+
+С отчётом покрытия:
+```bash
+pytest tests/ --cov=app --cov-report=term-missing
+```
+
+CI (`.github/workflows/tests.yml`) прогоняет весь набор на каждый push/PR в `main`.
 
 ## Интеграция DEEper
 
@@ -40,9 +93,3 @@ raya-deeper/
 ### Переменные Railway (Settings → Variables)
 Все переменные из `.env.example` добавить вручную в Railway UI.
 `.env` файл НЕ коммитится — только в Railway Variables.
-
-## Phase 3 (Obsidian)
-
-Заполнить в Railway Variables:
-- `OBSIDIAN_VAULT_PATH` — прямой доступ к vault
-- или `OBSIDIAN_API_URL` + `OBSIDIAN_API_KEY` — через плагин

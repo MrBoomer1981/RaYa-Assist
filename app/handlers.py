@@ -1,35 +1,32 @@
 """
 handlers.py — Telegram хендлеры (single-user версия).
 
-Убрано: voice/TTS, image agent, settings UI, rate limiting (не нужен single-user),
-        multi-user семафор.
-Оставлено: текст, фото (vision), документы, команды, deep research прогресс.
+Регистрирует: команды, текст, фото (vision), документы, голос,
+deep research (выбор режима + live-прогресс).
 """
 import asyncio
 import logging
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import Message, CallbackQuery
 
 from app.config import settings
 from app.database import (
-    clear_history, clear_memory, load_memory,
-    save_reminder, get_active_reminders, get_memory_by_category,
-    upsert_user, get_user_name,
+    clear_history, clear_memory, save_reminder, get_active_reminders, upsert_user, get_user_name,
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
+from app.utils import RECUR_RU, utcnow
 from app.vision_service import VisionService
 
 logger = logging.getLogger(__name__)
 
 _MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 МБ
-
-from app.utils import RECUR_RU
 
 
 # ── Вспомогательные ───────────────────────────────────────────────────────────
@@ -49,8 +46,6 @@ def _build_help_text() -> str:
     ]
     if settings.search_enabled:
         lines.append("• Глубоко исследовать темы в интернете 🔬")
-    if settings.obsidian_enabled:
-        lines.append("• Синхронизироваться с Obsidian 🗂️")
     lines += [
         "\nКоманды:",
         "/reminders — активные напоминания",
@@ -59,8 +54,11 @@ def _build_help_text() -> str:
         "/stats     — статистика за неделю",
         "/clear     — очистить историю разговора",
         "/settings  — настройки (время дайджеста, модули, модель)",
-        "/vault     — статус Obsidian vault",
         "/schedule  — показать сохранённое расписание",
+    ]
+    if settings.search_enabled:
+        lines.append("/deeper <тема> — глубокое исследование темы (DEEper)")
+    lines += [
         "🎤 Голосовые сообщения поддерживаются",
         "/help      — это сообщение",
     ]
@@ -84,8 +82,76 @@ async def _download_bytes(bot: Bot, file_id: str) -> bytes | None:
     return downloaded.read() if downloaded else None
 
 
+_SCHEDULE_KEYWORDS = frozenset({
+    "расписание", "schedule", "занятия", "уроки", "пары", "лекции",
+    "рабочий план", "план на неделю", "план недели", "распорядок",
+    "сохрани расписание", "запомни расписание", "это моё расписание",
+})
+
+
+def _is_schedule_photo(caption: str) -> bool:
+    """Определяет по подписи — это фото расписания."""
+    if not caption:
+        return False
+    cap = caption.lower()
+    return any(kw in cap for kw in _SCHEDULE_KEYWORDS)
+
+
+async def _transcribe_voice(bot: Bot, voice) -> str:
+    """
+    Транскрибирует голосовое сообщение через Groq Whisper.
+    Возвращает текст или пустую строку при ошибке.
+    """
+    import io
+    from groq import AsyncGroq
+    from app.config import settings
+
+    try:
+        # Скачиваем ogg файл
+        file_info = await bot.get_file(voice.file_id)
+        downloaded = await bot.download_file(file_info.file_path)
+        if not downloaded:
+            return ""
+
+        audio_bytes = downloaded.read()
+        client = AsyncGroq(api_key=settings.groq_api_key)
+
+        # Groq Whisper принимает file-like объект
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "voice.ogg"
+
+        transcription = await client.audio.transcriptions.create(
+            file=audio_file,
+            model="whisper-large-v3-turbo",  # быстрая и точная модель
+            language="ru",
+            response_format="text",
+        )
+        text = str(transcription).strip()
+        logger.info("🎤 Транскрипция: '%s...'", text[:50])
+        return text
+    except Exception as e:
+        logger.warning("🎤 Ошибка транскрипции: %s", e)
+        return ""
+
+
 # Хранилище тем ожидающих выбора режима: chat_id → topic
 _PENDING_RESEARCH: dict[int, str] = {}
+
+# Chat_id → timestamp: ждём от пользователя тему после голого /deeper
+_AWAITING_TOPIC: dict[int, float] = {}
+_AWAITING_TOPIC_TTL = 300  # 5 минут — после этого голый текст больше не считается темой
+
+
+def _consume_awaiting_topic(chat_id: int) -> bool:
+    """
+    Если для этого чата ждём тему после голого /deeper — снимает ожидание
+    и возвращает True (при условии что не протухло). Иначе False.
+    """
+    ts = _AWAITING_TOPIC.pop(chat_id, None)
+    if ts is None:
+        return False
+    return (time.monotonic() - ts) < _AWAITING_TOPIC_TTL
+
 
 _MODES = {
     "simple": ("🟢 Быстрый",     "~2 мин · 5 запросов · базовый обзор"),
@@ -94,16 +160,16 @@ _MODES = {
 }
 
 
-async def _send_deep_research(message: Message, bot: Bot) -> None:
+async def _send_deep_research(message: Message, bot: Bot, topic: str) -> None:
     """
-    Шаг 1: показывает inline-кнопки выбора режима.
+    Шаг 1: показывает inline-кнопки выбора режима для уже известной темы.
     Шаг 2 (после выбора): запускает DEEper с live-прогрессом.
     """
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-    topic = _get_search_topic(message.text or "")
+    topic = topic.strip()
     if not topic:
-        await message.answer("Укажи тему. Пример: `поиск: квантовые компьютеры`",
+        await message.answer("Укажи тему, например: `/deeper квантовые компьютеры`",
                              parse_mode="Markdown")
         return
 
@@ -128,7 +194,6 @@ async def _send_deep_research(message: Message, bot: Bot) -> None:
 async def _run_deep_research(chat_id: int, topic: str, mode: str, bot: Bot,
                               status_msg_id: int) -> None:
     """Запускает DEEper и отправляет отчёт."""
-    import time
     from app.agents.deep_research_agent import _get_bridge
 
     progress_lines: list[str] = []
@@ -205,7 +270,7 @@ def _split_report(text: str, max_len: int = 3800) -> list[str]:
 
 
 async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) -> None:
-    """Отправляет ответ пользователю. TTS убран — только текст."""
+    """Отправляет ответ пользователю."""
     await message.answer(result.reply)
 
     if result.reminder:
@@ -228,28 +293,13 @@ async def _handle_chat_result(message: Message, result: ChatResult, bot: Bot) ->
             logger.exception("Ошибка сохранения напоминания")
 
 
-
-import re as _re_dr
-
-_SEARCH_CMD_RE = _re_dr.compile(
-    r'^(?:поиск|исследуй|research|найди всё о|изучи|разберись с)[:\s]+(.+)$',
-    _re_dr.IGNORECASE | _re_dr.DOTALL,
-)
-
-def _is_deep_research(message: str) -> bool:
-    return bool(_SEARCH_CMD_RE.match(message.strip()))
-
-def _get_search_topic(message: str) -> str:
-    m = _SEARCH_CMD_RE.match(message.strip())
-    return m.group(1).strip() if m else message.strip()
-
 # ── Статистика ────────────────────────────────────────────────────────────────
 
 def _build_stats(user_id: int) -> str:
-    from datetime import datetime, timedelta
+    from datetime import timedelta
     from app.database import _conn
 
-    now      = datetime.utcnow()
+    now      = utcnow()
     week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     lines    = ["📊 **Статистика за неделю**\n"]
 
@@ -323,7 +373,6 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
     @dp.callback_query(lambda c: c.data and c.data.startswith("dr:"))
     async def handle_deeper_mode(callback: CallbackQuery) -> None:
         """Обрабатывает выбор режима DEEper."""
-        from aiogram.types import CallbackQuery
         mode = callback.data.split(":", 1)[1]
         chat_id = callback.message.chat.id
 
@@ -438,14 +487,12 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
                     message.from_user.last_name or "", message.from_user.username or "")
         await message.answer(_build_stats(uid), parse_mode="Markdown")
 
-
-
     @dp.message(Command("schedule"))
     async def cmd_schedule(message: Message) -> None:
         """Показывает сохранённое расписание."""
         if not message.from_user:
             return
-        from app.database import get_schedule_photo, delete_schedule_photo
+        from app.database import get_schedule_photo
         sched = get_schedule_photo(message.from_user.id)
         if not sched:
             await message.answer(
@@ -460,92 +507,17 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
         )
         await message.answer(text, parse_mode="Markdown")
 
-    @dp.message(Command("vault"))
-    async def cmd_vault(message: Message) -> None:
-        """Показывает статус Obsidian и корневые папки."""
+    @dp.message(Command("deeper"))
+    async def cmd_deeper(message: Message, command: CommandObject) -> None:
+        """Запускает DEEper. `/deeper тема` — сразу, голый `/deeper` — спросит тему."""
         if not message.from_user:
             return
-        from app.config import settings as _cfg
-        from app.services.obsidian import ping, list_folder
-        if not _cfg.obsidian_enabled:
-            await message.answer(
-                "⚠️ Obsidian не настроен.\n\n"
-                "Добавь в Railway Variables:\n"
-                "`OBSIDIAN_API_URL=https://127.0.0.1:27124`\n"
-                "`OBSIDIAN_API_KEY=твой_ключ`"
-            )
-            return
-        ok = await ping()
-        if not ok:
-            await message.answer(
-                f"❌ Obsidian недоступен.\n"
-                f"URL: `{_cfg.obsidian_api_url}`\n"
-                "Проверь что плагин запущен и API включён."
-            )
-            return
-        try:
-            files = await list_folder("")
-            folders = [f for f in files if not "." in f.split("/")[-1]]
-            lines = [f"✅ Obsidian подключён\n`{_cfg.obsidian_api_url}`\n"]
-            if folders:
-                lines.append("📂 Папки в vault:")
-                lines.extend(f"  • {f}" for f in folders[:15])
-            else:
-                lines.append(f"Файлов в vault: {len(files)}")
-            await message.answer("\n".join(lines))
-        except Exception as e:
-            await message.answer(f"✅ Obsidian доступен, но ошибка листинга: {e}")
-
-
-_SCHEDULE_KEYWORDS = frozenset({
-    "расписание", "schedule", "занятия", "уроки", "пары", "лекции",
-    "рабочий план", "план на неделю", "план недели", "распорядок",
-    "сохрани расписание", "запомни расписание", "это моё расписание",
-})
-
-def _is_schedule_photo(caption: str) -> bool:
-    """Определяет по подписи — это фото расписания."""
-    if not caption:
-        return False
-    cap = caption.lower()
-    return any(kw in cap for kw in _SCHEDULE_KEYWORDS)
-
-
-async def _transcribe_voice(bot: Bot, voice) -> str:
-    """
-    Транскрибирует голосовое сообщение через Groq Whisper.
-    Возвращает текст или пустую строку при ошибке.
-    """
-    import io
-    from groq import AsyncGroq
-    from app.config import settings
-
-    try:
-        # Скачиваем ogg файл
-        file_info = await bot.get_file(voice.file_id)
-        downloaded = await bot.download_file(file_info.file_path)
-        if not downloaded:
-            return ""
-
-        audio_bytes = downloaded.read()
-        client = AsyncGroq(api_key=settings.groq_api_key)
-
-        # Groq Whisper принимает file-like объект
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "voice.ogg"
-
-        transcription = await client.audio.transcriptions.create(
-            file=audio_file,
-            model="whisper-large-v3-turbo",  # быстрая и точная модель
-            language="ru",
-            response_format="text",
-        )
-        text = str(transcription).strip()
-        logger.info("🎤 Транскрипция: '%s...'", text[:50])
-        return text
-    except Exception as e:
-        logger.warning("🎤 Ошибка транскрипции: %s", e)
-        return ""
+        topic = (command.args or "").strip()
+        if topic:
+            await _send_deep_research(message, bot, topic)
+        else:
+            _AWAITING_TOPIC[message.chat.id] = time.monotonic()
+            await message.answer("🔬 Какую тему исследовать?")
 
     # ── Медиа ─────────────────────────────────────────────────────────────────
 
@@ -673,7 +645,6 @@ async def _transcribe_voice(bot: Bot, voice) -> str:
             if tmp_path:
                 tmp_path.unlink(missing_ok=True)
 
-
     @dp.message(lambda m: m.voice is not None)
     async def handle_voice(message: Message) -> None:
         """Голосовое сообщение → транскрипция → обычный текстовый pipeline."""
@@ -704,17 +675,10 @@ async def _transcribe_voice(bot: Bot, voice) -> str:
                 await message.answer(setting_reply, parse_mode="Markdown")
                 return
 
-            if _is_deep_research(text):
+            if _consume_awaiting_topic(message.chat.id):
                 stop_typing.set()
                 typing_task.cancel()
-                # Подставляем текст в message для deep research
-                class _FakeMsg:
-                    text = text
-                    chat = message.chat
-                    from_user = message.from_user
-                    async def answer(self, *a, **kw):
-                        return await message.answer(*a, **kw)
-                await _send_deep_research(_FakeMsg(), bot)
+                await _send_deep_research(message, bot, text)
                 return
 
             bridge = await llm.get_resume_phrase(u.id)
@@ -745,11 +709,11 @@ async def _transcribe_voice(bot: Bot, voice) -> str:
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_keep_typing(bot, message.chat.id, stop_typing))
         try:
-            # Deep research: отдельный flow с live-прогрессом DEEper
-            if _is_deep_research(message.text or ""):
+            # Ждём тему после голого /deeper — это следующее сообщение и есть тема
+            if _consume_awaiting_topic(message.chat.id):
                 stop_typing.set()
                 typing_task.cancel()
-                await _send_deep_research(message, bot)
+                await _send_deep_research(message, bot, message.text)
                 return
 
             bridge = await llm.get_resume_phrase(u.id)

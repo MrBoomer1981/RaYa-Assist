@@ -107,12 +107,6 @@ SETTINGS_SCHEMA = [
         "type": "toggle",
     },
     {
-        "section": "🤖 Модули",
-        "key": "module_obsidian",
-        "label": "Obsidian (заметки, поиск в vault)",
-        "type": "toggle",
-    },
-    {
         "section": "🧠 Модель",
         "key": "temperature",
         "label": "Температура (0.0–2.0)",
@@ -175,7 +169,6 @@ class UserSettings:
     module_todo:           bool = True
     module_deep_research:  bool = True
     module_ideas:          bool = True
-    module_obsidian:       bool = True
 
     # ── Модель ────────────────────────────────────────────────────────────────
     temperature:   float = 0.7

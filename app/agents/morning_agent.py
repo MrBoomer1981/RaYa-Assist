@@ -3,7 +3,7 @@ morning_agent.py — утренний дайджест RaYa.
 
 Состав:
   🌤 Погода         — wttr.in с городом из Core Memory
-  📅 Расписание     — события из calendar_service + Obsidian vault
+  📅 Расписание     — события из calendar_service / фото-расписания
   ✅ Задачи         — активные задачи с дедлайнами
   🤖 AI-новости     — последние 24ч, акцент на AI/LLM/OpenAI/Anthropic/Google
   💻 IT-новости     — технологии, стартапы, продукты, hardware
@@ -24,6 +24,7 @@ from langchain_groq import ChatGroq
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
+from app.utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,6 @@ class MorningAgent(BaseAgent):
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
         now_msk = datetime.now(timezone.utc) + timedelta(hours=_MOSCOW_UTC_OFFSET)
-        today   = now_msk.strftime("%Y-%m-%d")
 
         # Все блоки параллельно
         (
@@ -93,25 +93,25 @@ class MorningAgent(BaseAgent):
             events_res,
             tasks_res,
             news_res,
-            obs_res,
+            photo_res,
         ) = await asyncio.gather(
             _get_weather(ctx.user_id),
             _get_events(ctx.user_id, now_msk),
             _get_tasks(ctx.user_id),
             _get_news_digest(),
-            _get_obsidian_schedule(today),
+            _get_photo_schedule(ctx.user_id),
             return_exceptions=True,
         )
 
         def safe(v, default=""):
             return v if isinstance(v, str) else default
 
-        weather   = safe(weather_res)
-        events    = safe(events_res)
-        tasks     = safe(tasks_res)
-        news      = safe(news_res)
-        obs_sched = safe(obs_res)
-        quote     = _get_quote(now_msk)
+        weather     = safe(weather_res)
+        events      = safe(events_res)
+        tasks       = safe(tasks_res)
+        news        = safe(news_res)
+        photo_sched = safe(photo_res)
+        quote       = _get_quote(now_msk)
 
         # Сборка дайджеста
         parts: list[str] = []
@@ -126,8 +126,8 @@ class MorningAgent(BaseAgent):
         if weather:
             parts.append(f"🌤 *Погода*\n{weather}\n")
 
-        # Расписание — приоритет: Obsidian → фото-расписание → calendar events
-        schedule = obs_sched or photo_sched or events
+        # Расписание — приоритет: фото-расписание → calendar events
+        schedule = photo_sched or events
         if schedule:
             parts.append(f"📅 *Расписание*\n{schedule}\n")
 
@@ -201,8 +201,10 @@ async def _get_weather(user_id: int) -> str:
             "кофта"           if temp < 22  else
             "налегке"
         )
-        if precip > 0.5: tip += ", зонт"
-        if wind > 30:    tip += ", ветрено"
+        if precip > 0.5:
+            tip += ", зонт"
+        if wind > 30:
+            tip += ", ветрено"
 
         city_label = f" ({city})" if city else ""
         rain_str   = f", осадки {precip:.1f}мм" if precip > 0.5 else ""
@@ -278,7 +280,7 @@ async def _get_tasks(user_id: int) -> str:
     try:
         from app.database import _conn
 
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = utcnow().strftime("%Y-%m-%d")
 
         with _conn() as con:
             rows = con.execute(
@@ -333,7 +335,7 @@ async def _get_news_digest() -> str:
             return ""
 
         svc  = WebSearch(api_key=deeper_config.tavily_api_key, pages_per_query=3)
-        date = datetime.utcnow().strftime("%d %B %Y")
+        date = utcnow().strftime("%d %B %Y")
 
         # Собираем задачи: по два лучших запроса на блок
         tasks_map: dict[str, list] = {}
@@ -411,7 +413,7 @@ async def _get_news_digest() -> str:
         return ""
 
 
-# ── Obsidian расписание ───────────────────────────────────────────────────────
+# ── Расписание из фото ────────────────────────────────────────────────────────
 
 async def _get_photo_schedule(user_id: int) -> str:
     """Загружает расписание сохранённое из фото."""
@@ -424,25 +426,6 @@ async def _get_photo_schedule(user_id: int) -> str:
         return f"**📅 Твоё расписание** (фото от {updated}):\n{sched['raw_text'][:600]}"
     except Exception as e:
         logger.debug("photo schedule: %s", e)
-        return ""
-
-
-async def _get_obsidian_schedule(date: str) -> str:
-    """Читает расписание из Obsidian vault — приоритетнее calendar_service."""
-    from app.config import settings as _cfg
-    if not _cfg.obsidian_enabled:
-        return ""
-    try:
-        from app.services.obsidian import read
-        content = await read(f"📅 Расписание/{date}.md")
-        if not content:
-            return ""
-        # Убираем markdown-заголовок файла
-        lines = [l for l in content.split("\n")
-                 if l.strip() and not l.startswith("# Расписание")]
-        return "\n".join(lines[:20])
-    except Exception as e:
-        logger.debug("Obsidian schedule: %s", e)
         return ""
 
 

@@ -30,9 +30,12 @@ _PLAN_KW      = ("составь план", "распланируй", "деко�
 
 def _detect_mode(message: str) -> str:
     m = message.lower()
-    if any(kw in m for kw in _PLAN_KW):      return "plan"
-    if any(kw in m for kw in _BREAKDOWN_KW): return "breakdown"
-    if any(kw in m for kw in _STRUCTURE_KW): return "structure"
+    if any(kw in m for kw in _PLAN_KW):
+        return "plan"
+    if any(kw in m for kw in _BREAKDOWN_KW):
+        return "breakdown"
+    if any(kw in m for kw in _STRUCTURE_KW):
+        return "structure"
     return "explain"
 
 

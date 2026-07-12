@@ -3,7 +3,6 @@ Conversation memory service.
 Stores per-user message history in SQLite.
 Provides context window for LLM calls.
 """
-import json
 import sqlite3
 import time
 from typing import List, Dict

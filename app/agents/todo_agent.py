@@ -30,11 +30,9 @@ _SYSTEM = """\
 - Добавить с дедлайном: <tasks deadline="ДД.ММ">[{"quadrant":"q1","tasks":["текст"]}]</tasks>
 - Выполнить: <done>точный текст задачи</done>
 - Удалить: <delete>точный текст задачи</delete>
-- Долгосрочная цель: <longterm>текст цели</longterm>
 
 При добавлении — определяй квадрант по контексту.
-Если задача на годы вперёд или это мечта — используй <longterm>.
-Q2 с далёким горизонтом (>3 мес) → лучше как <longterm>.
+Если задача на годы вперёд, это мечта или цель с далёким горизонтом (>3 мес) — добавляй как обычную Q2-задачу.
 Если пользователь сказал "я сделал X" → <done>X</done>, отметь выполненным и спроси что дальше.
 Обращайся к пользователю по имени (оно придёт в контексте).\
 """
@@ -74,18 +72,9 @@ class TodoAgent(BaseAgent):
         # ── Добавить задачи ────────────────────────────────────────────────────
         tasks_match = re.search(r'<tasks(?:\s+deadline="([^"]*)")?>(.*?)</tasks>',
                                 raw, re.DOTALL)
-        mutated = False
         if tasks_match:
             deadline = tasks_match.group(1) or ""
             await self._add_tasks(tasks_match.group(2).strip(), ctx.user_id, deadline)
-            mutated = True
-
-        # ── Долгосрочная цель ─────────────────────────────────────────────────
-        for match in re.finditer(r"<longterm>(.*?)</longterm>", raw, re.DOTALL):
-            text = match.group(1).strip()
-            from app.services.obsidian_tasks import add_longterm_goal
-            await add_longterm_goal(text)
-            logger.info("📝 Долгосрочная цель: '%s'", text[:50])
 
         # ── Отметить выполненной ───────────────────────────────────────────────
         for match in re.finditer(r"<done>(.*?)</done>", raw, re.DOTALL):
@@ -94,10 +83,7 @@ class TodoAgent(BaseAgent):
             for t in tasks:
                 if text.lower() in t[1].lower():
                     mark_task_done(t[0], ctx.user_id)
-                    from app.services.obsidian_tasks import archive_done
-                    await archive_done(ctx.user_id, t[1], t[2])
                     logger.info("✅ Задача выполнена: '%s'", text[:50])
-                    mutated = True
                     break
 
         # ── Удалить ────────────────────────────────────────────────────────────
@@ -108,15 +94,7 @@ class TodoAgent(BaseAgent):
                 if text.lower() in t[1].lower():
                     delete_task(t[0], ctx.user_id)
                     logger.info("🗑️ Задача удалена: '%s'", text[:50])
-                    mutated = True
                     break
-
-        # ── Sync Obsidian после мутации ИЛИ первого показа ──────────────────
-        show_keywords = ("покажи", "список", "дела", "задачи", "матрица")
-        is_show = any(kw in ctx.message.lower() for kw in show_keywords)
-        if mutated or is_show:
-            from app.services.obsidian_tasks import sync_matrix
-            await sync_matrix(ctx.user_id)
 
         # Убираем теги из ответа
         reply = re.sub(r"\s*<(tasks|done|delete)[^>]*>.*?</(tasks|done|delete)>",

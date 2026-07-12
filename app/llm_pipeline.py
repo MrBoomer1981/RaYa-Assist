@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.config import settings
-from app.utils import strip_json
+from app.utils import strip_json, utcnow
 from langchain_core.messages import HumanMessage
 from langchain_groq import ChatGroq
 
@@ -340,7 +340,7 @@ class ContextService:
                 return None
 
             updated = datetime.strptime(ctx["updated_at"], "%Y-%m-%d %H:%M:%S")
-            pause_hours = (datetime.utcnow() - updated).total_seconds() / 3_600  # → часы
+            pause_hours = (utcnow() - updated).total_seconds() / 3_600  # → часы
 
             if pause_hours < _RESUME_PAUSE_HOURS:
                 return None  # пауза слишком короткая
@@ -792,7 +792,7 @@ def make_tone_controller_factory(groq_api_key: str) -> "ToneController":
 # ROUTER CALIBRATION
 # ══════════════════════════════════════════════════════════
 
-from app.database import (
+from app.database import (  # noqa: E402 — рядом с местом использования, намеренно
     DB_PATH, get_conversation_context,
     get_memory_by_category, get_structured_memory, load_history,
     load_memory, save_conversation_context, upsert_interaction, upsert_memory,

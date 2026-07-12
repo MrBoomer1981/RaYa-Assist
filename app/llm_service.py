@@ -26,7 +26,7 @@ import app.settings as _user_settings_mod
 logger = logging.getLogger(__name__)
 
 # Семафор — ограничение параллельных LLM запросов (single-user = 3 достаточно).
-import os as _os
+import os as _os  # noqa: E402 — рядом с местом использования, намеренно
 _LLM_CONCURRENCY = int(_os.getenv("LLM_CONCURRENCY", "3"))
 _LLM_SEMAPHORE = asyncio.Semaphore(_LLM_CONCURRENCY)
 
@@ -94,7 +94,7 @@ class ChatResult:
     metadata: dict            = field(default_factory=dict)
 
 
-import re as _re
+import re as _re  # noqa: E402 — рядом с местом использования, намеренно
 
 _WEATHER_RE = _re.compile(
     r"\b(погода|температура|прогноз|дождь|снег|ветер|климат|осадки)\b",

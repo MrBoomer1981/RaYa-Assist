@@ -16,15 +16,7 @@ logging.basicConfig(
 logging.getLogger("aiogram").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-from app.core import Core
-
-
-
-
-
-
-
-
+from app.core import Core  # noqa: E402 — импорт после настройки логирования, намеренно
 
 if __name__ == "__main__":
     asyncio.run(Core().start())

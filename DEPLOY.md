@@ -91,11 +91,15 @@ Railway задеплоит автоматически после добавле�
 
 Смотри логи: **Deployments** → последний деплой → **View Logs**
 
-Должно появиться:
+Сразу после деплоя (до первого сообщения боту) должно появиться:
 ```
-INFO | app.core | 🤖 RaYa запущена | модель: llama-3.3-70b-versatile
-INFO | app.agents.orchestrator | 🧠 Оркестратор инициализирован
+INFO | app.database | ✅ База данных готова: ...
+INFO | app.core | 🤖 RaYa запущена | модель: llama-3.3-70b-versatile | ...
+INFO | app.proactive_service | 🌅 Проактивный сервис запущен | ...
+INFO | app.health | 🩺 Health-check слушает на 0.0.0.0:PORT/health
 ```
+
+Строка `🧠 Оркестратор инициализирован` появится **позже** — только после первого сообщения боту (агенты создаются лениво, не при старте). Не пугайся если её нет сразу.
 
 ---
 
@@ -120,24 +124,7 @@ INFO | app.agents.orchestrator | 🧠 Оркестратор инициализ�
 - `/settings` — inline-меню настроек
 - `/memory` — состояние памяти (пустая — это норма)
 - `Привет, как дела?` — ответ от LLM
-- `Исследуй тему: что такое MCP протокол` — запустит DEEper
-
----
-
-## Obsidian (позже)
-
-После того как бот запущен, подключить vault:
-
-1. В Obsidian: Settings → Community Plugins → Browse → **Local REST API** → Install → Enable
-2. В настройках плагина скопировать **API Key**
-3. В Railway Variables добавить:
-   ```
-   OBSIDIAN_API_URL = https://YOUR_IP:27124
-   OBSIDIAN_API_KEY = <ключ из плагина>
-   ```
-4. Написать боту `/vault` — покажет статус подключения
-
-> Важно: бот должен видеть Obsidian по сети. Если Obsidian на домашнем компе — нужен туннель (ngrok, Tailscale или Cloudflare Tunnel).
+- `/deeper что такое MCP протокол` — запустит DEEper
 
 ---
 

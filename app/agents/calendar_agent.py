@@ -9,7 +9,6 @@ calendar_agent.py — расширенный календарь RaYa.
 - Показывать день / неделю / ближайшие
 - Искать события по названию
 - Удалять и обновлять события
-- Синхронизировать с Obsidian
 """
 import json
 import logging
@@ -22,9 +21,8 @@ from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.calendar_service import (
     create_event, format_day_for_telegram, format_upcoming_for_telegram,
 )
-from app.database import delete_event, get_upcoming_events, update_event, _conn
-from app.utils import strip_json
-from app.config import settings as _cfg
+from app.database import delete_event, update_event, _conn
+from app.utils import strip_json, utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +92,7 @@ def _resolve_date(raw: str) -> str:
         return ""
     raw_orig = raw.strip()
     raw = raw_orig.lower().strip()
-    today = datetime.utcnow().date()
+    today = utcnow().date()
 
     # Относительные
     if raw in ("сегодня", "today"):
@@ -107,8 +105,10 @@ def _resolve_date(raw: str) -> str:
         m = re.search(r"через\s+(\d+)\s*(день|дня|дней|неделю|недели|недель|месяц)", raw)
         if m:
             n, unit = int(m.group(1)), m.group(2)
-            if "нед" in unit: return (today + timedelta(weeks=n)).isoformat()
-            if "мес" in unit: return (today + timedelta(days=30*n)).isoformat()
+            if "нед" in unit:
+                return (today + timedelta(weeks=n)).isoformat()
+            if "мес" in unit:
+                return (today + timedelta(days=30*n)).isoformat()
             return (today + timedelta(days=n)).isoformat()
 
     # День недели
@@ -191,7 +191,7 @@ def _format_week(user_id: int, start_date_str: str) -> str:
     try:
         start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
     except ValueError:
-        start = datetime.utcnow().date()
+        start = utcnow().date()
 
     _DAYS_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     lines = [f"**Неделя с {start.strftime('%d.%m')}**\n"]
@@ -223,27 +223,6 @@ def _format_week(user_id: int, start_date_str: str) -> str:
     return "\n".join(lines)
 
 
-async def _sync_obsidian(user_id: int, date: str) -> None:
-    if not _cfg.obsidian_enabled:
-        return
-    try:
-        from app.services.obsidian import save_calendar_day as obs_cal
-        with _conn() as con:
-            rows = con.execute(
-                """SELECT id, date, time_start, time_end, title, description, color, importance, repeat
-                   FROM events WHERE user_id=? AND date=?
-                   ORDER BY CASE WHEN time_start IS NULL OR time_start='' THEN '99:99' ELSE time_start END""",
-                (user_id, date),
-            ).fetchall()
-        events = [{"id": r[0], "date": r[1], "time_start": r[2] or "",
-                   "time_end": r[3] or "", "title": r[4],
-                   "description": r[5], "color": r[6],
-                   "importance": r[7] or 0} for r in rows]
-        await obs_cal(date, events)
-    except Exception as e:
-        logger.warning("📅 Obsidian calendar sync failed: %s", e)
-
-
 # ── Агент ─────────────────────────────────────────────────────────────────────
 
 class CalendarAgent(BaseAgent):
@@ -251,11 +230,11 @@ class CalendarAgent(BaseAgent):
     timeout    = 30
 
     def _system_prompt(self) -> str:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        return _SYSTEM.format(today=today)
+        today = utcnow().strftime("%Y-%m-%d")
+        return _SYSTEM.replace("{today}", today)
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = utcnow().strftime("%Y-%m-%d")
 
         messages = [
             SystemMessage(content=self._system_prompt()),
@@ -264,7 +243,6 @@ class CalendarAgent(BaseAgent):
         ]
         response = await self._llm.ainvoke(messages)
         raw = str(response.content)
-        mutated_dates: list[str] = []
 
         # ── ADD EVENT ─────────────────────────────────────────────────────────
         for m in re.finditer(r"<add_event>(.*?)</add_event>", raw, re.DOTALL):
@@ -290,7 +268,6 @@ class CalendarAgent(BaseAgent):
                     "📅 CalendarAgent: добавлено '%s' на %s imp=%d | user_id=%s",
                     title[:40], date, event.get("importance",0), ctx.user_id,
                 )
-                mutated_dates.append(date)
             except Exception as e:
                 logger.warning("calendar: add_event error: %s", e)
 
@@ -309,7 +286,6 @@ class CalendarAgent(BaseAgent):
                             "UPDATE events SET importance=? WHERE id=? AND user_id=?",
                             (level, event_id, ctx.user_id),
                         )
-                        mutated_dates.append(row[0])
                         logger.info("⭐ CalendarAgent: importance=%d для #%d", level, event_id)
             except Exception as e:
                 logger.warning("calendar: mark_important error: %s", e)
@@ -318,13 +294,6 @@ class CalendarAgent(BaseAgent):
         for m in re.finditer(r"<delete_event>(\d+)</delete_event>", raw):
             event_id = int(m.group(1))
             try:
-                with _conn() as con:
-                    row = con.execute(
-                        "SELECT date FROM events WHERE id=? AND user_id=?",
-                        (event_id, ctx.user_id),
-                    ).fetchone()
-                    if row:
-                        mutated_dates.append(row[0])
                 ok = delete_event(event_id, ctx.user_id)
                 logger.info("🗑️ CalendarAgent: удалено #%d ok=%s | user_id=%s",
                             event_id, ok, ctx.user_id)
@@ -341,8 +310,6 @@ class CalendarAgent(BaseAgent):
                     data["date"] = _resolve_date(data["date"]) or data["date"]
                 ok = update_event(event_id, ctx.user_id, **data)
                 logger.info("✏️ CalendarAgent: обновлено #%d ok=%s", event_id, ok)
-                if ok and "date" in data:
-                    mutated_dates.append(data["date"])
             except Exception as e:
                 logger.warning("calendar: update_event error: %s", e)
 
@@ -378,10 +345,6 @@ class CalendarAgent(BaseAgent):
 
         if reply_parts:
             reply = (reply + "\n\n" + "\n\n".join(reply_parts)).strip()
-
-        # ── OBSIDIAN SYNC ─────────────────────────────────────────────────────
-        for date in set(mutated_dates):
-            await _sync_obsidian(ctx.user_id, date)
 
         return AgentResult(
             success=True,

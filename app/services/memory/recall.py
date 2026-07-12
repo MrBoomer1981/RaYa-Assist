@@ -15,7 +15,6 @@ import json
 import logging
 import re
 import sqlite3
-from pathlib import Path
 
 from app.database import _conn, DB_PATH
 

@@ -6,7 +6,6 @@ config.py — ТОЛЬКО инфраструктурные секреты из 
 """
 import logging
 from pathlib import Path
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -48,17 +47,6 @@ class Settings(BaseSettings):
     # ── API ключи ────────────────────────────────────────────────────────────
     tavily_api_key: str = ""
 
-    # ── GitHub vault (альтернатива Obsidian REST API) ─────────────────────────
-    github_token:      str = ""
-    github_vault_repo: str = ""   # формат: user/repo-name
-    github_vault_path: str = ""   # подпапка внутри репо, если vault не в корне
-                                  # напр. "obsidian-vault" если vault в repo/obsidian-vault/
-
-    # ── Obsidian (Phase 3) ───────────────────────────────────────────────────
-    obsidian_vault_path: str = ""
-    obsidian_api_url:    str = ""
-    obsidian_api_key:    str = ""
-
     # ── Модели (дефолты — можно перекрыть в .env) ────────────────────────────
     # Пользователь может менять температуру через /settings,
     # но имена моделей фиксированы в .env
@@ -67,6 +55,9 @@ class Settings(BaseSettings):
 
     # ── Таймауты ─────────────────────────────────────────────────────────────
     agent_timeout: int = 30
+
+    # ── Health-check сервер (Railway задаёт PORT сам) ─────────────────────────
+    port: int = 8080
 
     # ── Личность (из файла, не из .env) ──────────────────────────────────────
     system_prompt: str = ""
@@ -78,18 +69,6 @@ class Settings(BaseSettings):
     @property
     def search_enabled(self) -> bool:
         return bool(self.tavily_api_key)
-
-    @property
-    def obsidian_enabled(self) -> bool:
-        return bool(
-            self.obsidian_vault_path
-            or self.obsidian_api_url
-            or (self.github_token and self.github_vault_repo)
-        )
-
-    @property
-    def obsidian_via_github(self) -> bool:
-        return bool(self.github_token and self.github_vault_repo)
 
 
 settings = Settings()

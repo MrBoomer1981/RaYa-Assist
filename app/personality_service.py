@@ -18,6 +18,7 @@ from app.database import (
     DB_PATH, get_memory_by_category,
     get_top_interactions, load_history, upsert_memory,
 )
+from app.utils import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ def get_opinion_hint(message: str) -> str:
 
 # ────────────────────────────────────────────────────────────
 
-from dataclasses import dataclass
+from dataclasses import dataclass  # noqa: E402 — рядом с местом использования, намеренно
 
 logger = logging.getLogger(__name__)
 
@@ -771,7 +772,7 @@ def get_pattern_observation(user_id: int) -> str:
     Запускается редко (каждые 12 сообщений).
     """
     try:
-        now_msk_hour = (datetime.utcnow().hour + _MSK_OFFSET) % 24
+        now_msk_hour = (utcnow().hour + _MSK_OFFSET) % 24
         if 22 <= now_msk_hour or now_msk_hour < 6:
             return "Поздний вечер/ночь — пользователь, возможно, устал. Отвечай по делу, без лишнего."
         if 6 <= now_msk_hour < 9:

@@ -5,7 +5,7 @@ utils.py — общие утилиты используемые нескольк
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +15,18 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 _VALID_RECURRENCES = {"daily", "weekly", "weekday", "monthly"}
+
+
+def utcnow() -> datetime:
+    """
+    Замена для datetime.utcnow() (deprecated с Python 3.12).
+    Возвращает НАИВНЫЙ datetime — намеренно: вся БД хранит время как
+    '%Y-%m-%d %H:%M:%S' без timezone (через datetime.strptime), и если
+    здесь вернуть aware-datetime, сравнение/вычитание с датами из БД
+    будет падать с TypeError. Семантика идентична старому utcnow():
+    текущее время в UTC, просто без предупреждения об устаревании.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def parse_reminder(raw: str, now_utc: datetime) -> dict | None:

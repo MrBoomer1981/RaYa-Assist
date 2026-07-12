@@ -1,0 +1,8 @@
+# Зависимости только для разработки и тестов — на проде (Railway) не нужны.
+# Установка: pip install -r requirements.txt -r requirements-dev.txt
+
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-mock==3.14.0
+pytest-cov==6.0.0
+ruff==0.9.4

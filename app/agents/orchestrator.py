@@ -9,9 +9,7 @@ from app.agents.base_agent import AgentContext, AgentResult
 from app.agents.critic_agent import CriticAgent
 from app.agents.registry import create_agent
 from app.agents.router import RouterAgent, RouteResult
-from app.config import settings
 import app.settings as _user_settings
-from app.services.memory import MemoryManager as _MemoryManager
 from app.database import load_history, get_user_name
 
 logger = logging.getLogger(__name__)
