@@ -217,7 +217,12 @@ class ResearchAgent:
         Findings from authoritative sources get a score-weighted prefix.
         """
         all_findings: List[str] = []
-        analyze_semaphore = asyncio.Semaphore(3)
+        # Было 3 — вместе с shared TPM-бюджетом llama-3.1-8b-instant (см.
+        # groq_rotator.py) это создавало всплеск, из которого не выходили:
+        # 3 параллельные страницы легко упирались в лимит организации ещё
+        # до того как groq_rotator успевал что-то дождаться. 2 — компромисс
+        # между скоростью и тем, чтобы реально получать факты, а не 429.
+        analyze_semaphore = asyncio.Semaphore(2)
         pages_done = 0
         pages_total = len(urls)
 

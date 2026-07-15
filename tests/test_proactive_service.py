@@ -75,11 +75,20 @@ async def test_check_silence_fires_initiative_message(temp_db, monkeypatch):
     но этот вызов не обновили) — падало с NameError при каждой проверке.
     Фича по умолчанию выключена (proactive_silence=False), поэтому баг
     оставался незамеченным, пока пользователь явно не включит её в /settings.
+
+    owner_user_id здесь выставлен явно: раньше при незаданном owner_user_id
+    получатель молча угадывался как known_users[0] (минимальный user_id из
+    истории) — из-за этого в проде реальный дайджест/проактивные сообщения
+    однажды ушли постороннему пользователю, который заблокировал бота, а
+    владелец не получил ничего. Теперь без owner_user_id проактивные
+    сообщения не отправляются вовсе (см. _resolve_owner_id).
     """
     import app.proactive_service as ps
     import app.feature_flags as ff
+    from app.config import settings
 
     temp_db.upsert_user(1, first_name="Настя", username="nastya_k")
+    monkeypatch.setattr(settings, "owner_user_id", 1)
     old_time = (datetime.now() - timedelta(hours=50)).strftime("%Y-%m-%d %H:%M:%S")
     with temp_db._conn() as con:
         con.execute(
@@ -99,6 +108,38 @@ async def test_check_silence_fires_initiative_message(temp_db, monkeypatch):
 
     bot.send_message.assert_awaited_once()
     assert bot.send_message.call_args.kwargs["text"] == "Как ты?"
+
+
+async def test_check_silence_without_owner_configured_skips_sending(temp_db, monkeypatch):
+    """
+    Новый тест на сам баг: без OWNER_USER_ID сервис раньше писал наугад
+    known_users[0]. Теперь при незаданном owner_user_id проактивные
+    сообщения не уходят никому — это безопасное поведение по умолчанию.
+    """
+    import app.proactive_service as ps
+    import app.feature_flags as ff
+    from app.config import settings
+
+    temp_db.upsert_user(1, first_name="Настя", username="nastya_k")
+    monkeypatch.setattr(settings, "owner_user_id", 0)  # не настроено (dev-режим)
+    old_time = (datetime.now() - timedelta(hours=50)).strftime("%Y-%m-%d %H:%M:%S")
+    with temp_db._conn() as con:
+        con.execute(
+            "INSERT INTO history (user_id, role, content, created_at) VALUES (?, 'human', ?, ?)",
+            (1, "последнее сообщение", old_time),
+        )
+
+    monkeypatch.setattr(ff, "proactive_silence", lambda: True)
+    monkeypatch.setattr(ps, "_silence_hours", lambda: 4)
+
+    bot = MagicMock(send_message=AsyncMock())
+    llm_service = MagicMock()
+    llm_service._llm = MagicMock(ainvoke=AsyncMock(return_value=MagicMock(content="Как ты?")))
+
+    service = ps.ProactiveService(bot, llm_service)
+    await service._check_silence(utcnow())
+
+    bot.send_message.assert_not_awaited()
 
 
 async def test_check_silence_disabled_by_default_does_nothing(temp_db, monkeypatch):

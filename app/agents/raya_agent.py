@@ -10,7 +10,7 @@ raya_agent.py — главный агент RaYa.
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -61,15 +61,19 @@ def _build_date_block(now_utc: datetime) -> str:
     Без этого модель может опираться на данные из обучения
     вместо свежих результатов поиска.
     """
-    msk = now_utc.hour + 3  # МСК = UTC+3
+    # Прибавляем смещение как timedelta целиком, а не только к .hour —
+    # иначе в окне UTC 21:00-23:59 (когда в МСК уже следующие сутки,
+    # 00:00-02:59) час показывается правильно, а дата и день недели
+    # остаются вчерашними.
+    now_msk = now_utc + timedelta(hours=3)  # МСК = UTC+3
     days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
     months_ru = ["января", "февраля", "марта", "апреля", "мая", "июня",
                  "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-    day_name = days_ru[now_utc.weekday()]
-    month    = months_ru[now_utc.month - 1]
+    day_name = days_ru[now_msk.weekday()]
+    month    = months_ru[now_msk.month - 1]
     return (
-        f"📅 Сейчас: {day_name}, {now_utc.day} {month} {now_utc.year} г., "
-        f"{msk % 24:02d}:{now_utc.minute:02d} МСК.\n"
+        f"📅 Сейчас: {day_name}, {now_msk.day} {month} {now_msk.year} г., "
+        f"{now_msk.hour:02d}:{now_msk.minute:02d} МСК.\n"
         "Используй эту дату как точку отсчёта. Если в поиске есть более свежие данные — "
         "доверяй им, а не своим знаниям из обучения."
     )

@@ -354,11 +354,44 @@ async def check_all_triggers(
 import asyncio  # noqa: E402 — рядом с местом использования (ProactiveService), намеренно
 
 from aiogram import Bot  # noqa: E402 — рядом с местом использования, намеренно
+from aiogram.exceptions import TelegramForbiddenError  # noqa: E402 — рядом с местом использования
 
 
 logger = logging.getLogger(__name__)
 
 _MOSCOW_UTC_OFFSET  = 3
+
+# Раньше при owner_user_id=0 проактивные фичи молча брали known_users[0] —
+# а это просто МИНИМАЛЬНЫЙ по значению user_id из истории (SELECT ... ORDER
+# BY user_id), т.е. случайный человек, который хоть раз написал боту, пока
+# owner_user_id не был задан (0 = dev-режим, пускает всех — см. middleware.py).
+# Из-за этого утренний дайджест реально уходил не тому пользователю и падал
+# с TelegramForbiddenError (bot was blocked by the user) — владелец никогда
+# ничего не получал, а ошибка тихо съедалась в логах.
+# Теперь: без owner_user_id проактивные (незапрошенные) рассылки просто не
+# отправляются — это личный ассистент на одного пользователя, и угадывать
+# получателя для исходящих сообщений небезопасно.
+_owner_warned = False
+
+
+def _resolve_owner_id(known_users: list[int]) -> int | None:
+    """
+    Возвращает user_id владельца для проактивных сообщений.
+    None — если owner_user_id не настроен: в этом случае вызывающий код
+    должен пропустить отправку, а не гадать по known_users[0].
+    """
+    global _owner_warned
+    if settings.owner_user_id:
+        return settings.owner_user_id
+    if not _owner_warned:
+        logger.warning(
+            "⚠️ OWNER_USER_ID не задан (см. README → Деплой) — проактивные "
+            "сообщения (дайджест, тишина, триггеры) отключены, чтобы не "
+            "уйти случайному пользователю. Известные user_id в истории: %s",
+            known_users,
+        )
+        _owner_warned = True
+    return None
 # Время дайджеста и тишины теперь из app.settings (меняются через /settings)
 import app.settings as _us_mod  # noqa: E402 — рядом с местом использования, намеренно
 def _digest_hour()   -> int: return _us_mod.get().digest_hour
@@ -525,7 +558,9 @@ class ProactiveService:
             known_users = get_all_known_users()
             if not known_users:
                 return
-            user_id = settings.owner_user_id if settings.owner_user_id else known_users[0]
+            user_id = _resolve_owner_id(known_users)
+            if user_id is None:
+                return
             llm     = self._llm._llm
             sent = await check_all_triggers(user_id, self._bot, llm, self._trigger_state)
             if sent:
@@ -541,7 +576,9 @@ class ProactiveService:
             known_users = get_all_known_users()
             if not known_users:
                 return
-            user_id   = settings.owner_user_id if settings.owner_user_id else known_users[0]
+            user_id = _resolve_owner_id(known_users)
+            if user_id is None:
+                return
             last_msg  = get_last_message_time(user_id)
 
             if last_msg is None:
@@ -576,7 +613,9 @@ class ProactiveService:
             if not known_users:
                 logger.info("Нет пользователей — дайджест пропущен")
                 return
-            user_id = settings.owner_user_id if settings.owner_user_id else known_users[0]
+            user_id = _resolve_owner_id(known_users)
+            if user_id is None:
+                return
 
             from app.agents.morning_agent import MorningAgent
             from app.agents.base_agent import AgentContext
@@ -593,11 +632,24 @@ class ProactiveService:
             result = await agent.run(ctx)
 
             if result.success and result.content:
-                await self._bot.send_message(
-                    chat_id=user_id,
-                    text=f"🌅 *Доброе утро, {get_user_name(user_id)}*\n\n{result.content}",
-                    parse_mode="Markdown",
-                )
+                try:
+                    await self._bot.send_message(
+                        chat_id=user_id,
+                        text=f"🌅 *Доброе утро, {get_user_name(user_id)}*\n\n{result.content}",
+                        parse_mode="Markdown",
+                    )
+                except TelegramForbiddenError:
+                    # user_id заблокировал бота или никогда не открывал с ним чат.
+                    # Раньше это тонуло в общем except ниже как невнятная
+                    # "Ошибка отправки дайджеста" — теперь явно понятно, что
+                    # именно OWNER_USER_ID указывает не на того человека.
+                    logger.error(
+                        "🚫 Дайджест не доставлен: user_id=%s заблокировал бота "
+                        "(или не открывал чат). Проверь OWNER_USER_ID в Railway Variables — "
+                        "он должен указывать на твой реальный Telegram ID.",
+                        user_id,
+                    )
+                    return
                 save_messages(user_id, "[утренний дайджест]", result.content)
                 logger.info("✅ Утренний дайджест отправлен")
 

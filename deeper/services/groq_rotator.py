@@ -2,8 +2,16 @@
 Groq API key rotator.
 Automatically switches to the next key on 429 rate limit errors.
 Supports unlimited number of keys via GROQ_API_KEY_1, GROQ_API_KEY_2, ... env vars.
+
+ВАЖНО: лимиты Groq действуют на уровень ОРГАНИЗАЦИИ (в т.ч. для одной и той
+же модели), а не на отдельный API-ключ — несколько ключей одной организации
+делят один и тот же TPM/RPM бюджет (см. https://console.groq.com/docs/rate-limits).
+Поэтому одна только ротация ключей не спасает от 429 — нужно реально ждать
+подсказанное сервером время (Retry-After / "Please try again in Xs"),
+иначе все ключи "исчерпываются" почти мгновенно и запрос просто падает.
 """
 import os
+import re
 import asyncio
 from typing import List, Optional
 
@@ -11,6 +19,11 @@ from groq import Groq
 from deeper.utils.logger import get_logger
 
 logger = get_logger("groq_rotator")
+
+# "Please try again in 10.08s" — Groq всегда указывает точное время ожидания
+# в тексте 429-ошибки. Парсим его вместо угадывания.
+_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
+_MAX_WAIT_SEC = 20.0  # не ждём дольше этого за одну попытку — есть общий таймаут агента
 
 
 class GroqKeyRotator:
@@ -59,6 +72,22 @@ class GroqKeyRotator:
             self._index = (self._index + 1) % len(self.clients)
             logger.info("Rotated Groq key: {} → {}", prev + 1, self._index + 1)
 
+    @staticmethod
+    def _parse_wait_seconds(error_text: str, attempt: int) -> float:
+        """
+        Groq сообщает точное время ожидания в тексте 429-ошибки
+        ("Please try again in 10.08s"). Используем его напрямую —
+        это надёжнее любого угадывания. Если почему-то не нашли —
+        экспоненциальный backoff как запасной вариант.
+        """
+        match = _RETRY_AFTER_RE.search(error_text)
+        if match:
+            try:
+                return min(float(match.group(1)) + 0.5, _MAX_WAIT_SEC)  # +буфер
+            except ValueError:
+                pass
+        return min(2.0 ** attempt, _MAX_WAIT_SEC)
+
     async def chat(
         self,
         model: str,
@@ -69,13 +98,22 @@ class GroqKeyRotator:
     ) -> str:
         """
         Call Groq chat completion with automatic key rotation on 429.
-        Tries all available keys before giving up.
+
+        Лимиты Groq — на уровень организации, так что ротация ключей сама
+        по себе от 429 не спасает (см. модуль-докстринг). Поэтому при
+        рейт-лимите ждём подсказанное сервером время и только потом
+        пробуем следующий ключ — это медленнее, чем было, но реально
+        доходит до успешного ответа вместо мгновенного провала.
         """
         if retries is None:
-            retries = len(self.clients)
+            # Раньше было len(self.clients) (обычно 3) — этого хватало на
+            # рывок по всем ключам за ~0.3с без единой реальной паузы,
+            # после чего запрос просто падал. Теперь попытки дороже
+            # (реальное ожидание), поэтому и бюджет должен быть больше.
+            retries = max(len(self.clients), 5)
 
         loop = asyncio.get_event_loop()
-        last_error = None
+        last_error: Optional[Exception] = None
 
         for attempt in range(retries):
             client = self.current_client()
@@ -94,17 +132,20 @@ class GroqKeyRotator:
             except Exception as e:
                 last_error = e
                 if "429" in str(e):
+                    wait = self._parse_wait_seconds(str(e), attempt)
                     logger.warning(
-                        "Rate limit on key {} (attempt {}/{}), rotating...",
-                        self._index + 1, attempt + 1, retries
+                        "Rate limit on key {} (attempt {}/{}), waiting {:.1f}s...",
+                        self._index + 1, attempt + 1, retries, wait,
                     )
+                    await asyncio.sleep(wait)
+                    # Ротируем и после ожидания — вдруг ключи всё же из
+                    # разных организаций/тарифов, тогда это реально поможет.
                     await self._rotate()
-                    # Small yield to let event loop breathe
-                    await asyncio.sleep(0.1)
                 else:
                     # Non-rate-limit error — don't rotate, just raise
                     raise
 
         raise RuntimeError(
-            f"All {len(self.clients)} Groq keys exhausted. Last error: {last_error}"
+            f"All {len(self.clients)} Groq keys exhausted after {retries} attempts. "
+            f"Last error: {last_error}"
         )
