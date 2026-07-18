@@ -21,6 +21,7 @@ from app.database import (
     get_active_tasks, get_top_interactions,
     get_user_name, load_history, load_memory, save_messages,
     get_all_known_users, get_due_reminders, mark_reminder_done, reschedule_reminder,
+    get_digest_subscribers, set_digest_subscription,
 )
 from app.utils import utcnow
 
@@ -606,55 +607,73 @@ class ProactiveService:
             logger.exception("Ошибка проверки тишины")
 
     async def _send_morning_digest(self) -> None:
-        """Генерирует и отправляет утренний дайджест."""
+        """
+        Генерирует и отправляет утренний дайджест всем, кто подписан (/digest).
+
+        Раньше уходил одному "владельцу" (см. _resolve_owner_id) — теперь
+        это рассылка: у каждого подписчика свой персональный дайджест
+        (MorningAgent строит его по истории/задачам конкретного user_id),
+        и ошибка/блокировка у одного подписчика не должна останавливать
+        отправку остальным — поэтому try/except теперь per-recipient.
+        """
         try:
-            logger.info("🌅 Генерируем утренний дайджест...")
-            known_users = get_all_known_users()
-            if not known_users:
-                logger.info("Нет пользователей — дайджест пропущен")
+            # Общий рубильник из /settings. Раньше существовал только в
+            # SETTINGS_SCHEMA и нигде не проверялся — переключатель в UI
+            # был декорацией, ничего реально не отключал.
+            if not _ff.morning_digest():
+                logger.debug("Дайджест выключен в /settings — пропущен")
                 return
-            user_id = _resolve_owner_id(known_users)
-            if user_id is None:
+
+            logger.info("🌅 Генерируем утренний дайджест...")
+            subscribers = get_digest_subscribers()
+            if not subscribers:
+                logger.info("Нет подписчиков на дайджест (см. команду /digest) — пропущен")
                 return
 
             from app.agents.morning_agent import MorningAgent
             from app.agents.base_agent import AgentContext
 
             agent = MorningAgent()
-            ctx   = AgentContext(
-                user_id=user_id,
-                message="утренний дайджест",
-                history=load_history(user_id, limit=5),
-                memory_facts=load_memory(user_id),
-                search_results="",
-            )
+            sent = 0
 
-            result = await agent.run(ctx)
-
-            if result.success and result.content:
+            for user_id in subscribers:
                 try:
+                    ctx = AgentContext(
+                        user_id=user_id,
+                        message="утренний дайджест",
+                        history=load_history(user_id, limit=5),
+                        memory_facts=load_memory(user_id),
+                        search_results="",
+                    )
+                    result = await agent.run(ctx)
+                    if not (result.success and result.content):
+                        continue
+
                     await self._bot.send_message(
                         chat_id=user_id,
                         text=f"🌅 *Доброе утро, {get_user_name(user_id)}*\n\n{result.content}",
                         parse_mode="Markdown",
                     )
+                    save_messages(user_id, "[утренний дайджест]", result.content)
+                    sent += 1
+
                 except TelegramForbiddenError:
-                    # user_id заблокировал бота или никогда не открывал с ним чат.
-                    # Раньше это тонуло в общем except ниже как невнятная
-                    # "Ошибка отправки дайджеста" — теперь явно понятно, что
-                    # именно OWNER_USER_ID указывает не на того человека.
-                    logger.error(
-                        "🚫 Дайджест не доставлен: user_id=%s заблокировал бота "
-                        "(или не открывал чат). Проверь OWNER_USER_ID в Railway Variables — "
-                        "он должен указывать на твой реальный Telegram ID.",
+                    # Заблокировал бота (или удалил чат) — отписываем сразу,
+                    # иначе будем долбиться в него каждое утро бесконечно,
+                    # а ошибка будет тонуть в логах как у одного пользователя,
+                    # маскируя то, что остальным дайджест реально ушёл.
+                    logger.warning(
+                        "🚫 user_id=%s заблокировал бота — автоматически отписан от дайджеста",
                         user_id,
                     )
-                    return
-                save_messages(user_id, "[утренний дайджест]", result.content)
-                logger.info("✅ Утренний дайджест отправлен")
+                    set_digest_subscription(user_id, False)
+                except Exception:
+                    logger.exception("Ошибка дайджеста для user_id=%s", user_id)
+
+            logger.info("✅ Утренний дайджест: отправлено %d/%d подписчикам", sent, len(subscribers))
 
         except Exception:
-            logger.exception("Ошибка отправки дайджеста")
+            logger.exception("Ошибка генерации утреннего дайджеста")
 
 
 # ══════════════════════════════════════════════════════════

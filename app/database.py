@@ -815,6 +815,49 @@ def get_all_known_users() -> list[int]:
     return [r[0] for r in rows]
 
 
+def get_digest_subscribers() -> list[int]:
+    """
+    Возвращает user_id всех, кто подписан на утренний дайджест (/digest).
+
+    В отличие от get_all_known_users() — это НЕ "все, кто хоть раз написал
+    боту", а только те, кто явно включил подписку. Раньше дайджест уходил
+    единственному угаданному получателю (см. историю багов в migrations.py,
+    миграция 006); теперь это настоящая рассылка по списку подписчиков.
+    """
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT user_id FROM users WHERE digest_subscribed = 1 ORDER BY user_id"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def is_digest_subscribed(user_id: int) -> bool:
+    """Подписан ли конкретный пользователь на утренний дайджест."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT digest_subscribed FROM users WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    return bool(row and row[0])
+
+
+def set_digest_subscription(user_id: int, subscribed: bool) -> None:
+    """
+    Включает/выключает подписку на утренний дайджест.
+    Если пользователя ещё нет в users — создаёт запись (INSERT ... ON CONFLICT).
+    """
+    with _conn() as con:
+        con.execute(
+            """
+            INSERT INTO users (user_id, digest_subscribed, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+                digest_subscribed = excluded.digest_subscribed,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, int(subscribed)),
+        )
+
+
 def upsert_user(user_id: int, first_name: str = "", last_name: str = "", username: str = "") -> None:
     """Сохраняет или обновляет профиль пользователя."""
     with _conn() as con:

@@ -269,3 +269,98 @@ async def test_idea_followup_skips_already_sent(temp_db, llm):
     fired = await check_idea_followup(1, bot, llm, sent_ids={diary_id})
     assert fired is False
     bot.send_message.assert_not_awaited()
+
+
+# ── _send_morning_digest — рассылка по подписчикам ────────────────────────────
+# Регрессия: раньше дайджест уходил единственному угаданному получателю
+# (known_users[0] при незаданном OWNER_USER_ID — см. миграцию 006 и
+# _resolve_owner_id). Теперь это рассылка по users.digest_subscribed, и
+# ошибка/блокировка у одного подписчика не должна останавливать остальных.
+
+async def test_send_morning_digest_sends_to_all_subscribers(temp_db, monkeypatch):
+    import app.proactive_service as ps
+    import app.agents.morning_agent as morning_mod
+    from app.agents.base_agent import AgentResult
+
+    temp_db.upsert_user(1, first_name="Настя")
+    temp_db.upsert_user(2, first_name="Виктор")
+    temp_db.set_digest_subscription(1, True)
+    temp_db.set_digest_subscription(2, True)
+
+    class FakeMorningAgent:
+        async def run(self, ctx):
+            return AgentResult(success=True, content=f"дайджест для {ctx.user_id}", agent_name="morning")
+
+    monkeypatch.setattr(morning_mod, "MorningAgent", FakeMorningAgent)
+
+    bot = MagicMock(send_message=AsyncMock())
+    service = ps.ProactiveService(bot, MagicMock())
+    await service._send_morning_digest()
+
+    assert bot.send_message.await_count == 2
+    sent_to = {c.kwargs["chat_id"] for c in bot.send_message.await_args_list}
+    assert sent_to == {1, 2}
+
+
+async def test_send_morning_digest_blocked_subscriber_does_not_stop_others(temp_db, monkeypatch):
+    """Один заблокировавший бота подписчик не должен останавливать рассылку остальным."""
+    import app.proactive_service as ps
+    import app.agents.morning_agent as morning_mod
+    from app.agents.base_agent import AgentResult
+    from aiogram.exceptions import TelegramForbiddenError
+
+    temp_db.upsert_user(1, first_name="Настя")
+    temp_db.upsert_user(2, first_name="Виктор")
+    temp_db.set_digest_subscription(1, True)
+    temp_db.set_digest_subscription(2, True)
+
+    class FakeMorningAgent:
+        async def run(self, ctx):
+            return AgentResult(success=True, content="дайджест", agent_name="morning")
+
+    monkeypatch.setattr(morning_mod, "MorningAgent", FakeMorningAgent)
+
+    async def fake_send_message(chat_id, **kwargs):
+        if chat_id == 1:
+            raise TelegramForbiddenError(method=MagicMock(), message="Forbidden: bot was blocked by the user")
+        return MagicMock()
+
+    bot = MagicMock(send_message=AsyncMock(side_effect=fake_send_message))
+    service = ps.ProactiveService(bot, MagicMock())
+    await service._send_morning_digest()
+
+    sent_to = {c.kwargs["chat_id"] for c in bot.send_message.await_args_list if c.kwargs.get("chat_id") != 1}
+    assert 2 in sent_to
+    # заблокировавшего автоматически отписываем, чтобы не долбиться каждое утро
+    assert temp_db.is_digest_subscribed(1) is False
+    assert temp_db.is_digest_subscribed(2) is True
+
+
+async def test_send_morning_digest_no_subscribers_sends_nothing(temp_db):
+    import app.proactive_service as ps
+
+    bot = MagicMock(send_message=AsyncMock())
+    service = ps.ProactiveService(bot, MagicMock())
+    await service._send_morning_digest()
+
+    bot.send_message.assert_not_awaited()
+
+
+async def test_send_morning_digest_respects_global_toggle_in_settings(temp_db, monkeypatch):
+    """
+    digest_enabled из /settings — общий рубильник. Раньше существовал только
+    в SETTINGS_SCHEMA и нигде не проверялся: выключить дайджест через /settings
+    было невозможно, переключатель был декорацией.
+    """
+    import app.proactive_service as ps
+    import app.feature_flags as ff
+
+    temp_db.upsert_user(1, first_name="Настя")
+    temp_db.set_digest_subscription(1, True)
+    monkeypatch.setattr(ff, "morning_digest", lambda: False)
+
+    bot = MagicMock(send_message=AsyncMock())
+    service = ps.ProactiveService(bot, MagicMock())
+    await service._send_morning_digest()
+
+    bot.send_message.assert_not_awaited()

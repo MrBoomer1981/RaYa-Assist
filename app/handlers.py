@@ -18,6 +18,7 @@ from aiogram.types import Message, CallbackQuery
 from app.config import settings
 from app.database import (
     clear_history, clear_memory, save_reminder, get_active_reminders, upsert_user, get_user_name,
+    set_digest_subscription, is_digest_subscribed,
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
@@ -54,6 +55,7 @@ def _build_help_text() -> str:
         "/stats     — статистика за неделю",
         "/clear     — очистить историю разговора",
         "/settings  — настройки (время дайджеста, модули, модель)",
+        "/digest    — подписаться/отписаться от утреннего дайджеста",
         "/schedule  — показать сохранённое расписание",
     ]
     if settings.search_enabled:
@@ -195,6 +197,7 @@ async def _run_deep_research(chat_id: int, topic: str, mode: str, bot: Bot,
                               status_msg_id: int) -> None:
     """Запускает DEEper и отправляет отчёт."""
     from app.agents.deep_research_agent import _get_bridge
+    from deeper.config import RESEARCH_MODES
 
     progress_lines: list[str] = []
 
@@ -222,9 +225,34 @@ async def _run_deep_research(chat_id: int, topic: str, mode: str, bot: Bot,
         )
         return
 
+    # Раньше здесь не было НИКАКОГО таймаута — при зависании (например,
+    # каскад рейт-лимитов Groq, см. groq_rotator.py) запрос мог висеть
+    # неограниченно долго, и пользователь просто никогда не получал ответ,
+    # даже сообщения об ошибке. Потолок — из RESEARCH_MODES, свой на режим.
+    timeout_sec = RESEARCH_MODES.get(mode, RESEARCH_MODES["deep"]).timeout_sec
+
     start = time.monotonic()
     try:
-        result = await bridge.research(topic=topic, mode=mode, progress_cb=_update)
+        result = await asyncio.wait_for(
+            bridge.research(topic=topic, mode=mode, progress_cb=_update),
+            timeout=timeout_sec,
+        )
+    except asyncio.TimeoutError:
+        elapsed = round(time.monotonic() - start, 1)
+        logger.warning(
+            "⏱️ DEEper timeout (%dс, режим=%s, прошло=%.1fс) | chat_id=%s",
+            timeout_sec, mode, elapsed, chat_id,
+        )
+        await bot.edit_message_text(
+            text=(
+                f"⚠️ Исследование заняло больше {timeout_sec // 60} мин и было остановлено.\n\n"
+                f"Попробуй режим попроще ({_MODES.get('simple', ('🟢 Простой',))[0]}) "
+                f"или повтори — иногда помогает."
+            ),
+            chat_id=chat_id,
+            message_id=status_msg_id,
+        )
+        return
     except Exception as e:
         await bot.edit_message_text(
             text=f"⚠️ Ошибка: {e}",
@@ -518,6 +546,33 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
         else:
             _AWAITING_TOPIC[message.chat.id] = time.monotonic()
             await message.answer("🔬 Какую тему исследовать?")
+
+    @dp.message(Command("digest"))
+    async def cmd_digest(message: Message) -> None:
+        """
+        Переключает подписку на утренний дайджест (вкл/выкл).
+
+        Раньше дайджест уходил единственному угаданному "владельцу" —
+        теперь это рассылка по подписчикам, и каждый решает сам, получать
+        её или нет.
+        """
+        if not message.from_user:
+            return
+        u = message.from_user
+        upsert_user(u.id, u.first_name or "", u.last_name or "", u.username or "")
+
+        now_subscribed = not is_digest_subscribed(u.id)
+        set_digest_subscription(u.id, now_subscribed)
+
+        import app.settings as _us_mod
+        digest_time = f"{_us_mod.get().digest_hour:02d}:{_us_mod.get().digest_minute:02d}"
+        if now_subscribed:
+            await message.answer(
+                f"🌅 Подписал на утренний дайджест — жди его в {digest_time} МСК.\n"
+                f"Отключить — снова /digest."
+            )
+        else:
+            await message.answer("🔕 Отписал от утреннего дайджеста. Включить обратно — /digest.")
 
     # ── Медиа ─────────────────────────────────────────────────────────────────
 

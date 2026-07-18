@@ -32,6 +32,49 @@ def test_upsert_user_then_invalidate_cache_picks_up_new_username(temp_db):
     assert temp_db.get_user_name(3) == "petya99"
 
 
+# ── Подписка на дайджест — регрессия на "дайджест уходил не тому" ────────────
+# (раньше получатель угадывался как known_users[0] — минимальный user_id
+# среди тех, кто хоть раз написал боту; см. app/proactive_service.py)
+
+def test_new_user_not_subscribed_to_digest_by_default(temp_db):
+    """Подписка — опт-ин: просто написать боту (upsert_user) не значит подписаться."""
+    temp_db.upsert_user(10, first_name="Настя")
+    assert temp_db.is_digest_subscribed(10) is False
+    assert 10 not in temp_db.get_digest_subscribers()
+
+
+def test_set_digest_subscription_creates_user_row_if_missing(temp_db):
+    """set_digest_subscription должна работать, даже если пользователя ещё нет в users."""
+    temp_db.set_digest_subscription(11, True)
+    assert temp_db.is_digest_subscribed(11) is True
+    assert 11 in temp_db.get_digest_subscribers()
+
+
+def test_set_digest_subscription_toggle_off(temp_db):
+    temp_db.upsert_user(12, first_name="Игорь")
+    temp_db.set_digest_subscription(12, True)
+    assert temp_db.is_digest_subscribed(12) is True
+
+    temp_db.set_digest_subscription(12, False)
+    assert temp_db.is_digest_subscribed(12) is False
+    assert 12 not in temp_db.get_digest_subscribers()
+
+
+def test_get_digest_subscribers_returns_only_subscribed_users(temp_db):
+    """Несколько пользователей — в списке подписчиков должны быть только те, кто включил."""
+    temp_db.upsert_user(20, first_name="А")
+    temp_db.upsert_user(21, first_name="Б")
+    temp_db.upsert_user(22, first_name="В")
+    temp_db.set_digest_subscription(20, True)
+    temp_db.set_digest_subscription(22, True)
+    # 21 никогда не подписывался
+
+    subscribers = temp_db.get_digest_subscribers()
+    assert 20 in subscribers
+    assert 22 in subscribers
+    assert 21 not in subscribers
+
+
 # ── schedule_photo — регрессия критического бага (таблица не создавалась) ────
 
 def test_schedule_photo_roundtrip(temp_db):

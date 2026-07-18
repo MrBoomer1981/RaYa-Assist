@@ -78,3 +78,99 @@ def test_old_text_triggers_are_fully_removed():
     assert not hasattr(handlers, "_is_deep_research")
     assert not hasattr(handlers, "_get_search_topic")
     assert not hasattr(handlers, "_SEARCH_CMD_RE")
+
+
+# ── _run_deep_research — таймаут ──────────────────────────────────────────────
+# Регрессия: у этого пути (кнопки выбора режима после /deeper) раньше НЕ было
+# вообще никакого таймаута на bridge.research() — при зависании (например,
+# каскад рейт-лимитов Groq) запрос мог висеть неограниченно долго, и
+# пользователь не получал вообще ничего — ни отчёта, ни ошибки.
+
+async def test_run_deep_research_success_sends_report(monkeypatch):
+    import app.agents.deep_research_agent as dra_mod
+
+    class FakeBridge:
+        async def research(self, topic, mode, progress_cb=None):
+            if progress_cb:
+                await progress_cb("шаг 1: ищу источники")
+            return {"report": "Готовый отчёт по теме.", "sources": ["a.com", "b.com"], "id": 42}
+
+    monkeypatch.setattr(dra_mod, "_get_bridge", lambda: FakeBridge())
+
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock()
+    bot.delete_message = AsyncMock()
+    bot.send_message = AsyncMock()
+
+    await handlers._run_deep_research(chat_id=1, topic="квантовые компьютеры", mode="simple",
+                                       bot=bot, status_msg_id=99)
+
+    bot.send_message.assert_awaited()
+    sent_text = bot.send_message.call_args.args[1]
+    assert "Готовый отчёт" in sent_text
+
+
+async def test_run_deep_research_timeout_shows_clear_message_not_hang(monkeypatch):
+    """
+    Раньше: bridge.research() без таймаута мог зависнуть навсегда.
+    Теперь: asyncio.wait_for обрывает по RESEARCH_MODES[mode].timeout_sec
+    и показывает понятное сообщение вместо вечного "печатает...".
+    """
+    import asyncio
+    import app.agents.deep_research_agent as dra_mod
+    import deeper.config as deeper_config_mod
+
+    # Не ждём реальные минуты в тесте — подменяем потолок на копейки.
+    monkeypatch.setattr(deeper_config_mod.RESEARCH_MODES["simple"], "timeout_sec", 0.05)
+
+    class HangingBridge:
+        async def research(self, topic, mode, progress_cb=None):
+            await asyncio.sleep(2)  # дольше таймаута — эмулирует зависание
+            return {"report": "сюда не должны дойти"}
+
+    monkeypatch.setattr(dra_mod, "_get_bridge", lambda: HangingBridge())
+
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock()
+    bot.send_message = AsyncMock()
+
+    await handlers._run_deep_research(chat_id=1, topic="тема", mode="simple",
+                                       bot=bot, status_msg_id=99)
+
+    # Пользователь должен получить понятное сообщение, а не зависание навсегда
+    bot.edit_message_text.assert_awaited()
+    last_text = bot.edit_message_text.call_args.kwargs.get("text", "")
+    assert "⚠️" in last_text and "мин" in last_text
+    bot.send_message.assert_not_awaited()  # отчёта нет — таймаут сработал раньше
+
+
+async def test_run_deep_research_uses_per_mode_timeout(monkeypatch):
+    """Разные режимы должны использовать РАЗНЫЙ потолок из RESEARCH_MODES, а не один общий."""
+    import asyncio
+    import app.agents.deep_research_agent as dra_mod
+    import deeper.config as deeper_config_mod
+
+    seen_timeouts = []
+    real_wait_for = asyncio.wait_for
+
+    async def spying_wait_for(coro, timeout):
+        seen_timeouts.append(timeout)
+        return await real_wait_for(coro, timeout=timeout)
+
+    monkeypatch.setattr(handlers.asyncio, "wait_for", spying_wait_for)
+
+    class FakeBridge:
+        async def research(self, topic, mode, progress_cb=None):
+            return {"report": "ок", "sources": [], "id": 1}
+
+    monkeypatch.setattr(dra_mod, "_get_bridge", lambda: FakeBridge())
+
+    bot = MagicMock()
+    bot.edit_message_text = AsyncMock()
+    bot.delete_message = AsyncMock()
+    bot.send_message = AsyncMock()
+
+    await handlers._run_deep_research(chat_id=1, topic="тема", mode="study", bot=bot, status_msg_id=1)
+
+    assert seen_timeouts == [deeper_config_mod.RESEARCH_MODES["study"].timeout_sec]
+    assert seen_timeouts[0] == 1200

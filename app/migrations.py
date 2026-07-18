@@ -112,6 +112,40 @@ def _migration_005_knowledge_cache_query_column(con: sqlite3.Connection) -> bool
     return True
 
 
+def _migration_006_users_digest_subscribed(con: sqlite3.Connection) -> bool:
+    """
+    users: digest_subscribed — явная подписка на утренний дайджест.
+
+    Раньше дайджест уходил единственному "владельцу", которого при
+    незаданном OWNER_USER_ID код угадывал как known_users[0] (минимальный
+    user_id из истории) — из-за этого дайджест однажды ушёл случайному
+    пользователю, заблокировавшему бота, а не владельцу. Теперь дайджест —
+    рассылка по явным подписчикам (команда /digest), а не угадывание.
+
+    Владельца (OWNER_USER_ID, если он уже задан на момент миграции)
+    подписываем один раз автоматически — чтобы поведение не изменилось
+    для уже работающих деплоев без ручных действий с их стороны.
+    """
+    changed = False
+    if "digest_subscribed" not in _cols(con, "users"):
+        con.execute("ALTER TABLE users ADD COLUMN digest_subscribed INTEGER NOT NULL DEFAULT 0")
+        changed = True
+
+    from app.config import settings  # локальный импорт — не тянуть app.config во все миграции
+    if settings.owner_user_id:
+        con.execute(
+            """
+            INSERT INTO users (user_id, digest_subscribed, updated_at)
+            VALUES (?, 1, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET digest_subscribed = 1
+            """,
+            (settings.owner_user_id,),
+        )
+        changed = True
+
+    return changed
+
+
 # Порядок важен: применяются строго по возрастанию номера.
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], bool]]] = [
     (1, "reminders.recurrence",                  _migration_001_reminders_recurrence),
@@ -119,6 +153,7 @@ MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], bool]]] = [
     (3, "tasks: перенос старой текстовой колонки в text", _migration_003_tasks_rename_text_column),
     (4, "users.last_name/username/updated_at",   _migration_004_users_missing_columns),
     (5, "knowledge_cache.query",                 _migration_005_knowledge_cache_query_column),
+    (6, "users.digest_subscribed (+ автоподписка owner)", _migration_006_users_digest_subscribed),
 ]
 
 

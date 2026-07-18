@@ -27,6 +27,7 @@ class ResearchMode:
     search_queries: int
     max_pages: int
     max_chunks_per_page: int
+    timeout_sec: int = 720  # общий потолок на bridge.research() для этого режима
 
 
 RESEARCH_MODES: Dict[str, ResearchMode] = {
@@ -37,6 +38,7 @@ RESEARCH_MODES: Dict[str, ResearchMode] = {
         search_queries=5,
         max_pages=10,
         max_chunks_per_page=3,
+        timeout_sec=360,   # 6 минут — вдвое больше оценки
     ),
     "deep": ResearchMode(
         name="deep",
@@ -45,6 +47,7 @@ RESEARCH_MODES: Dict[str, ResearchMode] = {
         search_queries=15,
         max_pages=30,
         max_chunks_per_page=5,
+        timeout_sec=720,   # 12 минут
     ),
     "study": ResearchMode(
         name="study",
@@ -53,6 +56,7 @@ RESEARCH_MODES: Dict[str, ResearchMode] = {
         search_queries=20,
         max_pages=50,
         max_chunks_per_page=7,
+        timeout_sec=1200,  # 20 минут — больше всего чанков → больше риск упереться в рейт-лимит
     ),
 }
 

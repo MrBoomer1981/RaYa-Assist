@@ -67,6 +67,7 @@ def test_all_target_columns_exist_after_migration(raw_con):
     assert "recurrence" in cols("reminders")
     assert {"importance", "repeat", "remind_days"}.issubset(cols("events"))
     assert {"last_name", "username", "updated_at"}.issubset(cols("users"))
+    assert "digest_subscribed" in cols("users")
     assert "query" in cols("knowledge_cache")
 
 
@@ -154,3 +155,52 @@ def test_no_migration_needed_skips_when_version_current(raw_con, monkeypatch):
 
     run_migrations(raw_con)
     assert was_called is False
+
+
+# ── Миграция 006: подписка на дайджест ──────────────────────────────────────
+# Регрессия на баг: раньше дайджест уходил единственному угаданному
+# получателю (known_users[0], см. app/proactive_service.py). Теперь это
+# рассылка по подписчикам (users.digest_subscribed), а владельца
+# (OWNER_USER_ID, если он уже задан) миграция подписывает автоматически,
+# чтобы поведение не изменилось для уже работающих деплоев.
+
+def test_owner_auto_subscribed_to_digest_if_configured(raw_con, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "owner_user_id", 42)
+
+    _minimal_schema(raw_con)
+    raw_con.execute("INSERT INTO users (user_id, first_name) VALUES (42, 'Виктор')")
+    raw_con.commit()
+
+    run_migrations(raw_con)
+
+    row = raw_con.execute("SELECT digest_subscribed FROM users WHERE user_id = 42").fetchone()
+    assert row[0] == 1
+
+
+def test_owner_row_created_by_migration_if_never_messaged_bot(raw_con, monkeypatch):
+    """OWNER_USER_ID задан, но этот user_id ещё ни разу не писал боту — строки в users нет."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "owner_user_id", 999)
+
+    _minimal_schema(raw_con)  # строки для user_id=999 нет
+
+    run_migrations(raw_con)
+
+    row = raw_con.execute("SELECT digest_subscribed FROM users WHERE user_id = 999").fetchone()
+    assert row is not None and row[0] == 1
+
+
+def test_no_owner_configured_nobody_auto_subscribed(raw_con, monkeypatch):
+    """owner_user_id = 0 (dev-режим, не настроено) — никого не подписываем автоматически."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "owner_user_id", 0)
+
+    _minimal_schema(raw_con)
+    raw_con.execute("INSERT INTO users (user_id, first_name) VALUES (42, 'Виктор')")
+    raw_con.commit()
+
+    run_migrations(raw_con)
+
+    row = raw_con.execute("SELECT digest_subscribed FROM users WHERE user_id = 42").fetchone()
+    assert row[0] == 0

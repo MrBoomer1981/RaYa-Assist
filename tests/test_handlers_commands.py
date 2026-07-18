@@ -116,3 +116,18 @@ async def test_cmd_schedule_shows_saved_schedule(registered_dispatcher, temp_db)
     await cmd_schedule(msg)
 
     assert "физика" in msg.answer.call_args.args[0]
+
+
+async def test_cmd_digest_toggles_subscription(registered_dispatcher, temp_db):
+    """/digest переключает подписку: первый вызов подписывает, второй — отписывает."""
+    cmd_digest = get_handler(registered_dispatcher.dp, "cmd_digest")
+    msg = _fake_message(user_id=77)
+
+    await cmd_digest(msg)
+    assert temp_db.is_digest_subscribed(77) is True
+    assert "Подписал" in msg.answer.call_args.args[0]
+
+    msg.answer.reset_mock()
+    await cmd_digest(msg)
+    assert temp_db.is_digest_subscribed(77) is False
+    assert "Отписал" in msg.answer.call_args.args[0]
