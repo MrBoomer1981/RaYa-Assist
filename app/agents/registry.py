@@ -190,6 +190,8 @@ def create_agent(name: str):
     info = AGENTS.get(name)
     if info is None or not info.enabled:
         return None
+    if not _is_settings_enabled(info):
+        return None
     if not info.module or not info.class_name:
         return None
     try:
@@ -206,30 +208,45 @@ def create_agent(name: str):
         return None
 
 
-def get_enabled_agents() -> list[AgentInfo]:
+def _is_settings_enabled(agent: AgentInfo) -> bool:
+    """
+    Учитывает toggle из /settings (module_diary, module_todo и т.д.), если
+    он определён для этого агента. Агентов без соответствующей настройки
+    (raya, morning, critic) считаем всегда включёнными.
+    """
     import app.settings as _S
     s = _S.get()
-    # Карта: имя агента → настройка в UserSettings
-    _MODULE_MAP = {
+    module_map = {
         "diary":          s.module_diary,
         "calendar":       s.module_calendar,
         "todo":           s.module_todo,
         "deep_research":  s.module_deep_research,
         "ideas":          s.module_ideas,
     }
-    result = []
-    for a in AGENTS.values():
-        if not a.enabled:
-            continue
-        if a.name in _MODULE_MAP and not _MODULE_MAP[a.name]:
-            continue  # отключён через /settings
-        result.append(a)
-    return result
+    return module_map.get(agent.name, True)
+
+
+def get_enabled_agents() -> list[AgentInfo]:
+    return [a for a in AGENTS.values() if a.enabled and _is_settings_enabled(a)]
 
 
 def get_routable_agents() -> list[AgentInfo]:
+    """
+    Агенты, которых роутер (keyword-матч + LLM) может выбрать для сообщения.
+
+    Раньше НЕ проверял /settings-тумблеры модулей — значит выключение,
+    например, "Задачи" в /settings визуально срабатывало (тумблер
+    переключался, без ошибок), но реально ничего не менялось: роутер
+    всё равно продолжал направлять "добавь задачу" в TodoAgent. Тот же
+    класс бага, что был с digest_enabled в проактивных сообщениях —
+    настройка существовала в схеме, но нигде не проверялась в коде,
+    который должен был её соблюдать.
+    """
     excluded = {"critic", "raya", "morning"}
-    return [a for a in AGENTS.values() if a.enabled and a.name not in excluded]
+    return [
+        a for a in AGENTS.values()
+        if a.enabled and a.name not in excluded and _is_settings_enabled(a)
+    ]
 
 
 def quick_match(message: str) -> str | None:

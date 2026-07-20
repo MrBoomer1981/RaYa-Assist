@@ -7,7 +7,7 @@ test_empty_memory_does_not_crash — регрессия бага: раньше `
 пользователь) это падало с UnboundLocalError.
 """
 from datetime import datetime, timedelta
-from app.utils import utcnow
+from app.utils import utcnow, now_msk
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -182,7 +182,11 @@ async def test_reminder_warning_silent_outside_window(temp_db, llm):
 
 async def test_task_deadline_fires_for_task_due_today(temp_db, llm):
     temp_db.upsert_user(1, first_name="Максим", username="")
-    today = datetime.now().strftime("%Y-%m-%d")
+    # check_task_deadlines считает "сегодня" по МСК (_now_msk()) — тест должен
+    # согласованно использовать то же самое, иначе в окне UTC 21:00-23:59
+    # (когда в Москве уже следующие сутки) due_date="вчерашняя UTC-дата"
+    # никогда не совпадёт с тем, что реально ищет функция.
+    today = now_msk().strftime("%Y-%m-%d")
     temp_db.save_task(1, "Сдать отчёт", priority=1, due_date=today)
     bot = MagicMock(send_message=AsyncMock())
 
@@ -193,7 +197,7 @@ async def test_task_deadline_fires_for_task_due_today(temp_db, llm):
 
 async def test_task_deadline_does_not_repeat_same_day(temp_db, llm):
     temp_db.upsert_user(1, first_name="Максим", username="")
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = now_msk().strftime("%Y-%m-%d")
     temp_db.save_task(1, "Сдать отчёт", priority=1, due_date=today)
     bot = MagicMock(send_message=AsyncMock())
 

@@ -1,8 +1,8 @@
 """
 conftest.py — общие фикстуры для тестов.
 
-Ключевой момент: несколько модулей (`recall.py`, `personality_service.py`,
-`llm_pipeline.py`, `proactive_service.py`) делают `from app.database import DB_PATH`
+Ключевой момент: несколько модулей (`recall.py`, `proactive_service.py`)
+делают `from app.database import DB_PATH`
 и получают СВОЮ копию значения на момент импорта, а не читают
 `app.database.DB_PATH` напрямую. Поэтому фикстура `temp_db` патчит DB_PATH
 во всех этих модулях, а не только в `app.database`.
@@ -22,11 +22,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Модули, которые копируют DB_PATH себе при импорте (см. докстринг выше)
+# Модули, которые копируют DB_PATH себе при импорте (см. докстринг выше).
+# app.llm_pipeline и app.personality_service раньше тоже были здесь — убраны
+# вместе с фиксом утечки соединений (RouterCalibration / update_emotional_patterns
+# теперь используют _conn() напрямую, читают app.database.DB_PATH без копии).
 _DB_PATH_ALIAS_MODULES = [
     "app.services.memory.recall",
-    "app.personality_service",
-    "app.llm_pipeline",
     "app.proactive_service",
 ]
 

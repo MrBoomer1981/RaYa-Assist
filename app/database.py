@@ -49,9 +49,24 @@ def _migrate() -> None:
 def _conn() -> Generator[sqlite3.Connection, None, None]:
     """
     Контекстный менеджер соединения с авто-commit/rollback.
-    Retry при SQLITE_BUSY — до 5 попыток с backoff.
+    Retry при SQLITE_BUSY — до 5 попыток с backoff, но ТОЛЬКО на этапе
+    открытия соединения.
+
+    Раньше retry-цикл оборачивал сам `yield con`: если код ВНУТРИ
+    `with _conn() as con:` (у вызывающей стороны) сам бросал
+    sqlite3.OperationalError с "locked" в тексте, генератор пытался
+    yield'нуть повторно в ответ на gen.throw() — это запрещено протоколом
+    @contextmanager и превращалось в RuntimeError("generator didn't stop
+    after throw()"), маскирующий настоящую ошибку. Проявлялось бы именно
+    под конкурентной нагрузкой — в худший момент для непонятной ошибки.
+    Теперь ретраится только сама попытка открыть соединение (там yield
+    ещё не произошёл, повторный вход в цикл безопасен); busy_timeout=15000
+    на уже открытом соединении и так даёт SQLite время дождаться
+    освобождения блокировки на каждый отдельный execute().
     """
-    last_err = None
+    last_err: sqlite3.OperationalError | None = None
+    con: sqlite3.Connection | None = None
+
     for attempt in range(5):
         try:
             con = sqlite3.connect(
@@ -65,25 +80,27 @@ def _conn() -> Generator[sqlite3.Connection, None, None]:
             con.execute("PRAGMA busy_timeout=15000")  # 15s — для 25+ конкурентных пользователей
             con.execute("PRAGMA cache_size=-8000")    # 8MB page cache
             con.execute("PRAGMA temp_store=MEMORY")
-            try:
-                yield con
-                con.commit()
-                return
-            except sqlite3.OperationalError:
-                con.rollback()
-                raise
-            except Exception:
-                con.rollback()
-                raise
-            finally:
-                con.close()
+            break
         except sqlite3.OperationalError as e:
             last_err = e
+            if con is not None:
+                con.close()
+                con = None
             if "locked" in str(e).lower() and attempt < 4:
                 _time.sleep(0.1 * (2 ** attempt))  # blocking intentional — SQLite retry в sync контексте
                 continue
             raise
-    raise last_err
+    else:
+        raise last_err  # практически недостижимо (последняя итерация всегда raise выше), но на всякий случай
+
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
 
 
 def init_db() -> None:

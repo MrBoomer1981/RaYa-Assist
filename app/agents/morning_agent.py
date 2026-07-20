@@ -24,7 +24,7 @@ from langchain_groq import ChatGroq
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.config import settings
-from app.utils import utcnow
+from app.utils import now_msk as _now_msk_fn
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class MorningAgent(BaseAgent):
         ) = await asyncio.gather(
             _get_weather(ctx.user_id),
             _get_events(ctx.user_id, now_msk),
-            _get_tasks(ctx.user_id),
+            _get_tasks(ctx.user_id, now_msk),
             _get_news_digest(),
             _get_photo_schedule(ctx.user_id),
             return_exceptions=True,
@@ -275,12 +275,12 @@ async def _get_events(user_id: int, now_msk: datetime) -> str:
 
 # ── Задачи ────────────────────────────────────────────────────────────────────
 
-async def _get_tasks(user_id: int) -> str:
+async def _get_tasks(user_id: int, now_msk: datetime) -> str:
     """Активные задачи с приоритизацией: просроченные → сегодня → ближайшие."""
     try:
         from app.database import _conn
 
-        today = utcnow().strftime("%Y-%m-%d")
+        today = now_msk.strftime("%Y-%m-%d")
 
         with _conn() as con:
             rows = con.execute(
@@ -335,7 +335,7 @@ async def _get_news_digest() -> str:
             return ""
 
         svc  = WebSearch(api_key=deeper_config.tavily_api_key, pages_per_query=3)
-        date = utcnow().strftime("%d %B %Y")
+        date = _now_msk_fn().strftime("%d %B %Y")
 
         # Собираем задачи: по два лучших запроса на блок
         tasks_map: dict[str, list] = {}

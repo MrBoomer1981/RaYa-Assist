@@ -80,18 +80,32 @@ _LLM_CACHE_MAX = 8
 
 
 def _get_llm(model: str) -> ChatGroq:
-    """Возвращает кэшированный LLM для модели. LRU-like: при переполнении удаляет первый."""
+    """
+    Возвращает кэшированный LLM для модели. LRU-like: при переполнении удаляет первый.
+
+    temperature читается заново при КАЖДОМ вызове и применяется даже к уже
+    закэшированному клиенту (ChatGroq.temperature — обычное изменяемое поле
+    pydantic). Раньше она читалась только в момент СОЗДАНИЯ клиента и
+    застревала навсегда — после первого сообщения с моделью клиент уходил
+    в кэш, и смена температуры в /settings молча переставала действовать
+    до перезапуска процесса.
+    """
+    import app.settings as _us
+    current_temp = _us.get().temperature
+
     if model not in _LLM_CACHE:
         if len(_LLM_CACHE) >= _LLM_CACHE_MAX:
             # Удаляем самый старый (первый вставленный — dict сохраняет порядок в Python 3.7+)
             oldest = next(iter(_LLM_CACHE))
             del _LLM_CACHE[oldest]
-        import app.settings as _us
         _LLM_CACHE[model] = ChatGroq(
             api_key=settings.groq_api_key,
             model=model,
-            temperature=_us.get().temperature,
+            temperature=current_temp,
         )
+    else:
+        _LLM_CACHE[model].temperature = current_temp
+
     return _LLM_CACHE[model]
 
 

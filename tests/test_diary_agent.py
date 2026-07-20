@@ -1,6 +1,7 @@
 """
 test_diary_agent.py — запись в дневник, чтение, извлечение настроения.
 """
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -62,3 +63,24 @@ async def test_read_triggers_show_recent_entries_without_llm(agent, temp_db):
     result = await agent._execute(_ctx("покажи дневник"))
     assert result.success is True
     assert "отпуск" in result.content
+
+
+# ── Временная метка записи — по МСК, а не UTC ────────────────────────────────
+# Регрессия: now_str в diary_agent.py считался через utcnow() напрямую.
+# В окне UTC 21:00-23:59 (МСК уже следующие сутки) запись, сделанная
+# "сегодня" по ощущению пользователя, помечалась вчерашней UTC-датой.
+
+async def test_entry_timestamp_uses_msk_near_midnight_rollover(agent, temp_db, monkeypatch):
+    import app.agents.diary_agent as diary_mod
+
+    fake_now_msk = datetime(2026, 7, 15, 1, 30)  # среда, 01:30 МСК (было 22:30 UTC вторника)
+    monkeypatch.setattr(diary_mod, "now_msk", lambda: fake_now_msk)
+
+    _with_response(agent, "Записала! <diary_entry>Поздняя запись перед сном</diary_entry>")
+    result = await agent._execute(_ctx("записал мысль перед сном"))
+    assert result.success is True
+
+    entries = temp_db.load_diary_entries(1, limit=5)
+    entry_text = next(e[1] for e in entries if "Поздняя запись" in e[1])
+    assert "2026-07-15" in entry_text
+    assert "2026-07-14" not in entry_text

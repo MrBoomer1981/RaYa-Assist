@@ -45,16 +45,25 @@ class PDFProcessor:
 
     def extract_text(self, pdf_bytes: bytes) -> str:
         """Extract full text from PDF bytes."""
+        # Раньше doc не закрывался здесь вообще (в отличие от повторного
+        # open() чуть ниже в process(), который аккуратно closes) — каждый
+        # обработанный PDF утекал одним открытым fitz.Document. PyMuPDF
+        # подчищает это через __del__ как страховку, но не сразу и не
+        # детерминированно — явный close() держит память/дескрипторы под
+        # контролем, а не под надеждой на своевременный GC.
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        pages_text = []
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text("text")
-            if text.strip():
-                pages_text.append(f"--- Page {page_num + 1} ---\n{text}")
-        full_text = "\n\n".join(pages_text)
-        logger.info("Extracted {} chars from {} page PDF", len(full_text), len(doc))
-        return full_text
+        try:
+            pages_text = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text("text")
+                if text.strip():
+                    pages_text.append(f"--- Page {page_num + 1} ---\n{text}")
+            full_text = "\n\n".join(pages_text)
+            logger.info("Extracted {} chars from {} page PDF", len(full_text), len(doc))
+            return full_text
+        finally:
+            doc.close()
 
     def _summarize_chunk(self, chunk: str, chunk_idx: int, total: int) -> str:
         """Summarize a single chunk with the LLM."""

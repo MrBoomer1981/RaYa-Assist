@@ -11,11 +11,10 @@ personality_service.py — полная личность RaYa: состояни�
 
 import logging
 from langchain_core.messages import HumanMessage
-import sqlite3
 import re
 from datetime import datetime
 from app.database import (
-    DB_PATH, get_memory_by_category,
+    _conn, get_memory_by_category,
     get_top_interactions, load_history, upsert_memory,
 )
 from app.utils import utcnow
@@ -424,7 +423,7 @@ async def update_emotional_patterns(user_id: int) -> None:
 
         # Нужна история с временными метками — берём из mood_log
 
-        with sqlite3.connect(str(DB_PATH)) as con:
+        with _conn() as con:
             rows = con.execute("""
                 SELECT mood, created_at FROM mood_log
                 WHERE user_id = ?

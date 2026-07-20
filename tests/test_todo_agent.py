@@ -5,6 +5,7 @@ test_todo_agent.py — парсинг тегов <tasks>/<done>/<delete>, мут
 и терялся безвозвратно после его удаления) — теперь такие цели уходят как
 обычная Q2-задача и реально сохраняются в SQLite.
 """
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -85,3 +86,51 @@ async def test_plain_reply_without_tags_passes_through(agent, temp_db):
     result = await agent._execute(_ctx("ладно, отложим это на потом"))
     assert result.success is True
     assert "Окей, поняла тебя!" in result.content
+
+
+# ── Дедлайн: "ДД.ММ" → ГГГГ-ММ-ДД ─────────────────────────────────────────────
+# Регрессия: LLM присылает дедлайн как deadline="ДД.ММ" (см. system-промпт),
+# а save_task() получал эту сырую строку без конвертации. morning_agent.py
+# сравнивает due_date со today ("ГГГГ-ММ-ДД") ЛЕКСИКОГРАФИЧЕСКИ — сырой
+# "25.12" никогда не совпадал и не сортировался правильно, задача с
+# дедлайном молча всегда падала в "предстоящие" вместо "просрочено"/"сегодня".
+
+async def test_task_with_deadline_stores_iso_date_not_raw_ddmm(agent, temp_db, monkeypatch):
+    import app.agents.calendar_agent as cal_mod
+    monkeypatch.setattr(cal_mod, "now_msk", lambda: datetime(2026, 7, 18, 12, 0))
+
+    _with_response(
+        agent,
+        'Добавила! <tasks deadline="25.12">[{"quadrant":"q1","tasks":["Купить подарки"]}]</tasks>'
+    )
+    result = await agent._execute(_ctx("добавь задачу купить подарки к 25 декабря"))
+    assert result.success is True
+
+    tasks = temp_db.get_active_tasks(1)
+    task = next(t for t in tasks if t[1] == "Купить подарки")
+    assert task[3] == "2026-12-25", f"ожидали ISO-дату, получили {task[3]!r}"
+
+
+async def test_task_deadline_in_past_this_year_rolls_to_next_year(agent, temp_db, monkeypatch):
+    """5 января при "сегодня" = 18 июля должно интерпретироваться как СЛЕДУЮЩИЙ год."""
+    import app.agents.calendar_agent as cal_mod
+    monkeypatch.setattr(cal_mod, "now_msk", lambda: datetime(2026, 7, 18, 12, 0))
+
+    _with_response(
+        agent,
+        'Добавила! <tasks deadline="05.01">[{"quadrant":"q1","tasks":["Задача на январь"]}]</tasks>'
+    )
+    await agent._execute(_ctx("добавь задачу на 5 января"))
+
+    tasks = temp_db.get_active_tasks(1)
+    task = next(t for t in tasks if t[1] == "Задача на январь")
+    assert task[3] == "2027-01-05"
+
+
+async def test_task_without_deadline_stores_empty_due_date(agent, temp_db):
+    _with_response(agent, 'Добавила! <tasks>[{"quadrant":"q2","tasks":["Задача без срока"]}]</tasks>')
+    await agent._execute(_ctx("добавь задачу без срока"))
+
+    tasks = temp_db.get_active_tasks(1)
+    task = next(t for t in tasks if t[1] == "Задача без срока")
+    assert task[3] == ""

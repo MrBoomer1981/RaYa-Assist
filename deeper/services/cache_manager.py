@@ -5,6 +5,7 @@ Avoids re-scraping the same URLs across research sessions.
 import hashlib
 import sqlite3
 import time
+from contextlib import contextmanager
 from typing import Optional
 
 from deeper.utils.logger import get_logger
@@ -19,10 +20,27 @@ class CacheManager:
         self.db_path = db_path
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """
+        Раньше возвращала голый sqlite3.Connection, используемый как
+        `with self._connect() as conn:` — контекстный менеджер
+        sqlite3.Connection управляет только commit/rollback, но НЕ
+        закрывает соединение (та же копипаста, что в knowledge_base.py
+        и memory.py). При активном deep research (кэш проверяется на
+        КАЖДЫЙ URL перед скрейпингом) утекало бы особенно быстро. Теперь
+        настоящий контекстный менеджер: коммитит/откатывает и всегда закрывает.
+        """
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:

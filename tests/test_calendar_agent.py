@@ -7,6 +7,7 @@ test_add_event_persists_to_db — регрессия критического б
 события падало с 'OperationalError: 7 values for 10 columns'.
 """
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -129,3 +130,41 @@ async def test_update_event_changes_title(agent, temp_db):
     with temp_db._conn() as con:
         row = con.execute("SELECT title FROM events WHERE id=?", (event["id"],)).fetchone()
     assert row[0] == "Новое название встречи"
+
+
+# ── _resolve_date — сдвиг даты у полуночи МСК ────────────────────────────────
+# Регрессия: "сегодня"/"завтра" считались от utcnow().date() без поправки
+# на МСК. В окне UTC 21:00-23:59 (когда в Москве уже следующие сутки)
+# "добавь встречу на сегодня" молча уходило под ВЧЕРАШНЕЙ (по МСК) датой.
+
+def test_resolve_date_today_uses_msk_near_midnight_rollover(monkeypatch):
+    import app.agents.calendar_agent as cal_mod
+
+    # 22:00 UTC во вторник = 01:00 МСК в среду — уже "завтра" по UTC-меркам,
+    # но для пользователя в Москве это по-прежнему "сегодня".
+    fake_now_msk = datetime(2026, 7, 15, 1, 0)  # среда, 01:00 МСК
+    monkeypatch.setattr(cal_mod, "now_msk", lambda: fake_now_msk)
+
+    assert cal_mod._resolve_date("сегодня") == "2026-07-15"
+    assert cal_mod._resolve_date("завтра") == "2026-07-16"
+
+
+def test_resolve_date_today_regular_daytime_no_rollover(monkeypatch):
+    import app.agents.calendar_agent as cal_mod
+
+    fake_now_msk = datetime(2026, 7, 15, 14, 0)  # среда, обычный день
+    monkeypatch.setattr(cal_mod, "now_msk", lambda: fake_now_msk)
+
+    assert cal_mod._resolve_date("сегодня") == "2026-07-15"
+
+
+async def test_system_prompt_date_uses_msk_near_midnight(monkeypatch, agent):
+    """LLM должна видеть правильную (по МСК) дату в system-промпте, а не вчерашнюю UTC."""
+    import app.agents.calendar_agent as cal_mod
+
+    fake_now_msk = datetime(2026, 7, 15, 1, 0)
+    monkeypatch.setattr(cal_mod, "now_msk", lambda: fake_now_msk)
+
+    prompt = agent._system_prompt()
+    assert "2026-07-15" in prompt
+    assert "2026-07-14" not in prompt

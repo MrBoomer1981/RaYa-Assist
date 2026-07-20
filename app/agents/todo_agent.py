@@ -11,6 +11,7 @@ import re
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
+from app.agents.calendar_agent import _resolve_date
 from app.database import delete_task, get_active_tasks, mark_task_done, save_task
 from app.utils import strip_json
 
@@ -127,6 +128,18 @@ class TodoAgent(BaseAgent):
             logger.warning("todo: не смог распарсить tasks JSON: %s", raw_json[:100])
             return
 
+        # LLM присылает дедлайн как "ДД.ММ" (см. system-промпт), а не
+        # ГГГГ-ММ-ДД. Раньше эта сырая строка шла в save_task() как есть —
+        # morning_agent.py сравнивает due_date со today ("ГГГГ-ММ-ДД")
+        # ЛЕКСИКОГРАФИЧЕСКИ, так что "25.12" никогда не оказывался бы
+        # "просроченным" или "сегодняшним" (со строки "2" оба начинаются,
+        # а дальше "5.12" vs "026-..." сравнивается посимвольно как ASCII
+        # и почти всегда "выигрывает" у корректной даты) — задача с
+        # дедлайном всегда молча падала в "предстоящие" с нечитаемой сырой
+        # датой вместо будильника о просрочке. _resolve_date уже умеет
+        # "ДД.ММ" → ГГГГ-ММ-ДД с определением года (см. calendar_agent.py).
+        resolved_deadline = _resolve_date(deadline) if deadline else ""
+
         _Q_TO_PRIORITY = {"q1": 1, "q2": 2, "q3": 3, "q4": 4}
 
         for group in groups:
@@ -135,7 +148,7 @@ class TodoAgent(BaseAgent):
             priority = _Q_TO_PRIORITY.get(quadrant, 2)
             for text in tasks:
                 try:
-                    task_id = save_task(user_id, text, priority, deadline)
+                    task_id = save_task(user_id, text, priority, resolved_deadline)
                     logger.info("✅ [%s] Задача #%d: '%s'", quadrant.upper(), task_id, text[:50])
                 except Exception as e:
                     logger.warning("todo: ошибка сохранения: %s", e)

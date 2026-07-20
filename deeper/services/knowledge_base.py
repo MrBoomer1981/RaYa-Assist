@@ -5,6 +5,7 @@ No external dependencies — search is handled natively by SQLite.
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -33,10 +34,29 @@ class KnowledgeBase:
         self.max_researches = max_researches
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """
+        Раньше возвращала голый sqlite3.Connection, используемый как
+        `with self._connect() as conn:` — но контекстный менеджер
+        sqlite3.Connection управляет ТОЛЬКО commit/rollback транзакции,
+        а НЕ закрывает само соединение (задокументированное, но частое
+        заблуждение о поведении Python). При активном deep research это
+        могло утекать десятками соединений за один запуск (метод
+        вызывается на каждое сохранение/поиск в базе знаний). Теперь
+        _connect() — настоящий контекстный менеджер: коммитит при успехе,
+        откатывает при исключении и ВСЕГДА закрывает соединение.
+        """
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:

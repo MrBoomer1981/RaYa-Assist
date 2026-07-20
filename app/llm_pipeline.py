@@ -11,9 +11,7 @@ llm_pipeline.py — всё что обрабатывает сообщение н
 import json
 import logging
 import re
-import sqlite3
 from datetime import datetime
-from pathlib import Path
 
 from app.config import settings
 from app.utils import strip_json, utcnow
@@ -793,7 +791,7 @@ def make_tone_controller_factory(groq_api_key: str) -> "ToneController":
 # ══════════════════════════════════════════════════════════
 
 from app.database import (  # noqa: E402 — рядом с местом использования, намеренно
-    DB_PATH, get_conversation_context,
+    _conn, get_conversation_context,
     get_memory_by_category, get_structured_memory, load_history,
     load_memory, save_conversation_context, upsert_interaction, upsert_memory,
 )
@@ -809,14 +807,10 @@ _MISMATCH_RE = re.compile(
 )
 
 
-def _db_path() -> Path:
-    return DB_PATH
-
-
 def init_calibration_table() -> None:
     """Создаёт таблицу если не существует."""
     try:
-        with sqlite3.connect(str(_db_path())) as con:
+        with _conn() as con:
             con.execute("""
                 CREATE TABLE IF NOT EXISTS router_feedback (
                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -878,7 +872,7 @@ class RouterCalibration:
             if not keywords:
                 return None
 
-            with sqlite3.connect(str(_db_path())) as con:
+            with _conn() as con:
                 rows = con.execute("""
                     SELECT wrong_agent, COUNT(*) as cnt
                     FROM router_feedback
@@ -906,7 +900,7 @@ class RouterCalibration:
             keywords = " ".join(self._extract_keywords(message))
             msg_hash = str(hash(message.strip().lower()))[:12]
 
-            with sqlite3.connect(str(_db_path())) as con:
+            with _conn() as con:
                 con.execute("""
                     INSERT INTO router_feedback
                         (user_id, message_hash, keywords, wrong_agent)

@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.agents.base_agent import AgentContext, AgentResult, BaseAgent
 from app.database import load_diary_entries, save_diary_entry, save_mood
-from app.utils import utcnow
+from app.utils import now_msk
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ class DiaryAgent(BaseAgent):
     # ── Запись ─────────────────────────────────────────────────────────────────
 
     async def _handle_write(self, ctx: AgentContext) -> AgentResult:
-        now_str = utcnow().strftime("%Y-%m-%d %H:%M")
+        now_str = now_msk().strftime("%Y-%m-%d %H:%M")
 
         messages = [
             SystemMessage(content=_SYSTEM_WRITE),

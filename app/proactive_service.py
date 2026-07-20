@@ -12,12 +12,11 @@ import os
 from pathlib import Path
 import app.feature_flags as _ff
 from langchain_core.messages import HumanMessage, SystemMessage
-import sqlite3
 from datetime import datetime, timedelta
 
 from app.config import settings
 from app.database import (
-    DB_PATH, _conn,
+    _conn,
     get_active_tasks, get_top_interactions,
     get_user_name, load_history, load_memory, save_messages,
     get_all_known_users, get_due_reminders, mark_reminder_done, reschedule_reminder,
@@ -54,7 +53,7 @@ async def check_reminder_warning(user_id: int, bot, llm) -> bool:
         window_start = now + timedelta(minutes=25)
         window_end   = now + timedelta(minutes=35)
 
-        with sqlite3.connect(str(DB_PATH)) as con:
+        with _conn() as con:
             rows = con.execute("""
                 SELECT id, text, remind_at FROM reminders
                 WHERE user_id = ? AND done = 0
@@ -99,7 +98,7 @@ async def check_task_deadlines(user_id: int, bot, llm, sent_today: set) -> bool:
         if not overdue:
             today    = _now_msk().date()
             tomorrow = today + timedelta(days=1)
-            with sqlite3.connect(str(DB_PATH)) as con:
+            with _conn() as con:
                 rows = con.execute("""
                     SELECT id, text, due_date FROM tasks
                     WHERE user_id = ? AND done = 0
@@ -181,7 +180,7 @@ async def check_idea_followup(user_id: int, bot, llm, sent_ids: set) -> bool:
 
         cutoff = (utcnow() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
 
-        with sqlite3.connect(str(DB_PATH)) as con:
+        with _conn() as con:
             rows = con.execute("""
                 SELECT id, entry FROM diary
                 WHERE user_id = ? AND created_at < ?

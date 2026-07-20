@@ -104,15 +104,19 @@ async def test_get_events_includes_todays_event(temp_db):
 
 
 async def test_get_tasks_empty_state(temp_db):
-    text = await morning_agent._get_tasks(1)
+    from datetime import timezone
+    now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
+    text = await morning_agent._get_tasks(1, now_msk)
     assert "нет" in text.lower()
 
 
 async def test_get_tasks_prioritizes_overdue_first(temp_db):
+    from datetime import timezone
+    now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     temp_db.save_task(1, "Просроченная задача", priority=3, due_date=yesterday)
     temp_db.save_task(1, "Задача без срока", priority=1)
 
-    text = await morning_agent._get_tasks(1)
+    text = await morning_agent._get_tasks(1, now_msk)
     # Просроченная должна идти раньше в тексте, несмотря на более низкий приоритет
     assert text.index("Просроченная задача") < text.index("Задача без срока")

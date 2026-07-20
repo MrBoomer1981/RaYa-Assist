@@ -115,6 +115,13 @@ def _token_chunk(text: str, chunk_size: int, overlap: int) -> List[str]:
     if len(tokens) <= chunk_size:
         return [text]
 
+    # Защита от зависания: если overlap >= chunk_size (ошибка конфигурации
+    # где-то выше по цепочке), start никогда бы не продвинулся вперёд —
+    # `while start < len(tokens)` превратился бы в бесконечный цикл. Сейчас
+    # реальный конфиг безопасен (chunk_overlap=150 < chunk_size=800), но
+    # ничего в этой функции этого не гарантирует — шаг всегда минимум 1 токен.
+    step = max(chunk_size - overlap, 1)
+
     chunks: List[str] = []
     start = 0
     while start < len(tokens):
@@ -122,7 +129,7 @@ def _token_chunk(text: str, chunk_size: int, overlap: int) -> List[str]:
         chunks.append(encoder.decode(tokens[start:end]))
         if end == len(tokens):
             break
-        start += chunk_size - overlap
+        start += step
 
     return chunks
 

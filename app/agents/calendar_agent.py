@@ -22,7 +22,7 @@ from app.calendar_service import (
     create_event, format_day_for_telegram, format_upcoming_for_telegram,
 )
 from app.database import delete_event, update_event, _conn
-from app.utils import strip_json, utcnow
+from app.utils import strip_json, now_msk
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def _resolve_date(raw: str) -> str:
         return ""
     raw_orig = raw.strip()
     raw = raw_orig.lower().strip()
-    today = utcnow().date()
+    today = now_msk().date()
 
     # Относительные
     if raw in ("сегодня", "today"):
@@ -191,7 +191,7 @@ def _format_week(user_id: int, start_date_str: str) -> str:
     try:
         start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
     except ValueError:
-        start = utcnow().date()
+        start = now_msk().date()
 
     _DAYS_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     lines = [f"**Неделя с {start.strftime('%d.%m')}**\n"]
@@ -230,11 +230,11 @@ class CalendarAgent(BaseAgent):
     timeout    = 30
 
     def _system_prompt(self) -> str:
-        today = utcnow().strftime("%Y-%m-%d")
+        today = now_msk().strftime("%Y-%m-%d")
         return _SYSTEM.replace("{today}", today)
 
     async def _execute(self, ctx: AgentContext) -> AgentResult:
-        today = utcnow().strftime("%Y-%m-%d")
+        today = now_msk().strftime("%Y-%m-%d")
 
         messages = [
             SystemMessage(content=self._system_prompt()),

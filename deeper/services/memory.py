@@ -5,6 +5,7 @@ Provides context window for LLM calls.
 """
 import sqlite3
 import time
+from contextlib import contextmanager
 from typing import List, Dict
 
 from deeper.utils.logger import get_logger
@@ -22,10 +23,26 @@ class MemoryService:
         self.db_path = db_path
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """
+        Раньше возвращала голый sqlite3.Connection, используемый как
+        `with self._connect() as conn:` — контекстный менеджер
+        sqlite3.Connection управляет только commit/rollback, но НЕ
+        закрывает соединение (см. тот же фикс в knowledge_base.py и
+        cache_manager.py — везде была одна и та же копипаста). Теперь
+        настоящий контекстный менеджер: коммитит/откатывает и всегда закрывает.
+        """
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:

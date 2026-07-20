@@ -143,6 +143,12 @@ _PENDING_RESEARCH: dict[int, str] = {}
 _AWAITING_TOPIC: dict[int, float] = {}
 _AWAITING_TOPIC_TTL = 300  # 5 минут — после этого голый текст больше не считается темой
 
+# Удержание фоновых asyncio-задач (deep research и т.п.) от сборки мусора.
+# asyncio хранит только слабую ссылку на Task — без своей сильной ссылки
+# где-то ещё задача может быть собрана GC прямо посреди выполнения, без
+# единой ошибки в логах (см. предупреждение в докладе asyncio.create_task).
+_BG_TASKS: set = set()
+
 
 def _consume_awaiting_topic(chat_id: int) -> bool:
     """
@@ -423,9 +429,11 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
         await callback.answer()
 
         import asyncio as _asyncio
-        _asyncio.create_task(
+        _task = _asyncio.create_task(
             _run_deep_research(chat_id, topic, mode, bot, callback.message.message_id)
         )
+        _BG_TASKS.add(_task)
+        _task.add_done_callback(_BG_TASKS.discard)
 
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
