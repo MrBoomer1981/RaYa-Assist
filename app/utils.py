@@ -244,3 +244,64 @@ RECUR_RU: dict[str, str] = {
 def strip_json(raw: str) -> str:
     """Убирает ```json ... ``` обёртку из ответа LLM."""
     return raw.strip().replace("```json", "").replace("```", "").strip()
+
+
+async def edit_markdown_safe(bot, chat_id: int, message_id: int, text: str, **kwargs) -> None:
+    """
+    Аналог send_markdown_safe для edit_message_text — тот же fallback на
+    обычный текст при ошибке разбора Markdown-сущностей.
+    """
+    from aiogram.exceptions import TelegramBadRequest
+
+    try:
+        await bot.edit_message_text(
+            text=text, chat_id=chat_id, message_id=message_id,
+            parse_mode="Markdown", **kwargs,
+        )
+    except TelegramBadRequest as e:
+        if "can't parse entities" in str(e).lower():
+            logger.warning(
+                "edit_markdown_safe: Markdown не распарсился (chat_id=%s) — "
+                "редактирую как обычный текст. %s", chat_id, e,
+            )
+            await bot.edit_message_text(
+                text=text, chat_id=chat_id, message_id=message_id,
+                parse_mode=None, **kwargs,
+            )
+        else:
+            raise
+
+
+async def send_markdown_safe(bot, chat_id: int, text: str, **kwargs) -> None:
+    """
+    Отправляет сообщение с parse_mode="Markdown"; при ошибке разбора
+    сущностей повторяет тем же текстом без форматирования вместо того,
+    чтобы полностью терять сообщение.
+
+    Баг в проде: 12-минутное deep research исследование успешно
+    завершалось и сохранялось в БД, но финальная отправка отчёта падала
+    с TelegramBadRequest("can't parse entities: Can't find end of the
+    entity starting at byte offset ..."), потому что LLM-сгенерированный
+    текст не гарантированно валидный Telegram Markdown (несбалансированные
+    *, _, ` и т.п. — обычное дело в свободном тексте). Пользователь не
+    получал вообще ничего, а сам сбой был виден только как "Task
+    exception was never retrieved" в серверных логах — ни ошибки, ни
+    результата, полная тишина после долгого ожидания.
+
+    Тот же риск — везде, где в Markdown-обёртку попадает текст, который
+    мы не полностью контролируем: тема исследования от пользователя,
+    расшифровка голосового, OCR расписания с фото, сводки из памяти.
+    """
+    from aiogram.exceptions import TelegramBadRequest
+
+    try:
+        await bot.send_message(chat_id, text, parse_mode="Markdown", **kwargs)
+    except TelegramBadRequest as e:
+        if "can't parse entities" in str(e).lower():
+            logger.warning(
+                "send_markdown_safe: Markdown не распарсился (chat_id=%s) — "
+                "отправляю как обычный текст. %s", chat_id, e,
+            )
+            await bot.send_message(chat_id, text, parse_mode=None, **kwargs)
+        else:
+            raise

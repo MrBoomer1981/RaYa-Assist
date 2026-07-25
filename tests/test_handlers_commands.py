@@ -30,23 +30,26 @@ async def test_cmd_start_greets_by_nickname(registered_dispatcher, temp_db):
 
 async def test_cmd_memory_shows_empty_state(registered_dispatcher, temp_db):
     cmd_memory = get_handler(registered_dispatcher.dp, "cmd_memory")
+    registered_dispatcher.bot.send_message.reset_mock()
     msg = _fake_message()
 
     await cmd_memory(msg)
 
-    msg.answer.assert_awaited_once()
-    assert "пуста" in msg.answer.call_args.args[0].lower() or "🧠" in msg.answer.call_args.args[0]
+    registered_dispatcher.bot.send_message.assert_awaited_once()
+    sent_text = registered_dispatcher.bot.send_message.call_args.args[1]
+    assert "пуста" in sent_text.lower() or "🧠" in sent_text
 
 
 async def test_cmd_memory_shows_saved_facts(registered_dispatcher, temp_db):
     from app.services.memory.core import upsert_core_fact
     cmd_memory = get_handler(registered_dispatcher.dp, "cmd_memory")
     upsert_core_fact(1, category="работа", key="профессия", value="дизайнер", importance=5.0)
+    registered_dispatcher.bot.send_message.reset_mock()
 
     msg = _fake_message()
     await cmd_memory(msg)
 
-    text = msg.answer.call_args.args[0]
+    text = registered_dispatcher.bot.send_message.call_args.args[1]
     assert "дизайнер" in text
 
 
@@ -111,11 +114,12 @@ async def test_cmd_schedule_shows_saved_schedule(registered_dispatcher, temp_db)
     """Регрессия: раньше вся команда падала на 'no such table: schedule_photo'."""
     cmd_schedule = get_handler(registered_dispatcher.dp, "cmd_schedule")
     temp_db.save_schedule_photo(1, "Пн: физика 9:00")
+    registered_dispatcher.bot.send_message.reset_mock()
 
     msg = _fake_message()
     await cmd_schedule(msg)
 
-    assert "физика" in msg.answer.call_args.args[0]
+    assert "физика" in registered_dispatcher.bot.send_message.call_args.args[1]
 
 
 async def test_cmd_digest_toggles_subscription(registered_dispatcher, temp_db):

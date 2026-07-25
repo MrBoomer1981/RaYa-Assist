@@ -22,7 +22,7 @@ from app.database import (
 )
 from app.document_service import SUPPORTED_EXTENSIONS, extract_text
 from app.llm_service import LLMService, ChatResult
-from app.utils import RECUR_RU, utcnow
+from app.utils import RECUR_RU, utcnow, send_markdown_safe, edit_markdown_safe
 from app.vision_service import VisionService
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,22 @@ _AWAITING_TOPIC_TTL = 300  # 5 минут — после этого голый �
 _BG_TASKS: set = set()
 
 
+def _log_bg_task_exception(task) -> None:
+    """
+    Последняя страховка сверх try/except внутри самой задачи: если что-то
+    всё же просочится необработанным, логируем с полным контекстом —
+    вместо невнятного "Task exception was never retrieved" без привязки
+    к тому, что и где именно упало (именно так выглядел прод-баг с
+    несбалансированным Markdown в отчёте deep research, пока не поймали
+    его через send_markdown_safe).
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("Необработанное исключение в фоновой задаче %s: %r", task.get_name(), exc, exc_info=exc)
+
+
 def _consume_awaiting_topic(chat_id: int) -> bool:
     """
     Если для этого чата ждём тему после голого /deeper — снимает ожидание
@@ -162,9 +178,9 @@ def _consume_awaiting_topic(chat_id: int) -> bool:
 
 
 _MODES = {
-    "simple": ("🟢 Быстрый",     "~2 мин · 5 запросов · базовый обзор"),
-    "deep":   ("🔵 Углублённый", "~5 мин · 15 запросов · детальный анализ"),
-    "study":  ("🟣 Изучение",    "~8 мин · 20 запросов · полное погружение"),
+    "simple": ("🟢 Быстрый",     "базовый обзор темы"),
+    "deep":   ("🔵 Углублённый", "детальный анализ с разных сторон"),
+    "study":  ("🟣 Изучение",    "полное погружение в тему"),
 }
 
 
@@ -282,10 +298,40 @@ async def _run_deep_research(chat_id: int, topic: str, mode: str, bot: Bot,
     except Exception:
         pass
 
-    chunks = _split_report(report + footer, max_len=3800)
-    for i, chunk in enumerate(chunks):
-        prefix = f"📚 *Часть {i+1}/{len(chunks)}*\n\n" if len(chunks) > 1 else ""
-        await bot.send_message(chat_id, prefix + chunk, parse_mode="Markdown")
+    try:
+        chunks = _split_report(report + footer, max_len=3800)
+        for i, chunk in enumerate(chunks):
+            prefix = f"📚 *Часть {i+1}/{len(chunks)}*\n\n" if len(chunks) > 1 else ""
+            # Раньше — bot.send_message(..., parse_mode="Markdown") напрямую.
+            # LLM-сгенерированный отчёт не гарантированно валидный Telegram
+            # Markdown (несбалансированные *, _, ` — обычное дело в свободном
+            # тексте); Telegram отвергал ВСЁ сообщение целиком с
+            # TelegramBadRequest("can't parse entities..."), и это исключение
+            # никто не ловил — после успешного 12-минутного исследования
+            # пользователь не получал вообще ничего, а в логах оставалось
+            # только невнятное "Task exception was never retrieved".
+            await send_markdown_safe(bot, chat_id, prefix + chunk)
+    except Exception:
+        # Страховка сверху: даже send_markdown_safe не покрывает вообще
+        # ВСЁ (сеть легла, Telegram отдал 5xx и т.п.). Раньше здесь не
+        # было вообще никакой защиты — исследование успешно завершалось
+        # и сохранялось в БД, а пользователь получал полную тишину без
+        # единого объяснения; сам сбой был виден только как "Task
+        # exception was never retrieved" в серверных логах. Отчёт уже
+        # сохранён (res_id) — хотя бы сообщаем об этом честно.
+        logger.exception(
+            "Не удалось доставить отчёт deep research | chat_id=%s res_id=%s",
+            chat_id, res_id,
+        )
+        try:
+            saved_note = f" (сохранён как #{res_id})" if res_id else ""
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Исследование завершилось, но отправить отчёт не получилось{saved_note}. "
+                f"Спроси про эту тему ещё раз — я подтяну сохранённые результаты.",
+            )
+        except Exception:
+            pass
 
 
 def _split_report(text: str, max_len: int = 3800) -> list[str]:
@@ -422,9 +468,9 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
             return
 
         mode_label = _MODES.get(mode, (mode, ""))[0]
-        await callback.message.edit_text(
-            f"🔬 *{mode_label}*\n📌 {topic}\n\nНачинаю исследование...",
-            parse_mode="Markdown",
+        await edit_markdown_safe(
+            bot, chat_id=chat_id, message_id=callback.message.message_id,
+            text=f"🔬 *{mode_label}*\n📌 {topic}\n\nНачинаю исследование...",
         )
         await callback.answer()
 
@@ -434,6 +480,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
         )
         _BG_TASKS.add(_task)
         _task.add_done_callback(_BG_TASKS.discard)
+        _task.add_done_callback(_log_bg_task_exception)
 
     @dp.message(Command("start"))
     async def cmd_start(message: Message) -> None:
@@ -482,8 +529,10 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
                 date = ep["created_at"][:10]
                 lines.append(f"  [{date}] {ep['summary'][:120]}")
 
-        await message.answer("\n".join(lines) if lines else "🧠 Пока ничего не знаю.", 
-                             parse_mode="Markdown")
+        await send_markdown_safe(
+            bot, message.chat.id,
+            "\n".join(lines) if lines else "🧠 Пока ничего не знаю.",
+        )
 
     @dp.message(Command("forget"))
     async def cmd_forget(message: Message) -> None:
@@ -541,7 +590,7 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
             f"📅 **Твоё расписание** (обновлено {updated})\n\n"
             f"{sched['raw_text'][:3000]}"
         )
-        await message.answer(text, parse_mode="Markdown")
+        await send_markdown_safe(bot, message.chat.id, text)
 
     @dp.message(Command("deeper"))
     async def cmd_deeper(message: Message, command: CommandObject) -> None:
@@ -626,11 +675,11 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
                 save_schedule_photo(u.id, result, summary_result or "")
                 llm.save_photo_exchange(u.id, "[Расписание сохранено]", result)
 
-                await message.answer(
+                await send_markdown_safe(
+                    bot, message.chat.id,
                     f"📅 Расписание сохранено! Буду показывать его каждое утро.\n\n"
                     f"**Что извлекла:**\n{result[:800]}"
                     + ("..." if len(result) > 800 else ""),
-                    parse_mode="Markdown"
                 )
             else:
                 result = await vision.analyze(image_bytes, user_prompt)
@@ -729,13 +778,13 @@ def register(dp: Dispatcher, bot: Bot, llm: LLMService, vision: VisionService) -
                 return
 
             # Показываем что услышали
-            await message.answer(f"🎤 _Услышала:_ {text}", parse_mode="Markdown")
+            await send_markdown_safe(bot, message.chat.id, f"🎤 _Услышала:_ {text}")
 
             # Обрабатываем как обычный текст
             from app.commands.settings_cmd import handle_pending_input
             setting_reply = handle_pending_input(u.id, text)
             if setting_reply is not None:
-                await message.answer(setting_reply, parse_mode="Markdown")
+                await send_markdown_safe(bot, message.chat.id, setting_reply)
                 return
 
             if _consume_awaiting_topic(message.chat.id):

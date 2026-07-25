@@ -302,7 +302,7 @@ async def test_send_morning_digest_sends_to_all_subscribers(temp_db, monkeypatch
     await service._send_morning_digest()
 
     assert bot.send_message.await_count == 2
-    sent_to = {c.kwargs["chat_id"] for c in bot.send_message.await_args_list}
+    sent_to = {c.args[0] for c in bot.send_message.await_args_list}
     assert sent_to == {1, 2}
 
 
@@ -324,7 +324,7 @@ async def test_send_morning_digest_blocked_subscriber_does_not_stop_others(temp_
 
     monkeypatch.setattr(morning_mod, "MorningAgent", FakeMorningAgent)
 
-    async def fake_send_message(chat_id, **kwargs):
+    async def fake_send_message(chat_id, text=None, **kwargs):
         if chat_id == 1:
             raise TelegramForbiddenError(method=MagicMock(), message="Forbidden: bot was blocked by the user")
         return MagicMock()
@@ -333,7 +333,7 @@ async def test_send_morning_digest_blocked_subscriber_does_not_stop_others(temp_
     service = ps.ProactiveService(bot, MagicMock())
     await service._send_morning_digest()
 
-    sent_to = {c.kwargs["chat_id"] for c in bot.send_message.await_args_list if c.kwargs.get("chat_id") != 1}
+    sent_to = {c.args[0] for c in bot.send_message.await_args_list if c.args[0] != 1}
     assert 2 in sent_to
     # заблокировавшего автоматически отписываем, чтобы не долбиться каждое утро
     assert temp_db.is_digest_subscribed(1) is False
@@ -368,3 +368,38 @@ async def test_send_morning_digest_respects_global_toggle_in_settings(temp_db, m
     await service._send_morning_digest()
 
     bot.send_message.assert_not_awaited()
+
+
+async def test_send_morning_digest_delivers_despite_broken_markdown(temp_db, monkeypatch):
+    """
+    Тот же риск, что чинили в deep research: result.content — текст от LLM,
+    не гарантированно валидный Telegram Markdown. Раньше поломанная разметка
+    роняла отправку с TelegramBadRequest, что тонуло в общем except —
+    подписчик просто не получал дайджест тем утром, без единого объяснения.
+    """
+    import app.proactive_service as ps
+    import app.agents.morning_agent as morning_mod
+    from app.agents.base_agent import AgentResult
+    from aiogram.exceptions import TelegramBadRequest
+
+    temp_db.upsert_user(1, first_name="Настя")
+    temp_db.set_digest_subscription(1, True)
+
+    class FakeMorningAgent:
+        async def run(self, ctx):
+            return AgentResult(success=True, content="Сегодня *важный день без закрытия", agent_name="morning")
+
+    monkeypatch.setattr(morning_mod, "MorningAgent", FakeMorningAgent)
+
+    async def fake_send(chat_id, text, parse_mode=None, **kw):
+        if parse_mode == "Markdown":
+            raise TelegramBadRequest(method=MagicMock(), message="can't parse entities: test")
+
+    bot = MagicMock(send_message=AsyncMock(side_effect=fake_send))
+    service = ps.ProactiveService(bot, MagicMock())
+    await service._send_morning_digest()
+
+    assert bot.send_message.await_count == 2  # Markdown-попытка + fallback
+    fallback_calls = [c for c in bot.send_message.await_args_list if c.kwargs.get("parse_mode") is None]
+    assert len(fallback_calls) == 1
+    assert "важный день" in fallback_calls[0].args[1]

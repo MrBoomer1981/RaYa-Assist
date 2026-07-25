@@ -22,7 +22,7 @@ from app.database import (
     get_all_known_users, get_due_reminders, mark_reminder_done, reschedule_reminder,
     get_digest_subscribers, set_digest_subscription,
 )
-from app.utils import utcnow
+from app.utils import utcnow, send_markdown_safe
 
 # ── Временные константы (секунды) ────────────────────────────────────────────
 _1_HOUR   = 3_600
@@ -648,10 +648,16 @@ class ProactiveService:
                     if not (result.success and result.content):
                         continue
 
-                    await self._bot.send_message(
+                    # Раньше — self._bot.send_message(..., parse_mode="Markdown")
+                    # напрямую. result.content — текст от LLM, не гарантированно
+                    # валидный Telegram Markdown; при поломанной разметке
+                    # Telegram отвергал ВСЁ сообщение (TelegramBadRequest),
+                    # и это тонуло в общем except ниже — подписчик просто не
+                    # получал дайджест тем утром, без объяснения даже в логах.
+                    await send_markdown_safe(
+                        self._bot,
                         chat_id=user_id,
                         text=f"🌅 *Доброе утро, {get_user_name(user_id)}*\n\n{result.content}",
-                        parse_mode="Markdown",
                     )
                     save_messages(user_id, "[утренний дайджест]", result.content)
                     sent += 1

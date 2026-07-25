@@ -34,16 +34,16 @@ RESEARCH_MODES: Dict[str, ResearchMode] = {
     "simple": ResearchMode(
         name="simple",
         label="🟢 Простой",
-        description="5 запросов, 10 страниц — ~3 минуты",
+        description="Быстрый обзор темы — только самое главное",
         search_queries=5,
         max_pages=10,
         max_chunks_per_page=3,
-        timeout_sec=360,   # 6 минут — вдвое больше оценки
+        timeout_sec=360,   # 6 минут — вдвое больше старой оценки в ~3
     ),
     "deep": ResearchMode(
         name="deep",
         label="🔵 Углублённый",
-        description="15 запросов, 30 страниц — ~5 минут",
+        description="Баланс глубины и скорости — несколько источников с разных сторон",
         search_queries=15,
         max_pages=30,
         max_chunks_per_page=5,
@@ -52,7 +52,7 @@ RESEARCH_MODES: Dict[str, ResearchMode] = {
     "study": ResearchMode(
         name="study",
         label="🟣 Изучение",
-        description="20 запросов, 50 страниц — ~7 минут",
+        description="Максимально подробно — для серьёзного погружения в тему",
         search_queries=20,
         max_pages=50,
         max_chunks_per_page=7,

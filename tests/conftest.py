@@ -10,7 +10,7 @@ conftest.py — общие фикстуры для тестов.
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -101,6 +101,12 @@ def registered_dispatcher():
     from app.core import Core, Services
 
     bot = MagicMock()
+    # send_markdown_safe/edit_markdown_safe (app/utils.py) реально вызывают
+    # bot.send_message/bot.edit_message_text — без явного AsyncMock здесь
+    # await на них падает с TypeError ("MagicMock can't be used in 'await'").
+    bot.send_message = AsyncMock()
+    bot.edit_message_text = AsyncMock()
+    bot.delete_message = AsyncMock()
     llm = MagicMock()
     vision = MagicMock()
     services = Services(bot=bot, llm=llm, vision=vision, proactive=MagicMock())
